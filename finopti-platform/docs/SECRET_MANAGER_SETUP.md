@@ -17,11 +17,11 @@ cd /Users/robinkv/dev_workplace/all_codebase/auth_micro_agents/finopti-platform
 
 ```bash
 # Enable the API
-gcloud services enable secretmanager.googleapis.com --project=coolpics-hosting
+gcloud services enable secretmanager.googleapis.com --project=vector-search-poc
 ```
 
 **Or via Console:**
-1. Go to [Secret Manager API](https://console.cloud.google.com/apis/library/secretmanager.googleapis.com?project=coolpics-hosting)
+1. Go to [Secret Manager API](https://console.cloud.google.com/apis/library/secretmanager.googleapis.com?project=vector-search-poc)
 2. Click "ENABLE"
 
 ### Step 2: Create Secrets
@@ -34,25 +34,25 @@ echo -n "YOUR_CLIENT_ID" | \
   gcloud secrets create google-oauth-client-id \
     --data-file=- \
     --replication-policy=automatic \
-    --project=coolpics-hosting
+    --project=vector-search-poc
 
 # Client Secret
 echo -n "YOUR_CLIENT_SECRET" | \
   gcloud secrets create google-oauth-client-secret \
     --data-file=- \
     --replication-policy=automatic \
-    --project=coolpics-hosting
+    --project=vector-search-poc
 
 # Full JSON credentials
 gcloud secrets create google-oauth-credentials-json \
   --data-file=secrets/client_secret_YOUR_CLIENT_ID.json \
   --replication-policy=automatic \
-  --project=coolpics-hosting
+  --project=vector-search-poc
 ```
 
 **Option B: Via GCP Console**
 
-1. Go to [Secret Manager](https://console.cloud.google.com/security/secret-manager?project=coolpics-hosting)
+1. Go to [Secret Manager](https://console.cloud.google.com/security/secret-manager?project=vector-search-poc)
 2. Click "CREATE SECRET"
 3. Create each secret:
    - **Name:** `google-oauth-client-id`
@@ -66,14 +66,14 @@ Grant access to your service accounts:
 
 ```bash
 # Example: Grant access to Compute Engine default service account
-PROJECT_NUMBER=$(gcloud projects describe coolpics-hosting --format="value(projectNumber)")
+PROJECT_NUMBER=$(gcloud projects describe vector-search-poc --format="value(projectNumber)")
 SA_EMAIL="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
 for secret in google-oauth-client-id google-oauth-client-secret google-oauth-credentials-json; do
   gcloud secrets add-iam-policy-binding "$secret" \
     --member="serviceAccount:${SA_EMAIL}" \
     --role="roles/secretmanager.secretAccessor" \
-    --project=coolpics-hosting
+    --project=vector-search-poc
 done
 ```
 
@@ -89,7 +89,7 @@ done
 
 1. **Check Your Permissions:**
    ```bash
-   gcloud projects get-iam-policy coolpics-hosting \
+   gcloud projects get-iam-policy vector-search-poc \
      --flatten="bindings[].members" \
      --filter="bindings.members:user:robin@cloudroaster.com" \
      --format="table(bindings.role)"
@@ -103,7 +103,7 @@ done
    
    Ask project owner to grant:
    ```bash
-   gcloud projects add-iam-policy-binding coolpics-hosting \
+   gcloud projects add-iam-policy-binding vector-search-poc \
      --member="user:robin@cloudroaster.com" \
      --role="roles/secretmanager.admin"
    ```
@@ -138,7 +138,7 @@ gcloud secrets versions access 1 --secret=google-oauth-client-id
 ```python
 from google.cloud import secretmanager
 
-def get_secret(secret_id, project_id="coolpics-hosting"):
+def get_secret(secret_id, project_id="vector-search-poc"):
     client = secretmanager.SecretManagerServiceClient()
     name = f"projects/{project_id}/secrets/{secret_id}/versions/latest"
     response = client.access_secret_version(request={"name": name})
@@ -163,7 +163,7 @@ def get_oauth_credentials():
     
     if use_secret_manager:
         client = secretmanager.SecretManagerServiceClient()
-        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "coolpics-hosting")
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "vector-search-poc")
         
         def get_secret(secret_id):
             name = f"projects/{project_id}/secrets/{secret_id}/versions/latest"
@@ -187,13 +187,13 @@ def get_oauth_credentials():
 
 ```bash
 # List all secrets
-gcloud secrets list --project=coolpics-hosting
+gcloud secrets list --project=vector-search-poc
 
 # View secret metadata
-gcloud secrets describe google-oauth-client-id --project=coolpics-hosting
+gcloud secrets describe google-oauth-client-id --project=vector-search-poc
 
 # Access secret value (for testing)
-gcloud secrets versions access latest --secret=google-oauth-client-id --project=coolpics-hosting
+gcloud secrets versions access latest --secret=google-oauth-client-id --project=vector-search-poc
 ```
 
 ---
@@ -228,8 +228,16 @@ After creating secrets:
 ---
 
 **Created:** 2025-12-31  
-**Project:** coolpics-hosting  
+**Project:** vector-search-poc  
 **Secrets:**
 - `google-oauth-client-id`
 - `google-oauth-client-secret`
 - `google-oauth-credentials-json`
+
+---
+
+## 📝 Document History
+
+| Version | Date       | Author | Revision Summary |
+|---------|------------|--------|------------------|
+| 1.0.0   | 2026-01-01 | Antigravity AI | Initial versioned release. Sanitzed secrets and verified instructions. |

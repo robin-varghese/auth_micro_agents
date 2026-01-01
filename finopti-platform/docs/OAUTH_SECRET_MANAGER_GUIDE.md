@@ -31,8 +31,8 @@ python3 ui/oauth_config.py
 **Expected Output:**
 ```
 ✅ Successfully loaded OAuth credentials from Secret Manager
-Client ID: 912533822336-dqcluei...
-Client Secret: GOCSPX-21Z...
+Client ID: YOUR_CLIENT_ID...
+Client Secret: YOUR_CLIENT_SECRET...
 Redirect URI: http://localhost:8501/_oauth_callback
 ```
 
@@ -120,3 +120,11 @@ pip install google-cloud-secret-manager
 **Created:** 2025-12-31  
 **Project:** vector-search-poc  
 **Status:** ✅ Production Ready
+
+---
+
+## 📝 Document History
+
+| Version | Date       | Author | Revision Summary |
+|---------|------------|--------|------------------|
+| 1.0.0   | 2026-01-01 | Antigravity AI | Initial versioned release. Verified project IDs and sanitized secrets. |

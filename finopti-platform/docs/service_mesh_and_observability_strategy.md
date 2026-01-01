@@ -9,6 +9,32 @@ This document outlines the strategy to:
 2.  **Enable Full Observability**: Activate the PLG (Promtail, Loki, Grafana) stack to ingest logs and metrics from all containers.
 
 ---
+config:
+  layout: fixed
+---
+flowchart TB
+    User["Streamlit UI<br>Port 8501"] --> APISIX["Apache APISIX"]
+    APISIX --> Orchestrator["Orchestrator Agent"] & n2["Loki"]
+    Orchestrator --> OPA["OPA Sidecar<br>"] & n1["APISIX"] & n2
+    Monitoring["Monitoring Agent"] --> APISIX2["APISIX"] & n2
+    APISIX2 --> GCloudMCP["GCloud MCP"] & MonitoringMCP["Monitoring MCP"] & n2
+    n1 --> GCloud["GCloud Agent"] & Monitoring & n2
+    GCloud --> APISIX2 & n2
+    GCloudMCP --> n2
+    MonitoringMCP --> n2
+    n3["All Logs"]
+
+    n2@{ shape: rect}
+    n1@{ shape: rect}
+    n3@{ shape: text}
+    linkStyle 2 stroke:#2962FF,fill:none
+    linkStyle 5 stroke:#2962FF,fill:none
+    linkStyle 7 stroke:#2962FF,fill:none
+    linkStyle 10 stroke:#2962FF,fill:none
+    linkStyle 13 stroke:#2962FF,fill:none
+    linkStyle 15 stroke:#2962FF,fill:none
+    linkStyle 16 stroke:#2962FF,fill:none
+    linkStyle 17 stroke:#2962FF,fill:none
 
 ## 2. Service Mesh Architecture Strategy
 
@@ -101,3 +127,11 @@ Harden the networking.
 ---
 
 This strategy moves FinOptiAgents from a "Working Prototype" to a "Production-Ready Platform" with deep visibility and robust networking.
+
+---
+
+## 📝 Document History
+
+| Version | Date       | Author | Revision Summary |
+|---------|------------|--------|------------------|
+| 1.1.0   | 2026-01-01 | Antigravity AI | Added Service Mesh architectural diagram and implementation details. |

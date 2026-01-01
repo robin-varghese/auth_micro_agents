@@ -1,366 +1,215 @@
 # FinOptiAgents Platform
 
-A microservices-based AI agent platform for Google Cloud operations, built with APISIX API Gateway, Flask agents, and Model Context Protocol (MCP) servers.
-
-## 🏗️ Architecture
-
-```
-┌─────────────┐
-│  Client/UI  │
-└──────┬──────┘
-       │
-       ▼
-┌──────────────────┐
-│ APISIX Gateway   │ ← API Gateway (Port 9080)
-│  (Port 9080)     │
-└──────┬───────────┘
-       │
-       ├─────────────┬──────────────┬────────────────┐
-       ▼             ▼              ▼                ▼
-┌────────────┐ ┌─────────┐  ┌─────────────┐  ┌──────────┐
-│Orchestrator│ │ GCloud  │  │  Monitoring │  │   MCP    │
-│   Agent    │ │  Agent  │  │    Agent    │  │ Servers  │
-└──────┬─────┘ └────┬────┘  └──────┬──────┘  └────┬─────┘
-       │            │              │               │
-       └────────────┴──────────────┴───────────────┘
-                           │
-                           ▼
-                  ┌─────────────────┐
-                  │   MCP Servers   │
-                  │  (JSON-RPC 2.0) │
-                  │                 │
-                  │ • GCloud MCP    │
-                  │ • Monitoring    │
-                  └─────────────────┘
-```
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Docker Desktop
-- Python 3.11+
-- GCP credentials (for Secret Manager)
-
-### 1. Authenticate with GCP
-
-```bash
-gcloud auth application-default login
-```
-
-### 2. Deploy the Platform
-
-```bash
-cd finopti-platform
-./deploy-local.sh
-```
-
-The script will:
-- ✅ Check GCP authentication
-- ✅ Build all Docker images
-- ✅ Start all services
-- ✅ Configure APISIX routes
-
-### 3. Verify Deployment
-
-```bash
-# Run comprehensive test suite
-python3 run_tests.py
-
-# Or run specific test phases
-python3 run_tests.py --mcp-only      # Test MCP servers
-python3 run_tests.py --agents-only   # Test agents
-python3 run_tests.py --e2e-only      # Test end-to-end flow
-```
-
-## 🌐 Access Points
-
-| Service | Direct Access | Via APISIX Gateway |
-|---------|---------------|-------------------|
-| **UI** | http://localhost:8501 | - |
-| **Orchestrator** | http://localhost:15000 | http://localhost:9080/orchestrator |
-| **GCloud Agent** | http://localhost:15001 | http://localhost:9080/agent/gcloud |
-| **Monitoring Agent** | http://localhost:15002 | http://localhost:9080/agent/monitoring |
-| **GCloud MCP** | http://localhost:6001 | http://localhost:9080/mcp/gcloud |
-| **Monitoring MCP** | http://localhost:6002 | http://localhost:9080/mcp/monitoring |
-| **APISIX Admin** | - | http://localhost:9180 |
-| **APISIX Dashboard** | - | http://localhost:9000 |
-| **OPA** | http://localhost:8181 | - |
-
-## 📋 Components
-
-### Agents (Flask + Natural Language Interface)
-
-- **Orchestrator**: Main routing agent with OPA authorization
-- **GCloud Agent**: Handles GCP infrastructure operations
-- **Monitoring Agent**: Manages monitoring and observability queries
-
-### MCP Servers (JSON-RPC 2.0)
-
-- **GCloud MCP**: Executes gcloud commands (create_vm, delete_vm, list_vms)
-- **Monitoring MCP**: Provides metrics and logs (check_cpu, check_memory, query_logs)
-
-### Infrastructure
-
-- **APISIX**: API Gateway with routing, auth, and observability
-- **OPA**: Policy-based authorization
-- **etcd**: APISIX backend storage
-- **Streamlit UI**: Web interface for interactions
-
-## 🔧 Configuration
-
-### Secret Manager (Production)
-
-All configuration is loaded from Google Secret Manager:
-
-```
-google-api-key
-google-project-id
-finoptiagents-llm
-bigquery-dataset-id
-apisix-admin-key
-... and more
-```
-
-### Environment Variables (Development)
-
-See `.env.template` for all required variables. The platform automatically:
-1. Checks for GCP authentication
-2. Loads secrets from Secret Manager
-3. Falls back to `.env` if `USE_SECRET_MANAGER=false`
-
-## 🧪 Testing
-
-### Comprehensive Test Suite
-
-```bash
-# Run all tests (15 tests across 4 phases)
-python3 run_tests.py
-
-# Phases:
-# 1. MCP Server Tests (4 tests)
-# 2. APISIX Gateway Tests (3 tests)
-# 3. Agent Tests (6 tests)
-# 4. End-to-End Tests (2 tests)
-```
-
-### Individual Test Scripts
-
-```bash
-# Test MCP servers directly
-python3 test_gcloud_mcp.py
-python3 test_monitoring_mcp.py
-
-# Test APISIX routing
-python3 test_apisix_routes.py
-
-# Test end-to-end flow
-python3 test_final.py
-```
-
-### Expected Results
-
-All 15 tests should pass:
-- ✅ MCP servers healthy and responding
-- ✅ APISIX routing configured correctly
-- ✅ All agents accessible via gateway
-- ✅ End-to-end flow: Agent → APISIX → MCP working
-
-## 📡 API Usage
-
-### Example: List VMs via GCloud Agent
-
-```bash
-curl -X POST http://localhost:15001/execute \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "list all vms",
-    "user_email": "admin@cloudroaster.com"
-  }'
-```
-
-Response:
-```json
-{
-  "agent": "gcloud",
-  "action": "list_vms",
-  "result": {
-    "success": true,
-    "count": 2,
-    "instances": [
-      {"name": "vm-1", "status": "RUNNING", "zone": "us-central1-a"},
-      {"name": "vm-2", "status": "STOPPED", "zone": "us-east1-b"}
-    ]
-  }
-}
-```
-
-### Example: Check CPU via Monitoring Agent
-
-```bash
-curl -X POST http://localhost:15002/execute \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "check cpu usage",
-    "user_email": "monitoring@cloudroaster.com"
-  }'
-```
-
-## 🛠️ Development
-
-### Building Individual Services
-
-```bash
-# Build specific service
-docker-compose build orchestrator
-docker-compose build gcloud_agent
-docker-compose build monitoring_agent
-
-# Restart service
-docker-compose restart orchestrator
-```
-
-### Viewing Logs
-
-```bash
-# All services
-docker-compose logs -f
-
-# Specific service
-docker-compose logs -f orchestrator
-docker-compose logs -f gcloud_agent
-docker-compose logs -f apisix
-```
-
-### APISIX Route Management
-
-```bash
-# List all routes
-curl http://localhost:9180/apisix/admin/routes \
-  -H "X-API-KEY: finopti-admin-key"
-
-# View specific route
-curl http://localhost:9180/apisix/admin/routes/1 \
-  -H "X-API-KEY: finopti-admin-key"
-```
-
-## 📂 Project Structure
-
-```
-finopti-platform/
-├── orchestrator_adk/          # Main orchestrator agent (ADK)
-│   ├── main.py
-│   ├── agent.py
-│   └── Dockerfile
-├── sub_agents/
-│   ├── gcloud_agent_adk/     # GCloud operations agent (ADK)
-│   ├── monitoring_agent_adk/ # Monitoring agent (ADK)
-├── config/                    # Shared configuration module
-│   ├── __init__.py           # Secret Manager integration
-│   └── README.md
-├── apisix_conf/              # APISIX configuration
-│   ├── config.yaml           # APISIX settings
-│   └── init_routes.sh        # Route initialization
-├── opa_policy/               # OPA authorization policies
-├── ui/                       # Streamlit frontend
-├── test_run/                 # Test documentation
-│   ├── README.md
-│   ├── QUICK_REFERENCE.md
-│   └── WALKTHROUGH.md
-├── run_tests.py              # Comprehensive test suite
-├── deploy-local.sh           # Deployment script
-├── docker-compose.yml        # Service orchestration
-└── README.md                 # This file
-```
-
-## 🔐 Security
-
-- **Secret Manager**: All production secrets stored in GCP Secret Manager
-- **OPA Authorization**: Policy-based access control
-- **APISIX Admin Key**: Secured admin API access
-- **No .env in Git**: `.env` files are gitignored
-
-## 🐛 Troubleshooting
-
-### Services Not Starting
-
-```bash
-# Check service status
-docker-compose ps
-
-# View logs for failed service
-docker-compose logs <service-name>
-
-# Restart all services
-docker-compose down && docker-compose up -d
-```
-
-### APISIX Routes Not Working
-
-```bash
-# Verify APISIX is healthy
-curl http://localhost:9080/
-
-# Check routes are configured
-python3 run_tests.py --apisix-only
-
-# Reinitialize routes
-docker restart finopti-apisix-init
-```
-
-### Tests Failing
-
-```bash
-# Check all services are running
-docker-compose ps
-
-# Verify GCP authentication
-gcloud auth application-default print-access-token
-
-# Run tests with verbose output
-python3 run_tests.py
-```
-
-## 📚 Documentation
-
-- **[test_run/README.md](test_run/README.md)** - Detailed platform documentation
-- **[test_run/QUICK_REFERENCE.md](test_run/QUICK_REFERENCE.md)** - Quick reference guide
-- **[test_run/WALKTHROUGH.md](test_run/WALKTHROUGH.md)** - Step-by-step walkthrough
-- **[config/README.md](config/README.md)** - Configuration guide
-
-## 🎯 Key Features
-
-- ✅ **Microservices Architecture**: Scalable and maintainable
-- ✅ **API Gateway**: Centralized routing via APISIX
-- ✅ **Natural Language Interface**: Agents accept plain English prompts
-- ✅ **MCP Protocol**: Standard JSON-RPC 2.0 communication
-- ✅ **Secret Manager Integration**: Secure configuration management
-- ✅ **Comprehensive Testing**: 15 automated tests covering all components
-- ✅ **OPA Authorization**: Policy-based access control
-- ✅ **Observability**: Structured logging throughout
-
-## 📊 Testing Results
-
-Platform validation (15/15 tests passing):
-- ✅ Phase 1: MCP Server Tests (4/4) 
-- ✅ Phase 2: APISIX Gateway Tests (3/3)
-- ✅ Phase 3: Agent Tests (6/6)
-- ✅ Phase 4: End-to-End Tests (2/2)
-
-## 🤝 Contributing
-
-1. Create feature branch
-2. Make changes
-3. Run test suite: `python3 run_tests.py`
-4. Submit pull request
-
-## 📝 License
-
-Internal use only
+The **FinOptiAgents Platform** is an enterprise-grade AI microservices architecture designed to automate Google Cloud operations. It leverages the **Google Agent Development Kit (ADK)** to build autonomous agents that interact through a **Service Mesh** secured by **Google OAuth** and analyzed via full-stack **Observability**.
 
 ---
 
-**Platform Status**: ✅ Fully Operational  
-**Last Updated**: 2026-01-01  
-**Architecture**: Google ADK + MCP + APISIX + Secret Manager
-**Test Coverage**: 15/15 tests passing
+## 🏗️ High-Level Architecture
+
+The platform follows a strict **Microservices & Service Mesh** pattern where all traffic is mediated by **Apache APISIX**.
+
+```mermaid
+flowchart TB
+    User["Streamlit UI<br>(Port 8501)"] -->|OAuth Bearer Token| APISIX["Apache APISIX Gateway<br>(Port 9080)"]
+
+    subgraph "Service Mesh / Data Plane"
+        APISIX -->|Route /orchestrator| Orch["Orchestrator Agent<br>(Google ADK)"]
+        APISIX -->|Route /agent/gcloud| GAgent["GCloud Agent<br>(Google ADK)"]
+        APISIX -->|Route /agent/monitoring| MAgent["Monitoring Agent<br>(Google ADK)"]
+
+        Orch -->|Consult Policy| OPA["OPA Sidecar<br>(AuthZ Policy)"]
+        
+        Orch -.->|Delegation via Mesh| APISIX
+        GAgent -.->|Tool Call| GMCP["GCloud MCP Server<br>(Node.js)"]
+        MAgent -.->|Tool Call| MMCP["Monitoring MCP Server<br>(Python)"]
+    end
+
+    subgraph "Observability Stack"
+        Promtail["Promtail<br>(Log Collector)"] --> Loki["Loki<br>(Log Aggregation)"]
+        Loki --> Grafana["Grafana<br>(Visualization)"]
+        APISIX -.->|Metrics| Prometheus["Prometheus"]
+    end
+```
+
+### Key Components
+
+| Component | Technology | Responsibility |
+|-----------|------------|----------------|
+| **Service Mesh** | Apache APISIX | Centralized Routing, Rate Limiting, Observability Injection |
+| **Orchestrator** | Google ADK (Python) | Intent Detection, Plan Generation, Agent Delegation |
+| **Sub-Agents** | Google ADK (Python) | Domain-specific execution (GCloud resource mgmt, Monitoring) |
+| **Mock Servers** | MCP Protocol | Standardized tool execution for GCloud and Monitoring tools |
+| **Frontend** | Streamlit + OAuth | User Interface with Google Sign-In integration |
+| **Security** | OPA (Rego) | Fine-grained Role-Based Access Control (RBAC) |
+| **Config** | Secret Manager | Secure storage for API keys and Service Account credentials |
+
+---
+
+## 🔐 Authentication & Authorization
+
+### Authentication Layer (Google OAuth)
+The platform uses **Google OAuth 2.0** for user identity.
+1. User clicks "Login with Google" in Streamlit.
+2. Credentials are exchanged for an **ID Token** (JWT).
+3. The JWT is passed as a `Bearer` token in the `Authorization` header to APISIX.
+4. **APISIX** validates the token signature against Google's public keys.
+
+### Authorization Layer (OPA)
+We use **Open Policy Agent (OPA)** for decoupled authorization.
+- The **Orchestrator** queries OPA before delegating tasks.
+- **Policy File**: `opa_policy/authz.rego`
+- **Logic**: Maps user email → Role → Allowed Agents.
+    - `admin@`: Access to `gcloud` agent.
+    - `monitoring@`: Access to `monitoring` agent only.
+
+---
+
+## 🤖 Google ADK & Agent Implementation
+
+We use the **Google Agent Development Kit (ADK)** to structure our agents.
+
+### Agent Structure (`orchestrator_adk/`, `sub_agents/`)
+Each agent is a standalone microservice containing:
+- **`agent.py`**: The ADK configuration (Model, Tools, Instructions).
+- **`main.py`**: Flask wrapper to expose the agent via HTTP.
+- **`structured_logging.py`**: Standardized logging for Observability.
+
+### Plugins & Tooling
+Agents execute actions via **Tools** defined using the ADK's `FunctionTool` or **MCP Clients**.
+- **GCloud Agent**: Uses tools to call the `gcloud-mcp` server.
+- **Monitoring Agent**: Uses tools to call the `monitoring-mcp` server.
+
+**Example Agent Definition (Snippet):**
+```python
+model = Model(model_name="gemini-1.5-flash")
+agent = Agent(
+    model=model,
+    tools=[list_vms, create_vm],  # Tools defined via MCP
+    system_instruction="You are a GCloud infrastructure expert..."
+)
+```
+
+---
+
+## 👁️ Comprehensive Observability
+
+We implement a **Single Pane of Glass** observability strategy.
+
+### 1. Structured Logging (The "Trace ID")
+Every request is assigned a `trace_id` by APISIX. This ID is propagated to:
+- Orchestrator
+- Sub-Agents
+- MCP Servers
+
+This allows us to trace a single user prompt across the entire microservices chain.
+
+### 2. The Stack (Loki + Grafana)
+- **Promtail**: Scrapes Docker container logs.
+- **Loki**: Aggregates logs without indexing full text (efficient).
+- **Grafana**: Visualizes logs and metrics.
+
+### 3. Troubleshooting with Grafana
+Access Grafana at **http://localhost:3001** (Default: `admin`/`admin`).
+
+**Common Queries:**
+- **Find all logs for a request**: `{trace_id="<id_from_ui>"}`
+- **Filter errors**: `{container_name=~"finopti.+"} |= "ERROR"`
+- **Agent Performance**: `{service="orchestrator"}` to see reasoning steps.
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+1. **Docker Desktop**: Running locally.
+2. **GCP Project**: With Secret Manager API enabled.
+3. **Google Auth**: Run `gcloud auth application-default login`.
+
+### Deployment
+The platform uses **Google Secret Manager** for all configuration.
+
+```bash
+# 1. Clone & Setup
+git clone <repo>
+cd finopti-platform
+
+# 2. Deploy (Builds images & starts containers)
+./deploy-local.sh
+```
+
+### Access Points
+- **UI**: [http://localhost:8501](http://localhost:8501)
+- **Grafana**: [http://localhost:3001](http://localhost:3001)
+- **APISIX Admin**: [http://localhost:9180](http://localhost:9180)
+
+---
+
+## 🧪 Testing Strategy
+
+We adhere to a rigorous testing pyramid using `pytest` and custom test runners.
+
+### Test Suite (`run_tests.py`)
+Run the comprehensive suite to validate the entire platform:
+
+```bash
+python3 run_tests.py
+```
+
+### Test Phases
+1. **MCP Phase**: Validates that Mock Servers respond to JSON-RPC.
+2. **APISIX Phase**: Verifies Gateway routing and Upstream health.
+3. **Agent Phase**: Tests individual agents (Orchestrator, GCloud) in isolation.
+4. **End-to-End (E2E) Phase**: Simulates a real user prompt flowing through the system.
+
+### BigQuery Analytics Testing
+Set `BQ_ANALYTICS_ENABLED=true` in Secret Manager to enable cost analysis testing. The `run_tests.py` script will verify that rows are inserted into BigQuery during E2E tests.
+
+---
+
+## 📂 Project Directory Structure
+
+```text
+finopti-platform/
+├── orchestrator_adk/       # 🧠 The Brain: Main ADK Agent
+├── sub_agents/             # 🦾 The Arms: Specialized ADK Agents
+│   ├── gcloud_agent_adk/   # Handles Compute/Infra tasks
+│   └── monitoring_agent_adk/# Handles Logs/Metrics tasks
+├── ui/                     # 🖥️ Streamlit Frontend
+├── config/                 # ⚙️ Shared Config (Secret Manager)
+├── apisix_conf/            # 🚦 Gateway Routes & Plugins
+├── opa_policy/             # 🛡️ AuthZ Rules (Rego)
+├── observability/          # 👁️ Loki/Promtail/Grafana Config
+├── docs/                   # 📚 Detailed Documentation
+├── scripts/                # 🔧 DevOps & Setup Scripts
+├── deploy-local.sh         # 🚀 Main Entry Point
+└── run_tests.py            # 🧪 Test Runner
+```
+
+---
+
+## 🐛 Troubleshooting & FAQ
+
+**Q: "OAuth Disabled" in UI?**
+A: Ensure your GCP user has access to the Secret Manager secrets defined in `SECRET_MANAGER_SETUP.md`.
+
+**Q: Agents can't talk to each other?**
+A: Check `docker-compose ps`. All containers must be healthy. ensure `finopti-net` bridge network is effectively bridging them.
+
+**Q: How to add a new plugin?**
+A:
+1. Define the tool in `sub_agents/<agent>/tools.py`.
+2. Register it in `agent.py`.
+3. Rebuild the agent container: `docker-compose build <service>`.
+
+---
+
+**Last Updated:** 2026-01-01
+**Status:** Production Ready
+
+---
+
+## 📝 Document History
+
+| Version | Date       | Author | Revision Summary |
+|---------|------------|--------|------------------|
+| 1.1.0   | 2026-01-01 | Antigravity AI | Comprehensive update covering Service Mesh, ADK, and Observability architecture. |
