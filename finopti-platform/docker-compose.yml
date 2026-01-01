@@ -16,7 +16,7 @@ services:
   # Etcd - APISIX Backend
   # ====================
   etcd:
-    image: bitnami/etcd:3.5
+    image: gcr.io/etcd-development/etcd:v3.5.0
     container_name: finopti-etcd
     environment:
       ETCD_ENABLE_V2: "true"
@@ -44,7 +44,7 @@ services:
     ports:
       - "9080:9080"  # HTTP port
       - "9180:9180"  # Admin API
-      - "9091:9091"  # Prometheus metrics
+      - "9191:9091"  # Prometheus metrics
     networks:
       - finopti-net
     depends_on:
@@ -53,7 +53,7 @@ services:
     environment:
       APISIX_STAND_ALONE: "false"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9080/health"]
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/9080"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -114,23 +114,32 @@ services:
       retries: 5
 
   # ====================
-  # Orchestrator Agent
+  # Orchestrator Agent (ADK)
   # ====================
   orchestrator:
     build:
-      context: ./orchestrator
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: orchestrator_adk/Dockerfile
     container_name: finopti-orchestrator
-    ports:
-      - "5000:5000"
+    # ports:
+    #   - "15000:5000" # Mesh enforcement: Only accessible via APISIX
     networks:
       - finopti-net
     depends_on:
       - opa
       - apisix
+    volumes:
+      - ~/.config/gcloud:/root/.config/gcloud:ro
     environment:
+      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID}"
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
       OPA_URL: "http://opa:8181"
       APISIX_URL: "http://apisix:9080"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
+      BQ_ANALYTICS_DATASET: "${BQ_ANALYTICS_DATASET}"
+      BQ_ANALYTICS_TABLE: "${BQ_ANALYTICS_TABLE}"
+      REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS}"
+      REFLECT_RETRY_THROW_ON_FAIL: "${REFLECT_RETRY_THROW_ON_FAIL}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 10s
@@ -138,21 +147,34 @@ services:
       retries: 5
 
   # ====================
-  # GCloud Agent
+  # GCloud Agent (ADK)
   # ====================
   gcloud_agent:
     build:
-      context: ./sub_agents/gcloud_agent
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: sub_agents/gcloud_agent_adk/Dockerfile
     container_name: finopti-gcloud-agent
-    ports:
-      - "5001:5001"
+    # ports:
+    #   - "15001:5001" # Mesh enforcement: Only accessible via APISIX
     networks:
       - finopti-net
     depends_on:
       - apisix
+    volumes:
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
+      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID}"
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+      GCLOUD_MCP_DOCKER_IMAGE: "finopti-gcloud-mcp"
+      GCLOUD_MOUNT_PATH: "${HOME}/.config/gcloud:/root/.config/gcloud"
       APISIX_URL: "http://apisix:9080"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
+      BQ_ANALYTICS_DATASET: "${BQ_ANALYTICS_DATASET}"
+      BQ_ANALYTICS_TABLE: "${BQ_ANALYTICS_TABLE}"
+      REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS}"
+      REFLECT_RETRY_THROW_ON_FAIL: "${REFLECT_RETRY_THROW_ON_FAIL}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
       interval: 10s
@@ -160,21 +182,33 @@ services:
       retries: 5
 
   # ====================
-  # Monitoring Agent
+  # Monitoring Agent (ADK)
   # ====================
   monitoring_agent:
     build:
-      context: ./sub_agents/monitoring_agent
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: sub_agents/monitoring_agent_adk/Dockerfile
     container_name: finopti-monitoring-agent
-    ports:
-      - "5002:5002"
+    # ports:
+    #   - "15002:5002" # Mesh enforcement: Only accessible via APISIX
     networks:
       - finopti-net
     depends_on:
       - apisix
+    volumes:
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
+      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID}"
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+      MONITORING_MCP_DOCKER_IMAGE: "finopti-monitoring-mcp"
+      GCLOUD_MOUNT_PATH: "${HOME}/.config/gcloud:/root/.config/gcloud"
       APISIX_URL: "http://apisix:9080"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
+      BQ_ANALYTICS_TABLE: "${BQ_ANALYTICS_TABLE}"
+      REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS}"
+      REFLECT_RETRY_THROW_ON_FAIL: "${REFLECT_RETRY_THROW_ON_FAIL}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
       interval: 10s
@@ -184,17 +218,24 @@ services:
   # ====================
   # GCloud MCP Server
   # ====================
+  # GCloud MCP Server
+  # ====================
+  # GCloud MCP Server
+  # ====================
   gcloud_mcp:
-    build:
-      context: ./mcp_servers/gcloud_mcp
-      dockerfile: Dockerfile
+    image: finopti-gcloud-mcp
     container_name: finopti-gcloud-mcp
+    volumes:
+      - ~/.config/gcloud:/root/.config/gcloud:rw 
     ports:
+      # Expose port even though agents mostly use stdio spawning from image, 
+      # this allows manual testing via SSE if needed in future or testing build
       - "6001:6001"
     networks:
       - finopti-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6001/health"]
+      # Check if process is running (npx/node)
+      test: ["CMD", "pgrep", "node"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -203,16 +244,79 @@ services:
   # Monitoring MCP Server
   # ====================
   monitoring_mcp:
-    build:
-      context: ./mcp_servers/monitoring_mcp
-      dockerfile: Dockerfile
+    image: finopti-monitoring-mcp
     container_name: finopti-monitoring-mcp
+    volumes:
+      - ~/.config/gcloud:/root/.config/gcloud:rw
     ports:
       - "6002:6002"
     networks:
       - finopti-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6002/health"]
+      test: ["CMD", "pgrep", "python"]
+
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ====================
+  # Loki - Log Aggregation
+  # ====================
+  loki:
+    image: grafana/loki:2.9.3
+    container_name: finopti-loki
+    volumes:
+      - loki-data:/loki
+      - ./observability/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+    ports:
+      - "3100:3100"
+    networks:
+      - finopti-net
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ====================
+  # Promtail - Log Collector
+  # ====================
+  promtail:
+    image: grafana/promtail:3.0.0
+    container_name: finopti-promtail
+    volumes:
+      - ./observability/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - finopti-net
+    depends_on:
+      - loki
+    command: -config.file=/etc/promtail/config.yml
+
+  # ====================
+  # Grafana - Visualization
+  # ====================
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: finopti-grafana
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    networks:
+      - finopti-net
+    depends_on:
+      - loki
+      - apisix
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_LOG_LEVEL: info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -232,8 +336,26 @@ services:
     depends_on:
       - apisix
       - orchestrator
+    volumes:
+      - ~/.config/gcloud:/root/.config/gcloud:ro
     environment:
       APISIX_URL: "http://apisix:9080"
+      USE_SECRET_MANAGER: "true"
+      GOOGLE_CLOUD_PROJECT: "vector-search-poc"
+      GOOGLE_PROJECT_ID: "vector-search-poc"
+      # Optional fallback OAuth env vars (not used when Secret Manager is enabled)
+      GOOGLE_OAUTH_CLIENT_ID: "${GOOGLE_OAUTH_CLIENT_ID}"
+      GOOGLE_OAUTH_CLIENT_SECRET: "${GOOGLE_OAUTH_CLIENT_SECRET}"
+      GOOGLE_OAUTH_REDIRECT_URI: "${GOOGLE_OAUTH_REDIRECT_URI}"
+
+# ====================
+# Volume Configuration
+# ====================
+volumes:
+  loki-data:
+    name: finopti-loki-data
+  grafana-data:
+    name: finopti-grafana-data
 
 # ====================
 # Network Configuration

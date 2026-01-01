@@ -16,6 +16,7 @@ import streamlit as st
 import requests
 import json
 from datetime import datetime
+import oauth_helper
 
 # Page configuration
 st.set_page_config(
@@ -49,25 +50,31 @@ AVAILABLE_USERS = {
 }
 
 # Initialize session state
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
 if 'user_email' not in st.session_state:
     st.session_state.user_email = None
+if 'user_name' not in st.session_state:
+    st.session_state.user_name = None
+if 'id_token' not in st.session_state:
+    st.session_state.id_token = None
+if 'auth_method' not in st.session_state:
+    st.session_state.auth_method = None  # 'oauth' or 'simulated'
 if 'messages' not in st.session_state:
     st.session_state.messages = []
 
-def login(user_email: str):
-    """Simulate user login"""
-    st.session_state.logged_in = True
+def login_simulated(user_email: str):
+    """Simulate user login (development mode)"""
+    st.session_state.authenticated = True
     st.session_state.user_email = user_email
+    st.session_state.user_name = AVAILABLE_USERS[user_email]['name']
+    st.session_state.auth_method = 'simulated'
     st.session_state.messages = []
-    st.success(f"Logged in as {AVAILABLE_USERS[user_email]['name']}")
+    st.success(f"Logged in as {AVAILABLE_USERS[user_email]['name']} (Simulated)")
 
 def logout():
     """Logout user"""
-    st.session_state.logged_in = False
-    st.session_state.user_email = None
-    st.session_state.messages = []
+    oauth_helper.logout()
     st.info("Logged out successfully")
 
 def send_message(prompt: str) -> dict:
@@ -81,10 +88,9 @@ def send_message(prompt: str) -> dict:
         Response from the agent system
     """
     try:
-        headers = {
-            "X-User-Email": st.session_state.user_email,
-            "Content-Type": "application/json"
-        }
+        # Get auth headers (includes Bearer token if OAuth)
+        headers = oauth_helper.get_auth_headers()
+        
         payload = {
             "prompt": prompt
         }
@@ -145,91 +151,110 @@ def format_response(response_data: dict) -> str:
     if data.get("error", False):
         return f"❌ **Error**\n\n{data.get('message', 'Unknown error')}"
     
-    # Format successful agent response
-    lines = []
+    # Extract agent response text
+    if "response" in data:
+        resp = data["response"]
+        if isinstance(resp, dict):
+             if "response" in resp:
+                 return resp["response"]
+             elif "message" in resp:
+                 return resp["message"]
     
-    # Orchestrator info
-    if "orchestrator" in data:
-        orch = data["orchestrator"]
-        lines.append(f"**🎯 Target Agent:** {orch.get('target_agent', 'unknown')}")
-        lines.append(f"**✅ Authorization:** {orch.get('authorization', 'granted')}")
-        lines.append("")
-    
-    # Agent info
-    if "agent" in data:
-        lines.append(f"**🤖 Agent:** {data['agent']}")
-    if "action" in data:
-        lines.append(f"**⚙️ Action:** {data['action']}")
-    
-    # Result
+    # Fallback to result
     if "result" in data:
         result = data["result"]
-        
         if isinstance(result, dict):
-            if result.get("success"):
-                lines.append(f"\n**✅ Result:** {result.get('message', 'Success')}")
-                
-                # Show additional details if available
-                if "instance" in result:
-                    inst = result["instance"]
-                    lines.append(f"\n**Instance Details:**")
-                    lines.append(f"- Name: {inst.get('name')}")
-                    lines.append(f"- Zone: {inst.get('zone')}")
-                    lines.append(f"- Machine Type: {inst.get('machine_type')}")
-                    lines.append(f"- Status: {inst.get('status')}")
-                
-                if "instances" in result:
-                    instances = result["instances"]
-                    lines.append(f"\n**Found {result.get('count', 0)} instances:**")
-                    for inst in instances[:5]:  # Show first 5
-                        lines.append(f"- {inst.get('name')} ({inst.get('zone')}) - {inst.get('status')}")
-                
-                if "metric" in result:
-                    lines.append(f"\n**📊 {result.get('message', '')}**")
-                    lines.append(f"- Metric: {result.get('metric')}")
-                    lines.append(f"- Value: {result.get('value')}{result.get('unit', '')}")
-                
-                if "logs" in result:
-                    logs = result["logs"]
-                    lines.append(f"\n**📝 Found {result.get('count', 0)} log entries:**")
-                    for log in logs[:3]:  # Show first 3
-                        lines.append(f"- [{log.get('severity')}] {log.get('message')} ({log.get('resource')})")
-            else:
-                lines.append(f"\n❌ {result.get('message', 'Operation failed')}")
-        else:
-            lines.append(f"\n**Result:** {result}")
-    
-    return "\n".join(lines)
+            return result.get("message", str(result))
+        return str(result)
+        
+    return "No response text found."
+
+# Handle OAuth callback first
+if oauth_helper.is_oauth_enabled():
+    if oauth_helper.handle_oauth_callback():
+        st.rerun()
 
 # Sidebar - Login
 with st.sidebar:
     st.title("🤖 FinOptiAgents")
     st.markdown("---")
     
-    if not st.session_state.logged_in:
+    # Show OAuth status
+    if oauth_helper.is_oauth_enabled():
+        st.caption(oauth_helper.get_oauth_status())
+    
+    if not st.session_state.authenticated:
         st.subheader("🔐 Login")
-        st.caption("Simulated Google Auth for Prototype")
         
-        selected_user = st.selectbox(
-            "Select User:",
-            options=list(AVAILABLE_USERS.keys()),
-            format_func=lambda x: f"{AVAILABLE_USERS[x]['name']} ({x})"
-        )
-        
-        if selected_user:
-            user_info = AVAILABLE_USERS[selected_user]
-            st.info(f"**Role:** {user_info['role']}\n\n{user_info['description']}")
-        
-        if st.button("🚀 Login", use_container_width=True):
-            login(selected_user)
-            st.rerun()
+        # Tab for OAuth vs Simulated auth
+        if oauth_helper.is_oauth_enabled():
+            auth_tab1, auth_tab2 = st.tabs(["Google OAuth", "Simulated"])
+            
+            with auth_tab1:
+                st.caption("Real Google Authentication")
+                oauth_url = oauth_helper.get_oauth_login_url()
+                st.markdown(
+                    f'<a href="{oauth_url}" target="_self">'
+                    '<button style="width:100%; background:#4285f4; color:white; '
+                    'border:none; padding:10px; border-radius:4px; cursor:pointer;">'
+                    '🔐 Login with Google</button></a>',
+                    unsafe_allow_html=True
+                )
+                st.caption("Redirects to Google for authentication")
+            
+            with auth_tab2:
+                st.caption("Development Mode (No Auth)")
+                selected_user = st.selectbox(
+                    "Select User:",
+                    options=list(AVAILABLE_USERS.keys()),
+                    format_func=lambda x: f"{AVAILABLE_USERS[x]['name']} ({x})",
+                    key="simulated_user"
+                )
+                
+                if selected_user:
+                    user_info = AVAILABLE_USERS[selected_user]
+                    st.info(f"**Role:** {user_info['role']}\n\n{user_info['description']}")
+                
+                if st.button("🚀 Login (Simulated)", use_container_width=True):
+                    login_simulated(selected_user)
+                    st.rerun()
+        else:
+            # OAuth disabled - simulated auth only
+            st.caption("⚠️ OAuth Not Configured - Using Simulated Auth")
+            st.markdown("To enable OAuth, configure:")
+            st.code("GOOGLE_OAUTH_CLIENT_ID\nGOOGLE_OAUTH_CLIENT_SECRET")
+            
+            selected_user = st.selectbox(
+                "Select User:",
+                options=list(AVAILABLE_USERS.keys()),
+                format_func=lambda x: f"{AVAILABLE_USERS[x]['name']} ({x})"
+            )
+            
+            if selected_user:
+                user_info = AVAILABLE_USERS[selected_user]
+                st.info(f"**Role:** {user_info['role']}\n\n{user_info['description']}")
+            
+            if st.button("🚀 Login", use_container_width=True):
+                login_simulated(selected_user)
+                st.rerun()
     
     else:
         st.success("✅ Logged In")
-        user_info = AVAILABLE_USERS[st.session_state.user_email]
-        st.write(f"**Name:** {user_info['name']}")
+        
+        # Show auth method
+        auth_method = st.session_state.get('auth_method', 'unknown')
+        if auth_method == 'oauth':
+            st.caption("🔐 Google OAuth")
+        elif auth_method == 'simulated':
+            st.caption("⚙️ Simulated Auth (Dev Mode)")
+        
+        user_name = st.session_state.get('user_name', st.session_state.user_email)
+        st.write(f"**Name:** {user_name}")
         st.write(f"**Email:** {st.session_state.user_email}")
-        st.write(f"**Role:** {user_info['role']}")
+        
+        # Show role if available
+        if st.session_state.user_email in AVAILABLE_USERS:
+            st.write(f"**Role:** {AVAILABLE_USERS[st.session_state.user_email]['role']}")
         
         st.markdown("---")
         
@@ -258,7 +283,7 @@ with st.sidebar:
     st.caption("Built with Streamlit, APISIX, and OPA")
 
 # Main content
-if not st.session_state.logged_in:
+if not st.session_state.authenticated:
     st.title("Welcome to FinOptiAgents 🤖")
     st.markdown("""
     ### FinOps Agentic Platform with Hub-and-Spoke Architecture
@@ -294,15 +319,18 @@ else:
         with st.chat_message("user"):
             st.markdown(prompt)
         
-        # Send to orchestrator and get response
-        response = send_message(prompt)
+        # Send to orchestrator with simple loading state
+        with st.status("🤔 Thinking...", expanded=True) as status:
+            st.write("🔄 Orchestrating request...")
+            response = send_message(prompt)
+            
+            if response.get("success"):
+                status.update(label="✅ Response received!", state="complete", expanded=False)
+            else:
+                status.update(label="❌ Request failed", state="error", expanded=True)
         
         # Format and display assistant response
         assistant_message = format_response(response)
         st.session_state.messages.append({"role": "assistant", "content": assistant_message})
         with st.chat_message("assistant"):
             st.markdown(assistant_message)
-        
-        # Show raw response in expander for debugging
-        with st.expander("🔍 View Raw Response"):
-            st.json(response)

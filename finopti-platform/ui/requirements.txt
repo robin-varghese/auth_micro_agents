@@ -1,2 +1,6 @@
-streamlit==1.29.0
-requests==2.31.0
+streamlit
+requests
+google-auth>=2.25.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+google-cloud-secret-manager>=2.16.0

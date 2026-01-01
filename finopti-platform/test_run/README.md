@@ -58,15 +58,64 @@ This directory contains comprehensive documentation for the FinOptiAgents platfo
 - Common commands
 - Troubleshooting cheat sheet
 
+## ⚙️ Configuration Setup
+
+### Option 1: Local Development (.env file)
+
+```bash
+# 1. Copy template
+cp .env.template .env
+
+# 2. Edit with your values
+vim .env
+
+# 3. Add minimum required values:
+GOOGLE_API_KEY=your-gemini-api-key
+GCP_PROJECT_ID=your-project-id
+USE_SECRET_MANAGER=false  # Use .env instead of Secret Manager
+```
+
+### Option 2: Production (Secret Manager)
+
+```bash
+# Secrets are pre-configured in GCP Secret Manager
+# No .env file needed - config will auto-load from Secret Manager
+
+# Required secrets (already created in your GCP project):
+# - google-api-key
+# - google-project-id  
+# - finoptiagents-llm
+# - bigquery-dataset-id
+# ... and more (see .env.template for full list)
+```
+
+See [`config/README.md`](../config/README.md) for complete configuration guide.
+
 ## 🚀 Quick Start
 
 ### First Time Setup
 
-1. **Start the platform**:
+1. **Authenticate with GCP** (for Secret Manager):
+   ```bash
+   gcloud auth application-default login
+   ```
+
+2. **Start the platform**:
    ```bash
    cd /Users/robinkv/dev_workplace/all_codebase/auth_micro_agents/finopti-platform
+   ./deploy-local.sh
+   # Or manually:
    docker-compose up -d
    ```
+
+3. **Verify deployment**:
+   ```bash
+   docker-compose ps
+   # All services should show "Up" or "Up (healthy)"
+   ```
+
+> **📝 Note**: Services now use updated ports (15000-15002) to avoid macOS conflicts.  
+> **🔐 Security**: All configuration loaded from Google Secret Manager (no .env files with secrets).
 
 2. **Open the UI**:
    - Navigate to http://localhost:8501
@@ -103,24 +152,33 @@ This directory contains comprehensive documentation for the FinOptiAgents platfo
 
 ## 🎯 Platform Overview
 
-**FinOptiAgents** is a FinOps Agentic Platform with Hub-and-Spoke architecture featuring:
+**FinOptiAgents** is a FinOps Agentic Platform built with **Google ADK (Agent Development Kit)** featuring:
 
-- ✅ **11 Docker Services** orchestrated with Docker Compose
+- ✅ **14 Docker Services** orchestrated with Docker Compose
 - ✅ **Apache APISIX** as central API Gateway
 - ✅ **OPA** for RBAC authorization
-- ✅ **Orchestrator Agent** (Hub) for request routing
-- ✅ **2 Sub-Agents** (GCloud, Monitoring) as Spokes
-- ✅ **2 MCP Servers** for tool execution
+- ✅ **3 Google ADK Agents**:
+  - **Orchestrator ADK Agent** (Hub) - Intelligent routing with OPA integration
+  - **GCloud ADK Agent** - GCP infrastructure management specialist
+  - **Monitoring ADK Agent** - Cloud observability specialist
+- ✅ **2 MCP Servers** for tool execution (gcloud CLI & monitoring)
 - ✅ **Streamlit UI** with simulated Google Auth
-- ✅ **~2,000 lines of code**
+- ✅ **Secret Manager Integration** for production configuration
+- ✅ **Structured JSON Logging** with request ID tracing
+- ✅ **~3,700 lines of code** (including ADK agents)
 
 ## 🌐 Access Points
 
 | Service | URL | Purpose |
 |---------|-----|---------|
 | Streamlit UI | http://localhost:8501 | Main user interface |
+| Orchestrator | http://localhost:15000 | ADK Orchestrator agent |
+| GCloud Agent | http://localhost:15001 | GCloud ADK agent |
+| Monitoring Agent | http://localhost:15002 | Monitoring ADK agent |
 | APISIX Gateway | http://localhost:9080 | API Gateway |
+| APISIX Admin | http://localhost:9180 | Admin API |
 | APISIX Dashboard | http://localhost:9000 | Admin console |
+| APISIX Metrics | http://localhost:9191 | Prometheus metrics |
 | OPA | http://localhost:8181 | Authorization API |
 
 ## 👥 Test Credentials
@@ -150,12 +208,13 @@ curl -X POST http://localhost:9080/orchestrator/ask \
 
 ## 📊 Project Stats
 
-- **Total Files**: 22
-- **Total Code Lines**: ~2,000
-- **Docker Services**: 11
-- **Exposed Ports**: 10
-- **Test Scenarios**: 5+ automated, 4+ manual
-- **Documentation**: 3 comprehensive guides
+- **Total Files**: ~35 (including ADK agents)
+- **Total Code Lines**: ~3,700
+- **Docker Services**: 14 (11 original + 3 ADK agents planned)
+- **Exposed Ports**: 13
+- **Agent Types**: 3 Google ADK agents
+- **Configuration**: Secret Manager + .env fallback
+- **Documentation**: 6 comprehensive guides
 
 ## 🔄 Common Tasks
 
@@ -235,6 +294,9 @@ finopti-platform/
 **Start the platform?**
 → [QUICK_REFERENCE.md](./QUICK_REFERENCE.md) → Quick Start Commands
 
+**Configure Secret Manager or .env?**
+→ [config/README.md](../config/README.md) → Configuration Guide
+
 **Understand the architecture?**
 → [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) → Architecture Overview
 
@@ -272,11 +334,12 @@ See [WALKTHROUGH.md](./WALKTHROUGH.md) → Validation Checklist for complete lis
 ## 🎯 Next Steps
 
 1. ✅ **Read the documentation** (you're doing it!)
-2. 🔄 **Start the platform** (`docker-compose up -d`)
-3. 🔄 **Test via UI** (http://localhost:8501)
-4. 🔄 **Run API tests** (see QUICK_REFERENCE.md)
-5. 🔄 **Replace mock MCPs** with real implementations
-6. 🔄 **Customize and extend**
+2. ⚙️ **Configure platform** (`.env` or Secret Manager)
+3. 🔄 **Start the platform** (`docker-compose up -d`)
+4. 🔄 **Test via UI** (http://localhost:8501)
+5. 🔄 **Test ADK agents** (use new ADK-based agents)
+6. 🔄 **Replace mock MCPs** with real implementations
+7. 🔄 **Customize and extend**
 
 ## 📞 Support
 
@@ -289,6 +352,9 @@ For detailed information on any topic, refer to the appropriate documentation fi
 
 **Platform Location**: `/Users/robinkv/dev_workplace/all_codebase/auth_micro_agents/finopti-platform`
 
-**Documentation Created**: 2025-12-18
+**Documentation Updated**: 2025-12-18
 
-**Version**: 1.0 (Prototype)
+**Version**: 2.0 (Google ADK Integration)
+
+**Key Features**: ADK Agents, Secret Manager, Structured Logging, Request Tracing
+

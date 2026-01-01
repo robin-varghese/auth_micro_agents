@@ -1,0 +1,68 @@
+package finopti
+
+default allow = false
+
+# Extract user email from input
+user_email := input.user_email
+
+# Direct user-to-role mapping (no groups needed)
+# This works without Cloud Identity/Google Workspace
+# 
+# Using Google Identity Platform OAuth users created for FinOptiAgents
+user_role contains "gcloud_admin" if {
+    user_email == "admin@cloudroaster.com"
+}
+
+user_role contains "observability_admin" if {
+    user_email == "monitoring@cloudroaster.com"
+}
+
+user_role contains "developer" if {
+    # Add developer users here if needed (none created yet)
+    false  # No developers configured
+}
+
+# Extract the role for the current user
+user_roles contains role if {
+    user_role[role]
+}
+
+# Role permissions
+role_permissions := {
+    "gcloud_admin": ["gcloud"],
+    "observability_admin": ["monitoring"],
+    "developer": []
+}
+
+# Authorization decision
+allow if {
+    target_agent := input.target_agent
+    role := user_roles[_]
+    allowed_agents := role_permissions[role]
+    target_agent in allowed_agents
+}
+
+# Reason messages
+reason := sprintf("Access granted: User '%s' with role(s) %v can access '%s' agent", 
+    [user_email, user_roles, input.target_agent]) if {
+    allow
+}
+
+reason := sprintf("Access denied: User '%s' with role(s) %v cannot access '%s' agent",
+    [user_email, user_roles, input.target_agent]) if {
+    not allow
+    count(user_roles) > 0
+}
+
+reason := sprintf("Access denied: User '%s' not recognized in the system", [user_email]) if {
+    not allow
+    count(user_roles) == 0
+}
+
+# Authorization response
+authz := {
+    "allow": allow,
+    "user_email": user_email,
+    "roles": user_roles,
+    "reason": reason
+}

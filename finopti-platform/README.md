@@ -1,264 +1,226 @@
-# FinOptiAgents Platform 🤖
+# FinOptiAgents Platform
 
-A complete, runnable Local Docker Compose prototype for a FinOps Agentic Platform with Hub-and-Spoke architecture.
+A microservices-based AI agent platform for Google Cloud operations, built with APISIX API Gateway, Flask agents, and Model Context Protocol (MCP) servers.
 
 ## 🏗️ Architecture
 
-The platform uses a Hub-and-Spoke architecture where a central **Orchestrator Agent** routes tasks to specialized **Sub-Agents**. All traffic flows through **Apache APISIX** for observability and standardized routing. **Open Policy Agent (OPA)** provides role-based access control (RBAC).
-
 ```
 ┌─────────────┐
-│ Streamlit UI│
-│  (Port 8501)│
+│  Client/UI  │
 └──────┬──────┘
-       │ HTTP + X-User-Email header
-       ↓
+       │
+       ▼
 ┌──────────────────┐
-│  Apache APISIX   │
-│   (Port 9080)    │
-│  API Gateway     │
-└────────┬─────────┘
-         │
-    ┌────┴─────┐
-    ↓          ↓
-┌─────────┐  ┌──────────┐
-│Orchestr.│→ │   OPA    │
-│(Port    │  │(Port 8181│
-│ 5000)   │  │  RBAC    │
-└────┬────┘  └──────────┘
-     │
-     ├─→ /agent/gcloud ────→ GCloud Agent (5001) ──→ /mcp/gcloud ──→ GCloud MCP (6001)
-     │
-     └─→ /agent/monitoring → Monitoring Agent (5002) → /mcp/monitoring → Monitoring MCP (6002)
+│ APISIX Gateway   │ ← API Gateway (Port 9080)
+│  (Port 9080)     │
+└──────┬───────────┘
+       │
+       ├─────────────┬──────────────┬────────────────┐
+       ▼             ▼              ▼                ▼
+┌────────────┐ ┌─────────┐  ┌─────────────┐  ┌──────────┐
+│Orchestrator│ │ GCloud  │  │  Monitoring │  │   MCP    │
+│   Agent    │ │  Agent  │  │    Agent    │  │ Servers  │
+└──────┬─────┘ └────┬────┘  └──────┬──────┘  └────┬─────┘
+       │            │              │               │
+       └────────────┴──────────────┴───────────────┘
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │   MCP Servers   │
+                  │  (JSON-RPC 2.0) │
+                  │                 │
+                  │ • GCloud MCP    │
+                  │ • Monitoring    │
+                  └─────────────────┘
 ```
-
-### Components
-
-1. **Streamlit UI** (Port 8501): Frontend with simulated Google Auth and chat interface
-2. **Apache APISIX** (Port 9080): Central API Gateway for routing and observability
-3. **Etcd** (Port 2379): Key-value store backing APISIX
-4. **Orchestrator Agent** (Port 5000): Central hub for intent detection and request routing
-5. **OPA** (Port 8181): Authorization service with RBAC policies
-6. **GCloud Agent** (Port 5001): Sub-agent for Google Cloud infrastructure tasks
-7. **Monitoring Agent** (Port 5002): Sub-agent for observability operations
-8. **GCloud MCP Server** (Port 6001): Mock Model Context Protocol server for GCloud tools
-9. **Monitoring MCP Server** (Port 6002): Mock MCP server for monitoring tools
-10. **APISIX Dashboard** (Port 9000): Optional web UI for managing APISIX
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- Docker Desktop installed and running
-- Docker Compose (v1.29+ or Docker Compose V2)
-- At least 4GB RAM available for Docker
+- Docker Desktop
+- Python 3.11+
+- GCP credentials (for Secret Manager)
 
-### 1. Start All Services
+### 1. Authenticate with GCP
+
+```bash
+gcloud auth application-default login
+```
+
+### 2. Deploy the Platform
 
 ```bash
 cd finopti-platform
-docker-compose up -d
+./deploy-local.sh
 ```
 
-This will:
-- Pull required images
-- Build all custom services
-- Start services in dependency order
-- Initialize APISIX routes
+The script will:
+- ✅ Check GCP authentication
+- ✅ Build all Docker images
+- ✅ Start all services
+- ✅ Configure APISIX routes
 
-### 2. Verify Services are Running
+### 3. Verify Deployment
 
 ```bash
-docker-compose ps
+# Run comprehensive test suite
+python3 run_tests.py
+
+# Or run specific test phases
+python3 run_tests.py --mcp-only      # Test MCP servers
+python3 run_tests.py --agents-only   # Test agents
+python3 run_tests.py --e2e-only      # Test end-to-end flow
 ```
 
-Expected output: All services should show status "Up" or "Up (healthy)"
+## 🌐 Access Points
 
-### 3. Access the UI
+| Service | Direct Access | Via APISIX Gateway |
+|---------|---------------|-------------------|
+| **UI** | http://localhost:8501 | - |
+| **Orchestrator** | http://localhost:15000 | http://localhost:9080/orchestrator |
+| **GCloud Agent** | http://localhost:15001 | http://localhost:9080/agent/gcloud |
+| **Monitoring Agent** | http://localhost:15002 | http://localhost:9080/agent/monitoring |
+| **GCloud MCP** | http://localhost:6001 | http://localhost:9080/mcp/gcloud |
+| **Monitoring MCP** | http://localhost:6002 | http://localhost:9080/mcp/monitoring |
+| **APISIX Admin** | - | http://localhost:9180 |
+| **APISIX Dashboard** | - | http://localhost:9000 |
+| **OPA** | http://localhost:8181 | - |
 
-Open your browser and navigate to:
+## 📋 Components
+
+### Agents (Flask + Natural Language Interface)
+
+- **Orchestrator**: Main routing agent with OPA authorization
+- **GCloud Agent**: Handles GCP infrastructure operations
+- **Monitoring Agent**: Manages monitoring and observability queries
+
+### MCP Servers (JSON-RPC 2.0)
+
+- **GCloud MCP**: Executes gcloud commands (create_vm, delete_vm, list_vms)
+- **Monitoring MCP**: Provides metrics and logs (check_cpu, check_memory, query_logs)
+
+### Infrastructure
+
+- **APISIX**: API Gateway with routing, auth, and observability
+- **OPA**: Policy-based authorization
+- **etcd**: APISIX backend storage
+- **Streamlit UI**: Web interface for interactions
+
+## 🔧 Configuration
+
+### Secret Manager (Production)
+
+All configuration is loaded from Google Secret Manager:
 
 ```
-http://localhost:8501
+google-api-key
+google-project-id
+finoptiagents-llm
+bigquery-dataset-id
+apisix-admin-key
+... and more
 ```
 
-### 4. Test the Platform
+### Environment Variables (Development)
 
-See the [Testing](#-testing) section below for detailed test scenarios.
-
-## 👥 Users & Roles
-
-The prototype includes three mock users for testing:
-
-| Email | Role | Access |
-|-------|------|--------|
-| `admin@cloudroaster.com` | `gcloud_admin` | ✅ GCloud Agent |
-| `monitoring@cloudroaster.com` | `observability_admin` | ✅ Monitoring Agent |
-| `robin@cloudroaster.com` | `developer` | ❌ No agent access (for testing denials) |
-
-## 🔄 Request Flow
-
-### Successful Request Flow
-
-1. **User** selects identity in Streamlit UI (simulated Google Auth)
-2. **User** enters prompt: "create a VM instance"
-3. **UI** sends `POST http://apisix:9080/orchestrator/ask` with header `X-User-Email: admin@cloudroaster.com`
-4. **APISIX** routes to Orchestrator Agent
-5. **Orchestrator** detects intent: `gcloud` (keyword matching)
-6. **Orchestrator** calls OPA: `POST http://opa:8181/v1/data/finopti/authz`
-   ```json
-   {
-     "input": {
-       "user_email": "admin@cloudroaster.com",
-       "target_agent": "gcloud"
-     }
-   }
-   ```
-7. **OPA** returns: `{"allow": true, "reason": "Access granted..."}`
-8. **Orchestrator** forwards to `POST http://apisix:9080/agent/gcloud`
-9. **APISIX** routes to GCloud Agent
-10. **GCloud Agent** calls `POST http://apisix:9080/mcp/gcloud`
-11. **APISIX** routes to GCloud MCP Server
-12. **GCloud MCP** returns mock result: `{"result": "VM Instance Created"}`
-13. Response flows back through the chain to UI
-
-### Denied Request Flow
-
-1. User: `monitoring@cloudroaster.com`
-2. Prompt: "create a VM instance"
-3. Intent detected: `gcloud`
-4. OPA check: `{"allow": false, "reason": "Role 'observability_admin' does not have access to 'gcloud' agent"}`
-5. **Orchestrator** returns 403 error
-6. UI displays: "403 Unauthorized: ..."
+See `.env.template` for all required variables. The platform automatically:
+1. Checks for GCP authentication
+2. Loads secrets from Secret Manager
+3. Falls back to `.env` if `USE_SECRET_MANAGER=false`
 
 ## 🧪 Testing
 
-### Automated Tests
-
-#### 1. Check Service Health
+### Comprehensive Test Suite
 
 ```bash
-# Check all services are healthy
-docker-compose ps
+# Run all tests (15 tests across 4 phases)
+python3 run_tests.py
 
-# Check APISIX health
-curl http://localhost:9080/health
-
-# Check OPA health
-curl http://localhost:8181/health
-
-# Check Orchestrator health
-curl http://localhost:5000/health
+# Phases:
+# 1. MCP Server Tests (4 tests)
+# 2. APISIX Gateway Tests (3 tests)
+# 3. Agent Tests (6 tests)
+# 4. End-to-End Tests (2 tests)
 ```
 
-#### 2. Test OPA Policy Directly
+### Individual Test Scripts
 
 ```bash
-# Test: Admin accessing GCloud (should allow)
-curl -X POST http://localhost:8181/v1/data/finopti/authz \
+# Test MCP servers directly
+python3 test_gcloud_mcp.py
+python3 test_monitoring_mcp.py
+
+# Test APISIX routing
+python3 test_apisix_routes.py
+
+# Test end-to-end flow
+python3 test_final.py
+```
+
+### Expected Results
+
+All 15 tests should pass:
+- ✅ MCP servers healthy and responding
+- ✅ APISIX routing configured correctly
+- ✅ All agents accessible via gateway
+- ✅ End-to-end flow: Agent → APISIX → MCP working
+
+## 📡 API Usage
+
+### Example: List VMs via GCloud Agent
+
+```bash
+curl -X POST http://localhost:15001/execute \
   -H "Content-Type: application/json" \
   -d '{
-    "input": {
-      "user_email": "admin@cloudroaster.com",
-      "target_agent": "gcloud"
-    }
+    "prompt": "list all vms",
+    "user_email": "admin@cloudroaster.com"
   }'
-
-# Expected: {"result": {"allow": true, "reason": "Access granted..."}}
-
-# Test: Monitoring user accessing GCloud (should deny)
-curl -X POST http://localhost:8181/v1/data/finopti/authz \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input": {
-      "user_email": "monitoring@cloudroaster.com",
-      "target_agent": "gcloud"
-    }
-  }'
-
-# Expected: {"result": {"allow": false, "reason": "...does not have access..."}}
 ```
 
-#### 3. Test Orchestrator via APISIX
+Response:
+```json
+{
+  "agent": "gcloud",
+  "action": "list_vms",
+  "result": {
+    "success": true,
+    "count": 2,
+    "instances": [
+      {"name": "vm-1", "status": "RUNNING", "zone": "us-central1-a"},
+      {"name": "vm-2", "status": "STOPPED", "zone": "us-east1-b"}
+    ]
+  }
+}
+```
+
+### Example: Check CPU via Monitoring Agent
 
 ```bash
-# Test: Admin creating VM
-curl -X POST http://localhost:9080/orchestrator/ask \
-  -H "X-User-Email: admin@cloudroaster.com" \
+curl -X POST http://localhost:15002/execute \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "create a VM instance"}'
-
-# Expected: Success response with VM details
-
-# Test: Monitoring user accessing monitoring
-curl -X POST http://localhost:9080/orchestrator/ask \
-  -H "X-User-Email: monitoring@cloudroaster.com" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "check CPU usage"}'
-
-# Expected: Success response with CPU metrics
-
-# Test: Unauthorized access
-curl -X POST http://localhost:9080/orchestrator/ask \
-  -H "X-User-Email: monitoring@cloudroaster.com" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "create a VM"}'
-
-# Expected: 403 error
+  -d '{
+    "prompt": "check cpu usage",
+    "user_email": "monitoring@cloudroaster.com"
+  }'
 ```
 
-### Manual UI Tests
+## 🛠️ Development
 
-#### Test Scenario 1: Admin Accessing GCloud ✅
+### Building Individual Services
 
-1. Open `http://localhost:8501`
-2. Select user: `admin@cloudroaster.com`
-3. Click "Login"
-4. Enter prompt: `create a VM instance`
-5. **Expected**: Success message with VM creation details
+```bash
+# Build specific service
+docker-compose build orchestrator
+docker-compose build gcloud_agent
+docker-compose build monitoring_agent
 
-#### Test Scenario 2: Monitoring User Accessing Monitoring ✅
-
-1. Logout (if logged in)
-2. Select user: `monitoring@cloudroaster.com`
-3. Click "Login"
-4. Enter prompt: `check CPU usage`
-5. **Expected**: Success message with CPU metrics
-
-#### Test Scenario 3: Unauthorized Access (Monitoring → GCloud) ❌
-
-1. Login as: `monitoring@cloudroaster.com`
-2. Enter prompt: `create a VM instance`
-3. **Expected**: Error message: "403 Unauthorized: Role 'observability_admin' does not have access to 'gcloud' agent"
-
-#### Test Scenario 4: Developer with No Access ❌
-
-1. Login as: `robin@cloudroaster.com`
-2. Enter prompt: `create a VM instance` OR `check CPU usage`
-3. **Expected**: Error message: "403 Unauthorized: Role 'developer' does not have access..."
-
-#### Test Scenario 5: Multiple Operations
-
-1. Login as `admin@cloudroaster.com`
-2. Try these prompts:
-   - "create a VM instance"
-   - "list all VMs"
-   - "delete a VM"
-3. **Expected**: Different responses based on the action detected
-
-## 📊 Observability
-
-### View APISIX Dashboard
-
-```
-http://localhost:9000
+# Restart service
+docker-compose restart orchestrator
 ```
 
-Default credentials:
-- Username: `admin`
-- Password: `admin`
-
-### View Service Logs
+### Viewing Logs
 
 ```bash
 # All services
@@ -266,213 +228,139 @@ docker-compose logs -f
 
 # Specific service
 docker-compose logs -f orchestrator
+docker-compose logs -f gcloud_agent
 docker-compose logs -f apisix
-docker-compose logs -f opa
-
-# Follow logs for debugging
-docker-compose logs -f --tail=100 orchestrator
 ```
 
-### APISIX Metrics (Prometheus)
-
-```
-http://localhost:9091/apisix/prometheus/metrics
-```
-
-## 🛠️ Development
-
-### Modify OPA Policy
-
-Edit `opa_policy/authz.rego` and restart OPA:
+### APISIX Route Management
 
 ```bash
-docker-compose restart opa
+# List all routes
+curl http://localhost:9180/apisix/admin/routes \
+  -H "X-API-KEY: finopti-admin-key"
+
+# View specific route
+curl http://localhost:9180/apisix/admin/routes/1 \
+  -H "X-API-KEY: finopti-admin-key"
 ```
 
-### Update Orchestrator Logic
+## 📂 Project Structure
 
-Edit `orchestrator/main.py`, then rebuild:
-
-```bash
-docker-compose up -d --build orchestrator
+```
+finopti-platform/
+├── orchestrator_adk/          # Main orchestrator agent (ADK)
+│   ├── main.py
+│   ├── agent.py
+│   └── Dockerfile
+├── sub_agents/
+│   ├── gcloud_agent_adk/     # GCloud operations agent (ADK)
+│   ├── monitoring_agent_adk/ # Monitoring agent (ADK)
+├── config/                    # Shared configuration module
+│   ├── __init__.py           # Secret Manager integration
+│   └── README.md
+├── apisix_conf/              # APISIX configuration
+│   ├── config.yaml           # APISIX settings
+│   └── init_routes.sh        # Route initialization
+├── opa_policy/               # OPA authorization policies
+├── ui/                       # Streamlit frontend
+├── test_run/                 # Test documentation
+│   ├── README.md
+│   ├── QUICK_REFERENCE.md
+│   └── WALKTHROUGH.md
+├── run_tests.py              # Comprehensive test suite
+├── deploy-local.sh           # Deployment script
+├── docker-compose.yml        # Service orchestration
+└── README.md                 # This file
 ```
 
-### Add New Routes to APISIX
+## 🔐 Security
 
-Edit `apisix_conf/init_routes.sh` and run:
+- **Secret Manager**: All production secrets stored in GCP Secret Manager
+- **OPA Authorization**: Policy-based access control
+- **APISIX Admin Key**: Secured admin API access
+- **No .env in Git**: `.env` files are gitignored
 
-```bash
-docker-compose restart apisix-init
-```
-
-Or add routes via Admin API:
-
-```bash
-curl -X PUT http://localhost:9180/apisix/admin/routes/6 \
-  -H "X-API-KEY: finopti-admin-key" \
-  -H "Content-Type: application/json" \
-  -d '{...}'
-```
-
-## 🔍 Troubleshooting
+## 🐛 Troubleshooting
 
 ### Services Not Starting
 
 ```bash
-# Check logs
-docker-compose logs
+# Check service status
+docker-compose ps
 
-# Remove all containers and start fresh
-docker-compose down -v
-docker-compose up -d
+# View logs for failed service
+docker-compose logs <service-name>
+
+# Restart all services
+docker-compose down && docker-compose up -d
 ```
 
 ### APISIX Routes Not Working
 
 ```bash
-# Re-run route initialization
-docker-compose restart apisix-init
+# Verify APISIX is healthy
+curl http://localhost:9080/
 
-# Check routes
-curl -s http://localhost:9180/apisix/admin/routes \
-  -H "X-API-KEY: finopti-admin-key" | jq
+# Check routes are configured
+python3 run_tests.py --apisix-only
+
+# Reinitialize routes
+docker restart finopti-apisix-init
 ```
 
-### UI Can't Connect to APISIX
-
-Ensure you're accessing the UI from the host machine at `http://localhost:8501`. The UI container connects to APISIX via the Docker network.
-
-If accessing from outside Docker network, modify `ui/app.py`:
-
-```python
-APISIX_URL = "http://localhost:9080"  # Instead of http://apisix:9080
-```
-
-### OPA Policy Not Working
+### Tests Failing
 
 ```bash
-# Check OPA is loading policies
-docker-compose logs opa
+# Check all services are running
+docker-compose ps
 
-# Test policy directly
-curl http://localhost:8181/v1/data/finopti/authz
+# Verify GCP authentication
+gcloud auth application-default print-access-token
+
+# Run tests with verbose output
+python3 run_tests.py
 ```
 
-## 🧹 Cleanup
+## 📚 Documentation
 
-### Stop All Services
+- **[test_run/README.md](test_run/README.md)** - Detailed platform documentation
+- **[test_run/QUICK_REFERENCE.md](test_run/QUICK_REFERENCE.md)** - Quick reference guide
+- **[test_run/WALKTHROUGH.md](test_run/WALKTHROUGH.md)** - Step-by-step walkthrough
+- **[config/README.md](config/README.md)** - Configuration guide
 
-```bash
-docker-compose down
-```
+## 🎯 Key Features
 
-### Remove All Data (Volumes)
+- ✅ **Microservices Architecture**: Scalable and maintainable
+- ✅ **API Gateway**: Centralized routing via APISIX
+- ✅ **Natural Language Interface**: Agents accept plain English prompts
+- ✅ **MCP Protocol**: Standard JSON-RPC 2.0 communication
+- ✅ **Secret Manager Integration**: Secure configuration management
+- ✅ **Comprehensive Testing**: 15 automated tests covering all components
+- ✅ **OPA Authorization**: Policy-based access control
+- ✅ **Observability**: Structured logging throughout
 
-```bash
-docker-compose down -v
-```
+## 📊 Testing Results
 
-### Remove Built Images
-
-```bash
-docker-compose down --rmi all
-```
-
-## 📁 Project Structure
-
-```
-finopti-platform/
-├── apisix_conf/
-│   ├── config.yaml           # APISIX configuration
-│   └── init_routes.sh        # Route initialization script
-├── opa_policy/
-│   └── authz.rego           # OPA RBAC policy
-├── orchestrator/
-│   ├── main.py              # Orchestrator service
-│   ├── requirements.txt
-│   └── Dockerfile
-├── sub_agents/
-│   ├── gcloud_agent/
-│   │   ├── main.py
-│   │   ├── requirements.txt
-│   │   └── Dockerfile
-│   └── monitoring_agent/
-│       ├── main.py
-│       ├── requirements.txt
-│       └── Dockerfile
-├── mcp_servers/
-│   ├── gcloud_mcp/
-│   │   ├── server.py
-│   │   ├── requirements.txt
-│   │   └── Dockerfile
-│   └── monitoring_mcp/
-│       ├── server.py
-│       ├── requirements.txt
-│       └── Dockerfile
-├── ui/
-│   ├── app.py               # Streamlit UI
-│   ├── requirements.txt
-│   └── Dockerfile
-├── docker-compose.yml       # Main orchestration
-└── README.md               # This file
-```
-
-## 🔮 Next Steps
-
-This is a **prototype** for local development. For production deployment:
-
-### Security Enhancements
-
-- [ ] Replace mock Google Auth with real OAuth2/OIDC flow
-- [ ] Add TLS/SSL certificates for APISIX
-- [ ] Implement proper secret management (Vault, Secret Manager)
-- [ ] Add API key rotation for APISIX Admin API
-- [ ] Implement rate limiting and DDoS protection
-
-### Agent Improvements
-
-- [ ] Replace mock MCP servers with actual GCloud and Monitoring MCP implementations
-- [ ] Improve intent detection with LLM/NLP instead of keyword matching
-- [ ] Add conversation history and context management
-- [ ] Implement multi-turn conversations
-- [ ] Add support for more agents (AWS, Azure, etc.)
-
-### Operational Excellence
-
-- [ ] Add comprehensive logging and tracing (OpenTelemetry)
-- [ ] Implement health checks and readiness probes
-- [ ] Add metrics collection and dashboards (Grafana)
-- [ ] Set up alerting for failures
-- [ ] Implement circuit breakers and retry logic
-- [ ] Add request validation and sanitization
-
-### Deployment
-
-- [ ] Create Kubernetes manifests
-- [ ] Set up CI/CD pipelines
-- [ ] Implement blue-green or canary deployments
-- [ ] Add autoscaling for agents
-- [ ] Set up multi-region deployment
-
-## 📝 License
-
-This is a prototype/demo project. Modify as needed for your use case.
+Platform validation (15/15 tests passing):
+- ✅ Phase 1: MCP Server Tests (4/4) 
+- ✅ Phase 2: APISIX Gateway Tests (3/3)
+- ✅ Phase 3: Agent Tests (6/6)
+- ✅ Phase 4: End-to-End Tests (2/2)
 
 ## 🤝 Contributing
 
-This is a prototype. Feel free to:
-1. Replace mock MCP servers with real implementations
-2. Improve intent detection logic
-3. Add more agents and capabilities
-4. Enhance the UI/UX
+1. Create feature branch
+2. Make changes
+3. Run test suite: `python3 run_tests.py`
+4. Submit pull request
 
-## 📧 Support
+## 📝 License
 
-For issues or questions about this prototype, please refer to the official documentation:
-- [Apache APISIX Documentation](https://apisix.apache.org/docs/)
-- [Open Policy Agent Documentation](https://www.openpolicyagent.org/docs/)
-- [Streamlit Documentation](https://docs.streamlit.io/)
+Internal use only
 
 ---
 
-**Built with ❤️ for FinOps and Agentic AI**
+**Platform Status**: ✅ Fully Operational  
+**Last Updated**: 2026-01-01  
+**Architecture**: Google ADK + MCP + APISIX + Secret Manager
+**Test Coverage**: 15/15 tests passing

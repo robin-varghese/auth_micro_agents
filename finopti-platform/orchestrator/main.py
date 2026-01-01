@@ -134,7 +134,7 @@ def forward_to_agent(target_agent: str, prompt: str, user_email: str) -> dict:
         Response from the sub-agent
     """
     try:
-        agent_endpoint = f"{APISIX_URL}/agent/{target_agent}"
+        agent_endpoint = f"{APISIX_URL}/agent/{target_agent}/execute"
         payload = {
             "prompt": prompt,
             "user_email": user_email

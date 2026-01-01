@@ -19,25 +19,41 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+coverage/
+htmlcov/
 
 # Virtual Environment
 venv/
 env/
 ENV/
 
-# IDE
+# Environment Variables
+.env
+.flaskenv
+
+# IDE and Editor Files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Docker
-*.log
-
-# OS
+# Operating System Files
 .DS_Store
 Thumbs.db
 
+# Docker
+*.log # Already present, but kept for consistency
+
+# Temporary Files
+tmp/
+*.tmp
+
+# Database Files
+*.sqlite3
+db.sqlite3
+
 # Streamlit
 .streamlit/secrets.toml
+*.bak
+.env.bak
