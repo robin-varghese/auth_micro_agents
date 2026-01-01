@@ -45,7 +45,28 @@ flowchart TB
 
 ---
 
-## 🔐 Authentication & Authorization
+## � Docker Services & Images
+
+| Service | Container Name | Image / Build Context | Internal Port | Protocol | Description |
+|---------|----------------|-----------------------|---------------|----------|-------------|
+| **APISIX** | `finopti-apisix` | `apache/apisix:3.7.0-debian` | 9080, 9180, 9091 | HTTP | API Gateway, Admin API, Prometheus Metrics |
+| **Etcd** | `finopti-etcd` | `gcr.io/etcd-development/etcd:v3.5.0` | 2379 | HTTP/gRPC | Configuration storage for APISIX |
+| **OPA** | `finopti-opa` | `openpolicyagent/opa:latest` | 8181 | HTTP | Authorization Policy Engine |
+| **Orchestrator** | `finopti-orchestrator` | `build: orchestrator_adk/` | 5000 | HTTP | Main ADK Agent (Brain) |
+| **GCloud Agent** | `finopti-gcloud-agent` | `build: sub_agents/gcloud_agent_adk/` | 5001 | HTTP | Wrapper for GCloud operations |
+| **Monitoring Agent** | `finopti-monitoring-agent` | `build: sub_agents/monitoring_agent_adk/` | 5002 | HTTP | Wrapper for Observability tools |
+| **GCloud MCP** | `finopti-gcloud-mcp` | `finopti-gcloud-mcp` | 6001 | JSON-RPC | MCP Server for gcloud CLI |
+| **Monitoring MCP** | `finopti-monitoring-mcp` | `finopti-monitoring-mcp` | 6002 | JSON-RPC | MCP Server for logs/metrics |
+| **Loki** | `finopti-loki` | `grafana/loki:2.9.3` | 3100 | HTTP | Log Aggregation System |
+| **Promtail** | `finopti-promtail` | `grafana/promtail:3.0.0` | N/A | HTTP | Log Collector & Shipper |
+| **Grafana** | `finopti-grafana` | `grafana/grafana:10.2.3` | 3000 | HTTP | Visualization Dashboard (UI on 3001) |
+| **Streamlit UI** | `finopti-ui` | `build: ui/` | 8501 | HTTP | Frontend Application |
+| **APISIX Init** | `finopti-apisix-init` | `curlimages/curl:latest` | N/A | - | Ephemeral initialization script |
+| **APISIX Dashboard**| `finopti-apisix-dashboard`| `apache/apisix-dashboard:3.0.1-alpine`| 9000 | HTTP | Web UI for APISIX Management |
+
+---
+
+## �🔐 Authentication & Authorization
 
 ### Authentication Layer (Google OAuth)
 The platform uses **Google OAuth 2.0** for user identity.
@@ -185,6 +206,38 @@ finopti-platform/
 └── run_tests.py            # 🧪 Test Runner
 ```
 
+### 📦 External Dependencies: MCP Servers
+
+The platform relies on two external MCP servers, built from the [robin-varghese/gcloud-mcpserver](https://github.com/robin-varghese/gcloud-mcpserver) repository:
+
+1. **GCloud MCP Server** (`finopti-gcloud-mcp`)
+   - Provides `gcloud` CLI execution capabilities.
+   - [View Source Strategy](https://github.com/robin-varghese/gcloud-mcpserver/blob/main/remote-mcp-server/gcloud-mcp-server/gcloud_mcp_strategy.md)
+
+2. **Monitoring MCP Server** (`finopti-monitoring-mcp`)
+   - Provides Google Cloud Monitoring metrics and logs.
+   - [View Source Strategy](https://github.com/robin-varghese/gcloud-mcpserver/blob/main/remote-mcp-server/gcloud-monitoring-mcp/gcloud_monitoring_mcp_strategy.md)
+
+For build instructions, see [test_run/mcp_server_build_strategy.md](test_run/mcp_server_build_strategy.md).
+
+### 🛠️ How to Build External MCP Servers
+
+Since these images are not in the main repository, you must build them manually **before** running `deploy-local.sh`.
+
+```bash
+# 1. Clone the external repository
+git clone https://github.com/robin-varghese/gcloud-mcpserver.git
+cd gcloud-mcpserver/remote-mcp-server
+
+# 2. Build GCloud MCP Server
+cd gcloud-mcp-server
+docker build -t finopti-gcloud-mcp .
+
+# 3. Build Monitoring MCP Server
+cd ../gcloud-monitoring-mcp
+docker build -t finopti-monitoring-mcp .
+```
+
 ---
 
 ## 🐛 Troubleshooting & FAQ
@@ -213,3 +266,7 @@ A:
 | Version | Date       | Author | Revision Summary |
 |---------|------------|--------|------------------|
 | 1.1.0   | 2026-01-01 | Antigravity AI | Comprehensive update covering Service Mesh, ADK, and Observability architecture. |
+| 1.2.0   | 2026-01-01 | Antigravity AI | Added detailed Docker Services & Images reference. |
+| 1.3.0   | 2026-01-01 | Antigravity AI | Added external link to MCP Server source code repository. |
+| 1.3.1   | 2026-01-01 | Antigravity AI | Detailed specific links for GCloud vs Monitoring MCP servers. |
+| 1.3.2   | 2026-01-01 | Antigravity AI | Added manual build instructions for external MCP docker images. |
