@@ -110,6 +110,32 @@ agent = Agent(
 )
 ```
 
+### 🛡️ Resilience: Reflect & Retry
+
+The platform implements **active resilience** at the application layer using the Google ADK's `ReflectAndRetryToolPlugin`.
+
+-   **Mechanism**: If an agent's tool call (e.g., a `gcloud` command) fails, the plugin intercepts the error and feeds it back to the LLM. The LLM then "reflects" on the error and attempts the call again with corrected parameters.
+-   **Coverage**: Enabled on Orchestrator, GCloud Agent, and Monitoring Agent.
+-   **Configuration**:
+    -   `REFLECT_RETRY_MAX_ATTEMPTS`: Max retries per tool call (Default: **3**).
+    -   `REFLECT_RETRY_THROW_ON_FAIL`: If true, raises an exception after all retries fail.
+
+### 📊 Agent Analytics (BigQuery)
+
+We use the **Google ADK BigQuery Analytics Plugin** to telemetrically log all ADK agent operations.
+
+-   **Purpose**: Provides deep insights into agent behavior, token usage, tool execution success/failure, and user intent.
+-   **Configuration**:
+    -   `BQ_ANALYTICS_ENABLED`: Master switch (Default: `true`).
+    -   `BQ_ANALYTICS_DATASET`: Target Dataset (Default: `agent_analytics`).
+    -   `BQ_ANALYTICS_TABLE`: Target Table (Default: `agent_events_v2`).
+-   **Data Captured**:
+    -   `timestamp`: Event time.
+    -   `event_type`: Type of operation (e.g., `TOOL_CALL`, `AGENT_RESPONSE`).
+    -   `agent_name`: Identity of the agent.
+    -   `user_email`: Traceable to the specific user.
+    -   `tool_name`: Which tool was invoked (if applicable).
+
 ---
 
 ## 👁️ Comprehensive Observability
@@ -270,3 +296,5 @@ A:
 | 1.3.0   | 2026-01-01 | Antigravity AI | Added external link to MCP Server source code repository. |
 | 1.3.1   | 2026-01-01 | Antigravity AI | Detailed specific links for GCloud vs Monitoring MCP servers. |
 | 1.3.2   | 2026-01-01 | Antigravity AI | Added manual build instructions for external MCP docker images. |
+| 1.3.3   | 2026-01-01 | Antigravity AI | Added details on the Reflect-and-Retry resilience mechanism. |
+| 1.3.4   | 2026-01-01 | Antigravity AI | Added detailed section on BigQuery Agent Analytics plugin. |
