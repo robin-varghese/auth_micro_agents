@@ -50,8 +50,11 @@ def execute():
         if not prompt:
             return jsonify({"error": True, "message": "Missing prompt"}), 400
             
+        print(f"DEBUG: Processing GitHub request for {user_email}", flush=True)  # Force output
         logger.info(f"Processing GitHub request for {user_email}")
+        
         response = send_message(prompt, user_email)
+        print(f"DEBUG: Response received: {len(response)} chars", flush=True)
         
         return jsonify({
             "success": True,
@@ -60,6 +63,7 @@ def execute():
         }), 200
         
     except Exception as e:
+        print(f"DEBUG: Exception: {e}", flush=True)
         logger.error(f"Error: {e}", exc_info=True)
         return jsonify({"error": True, "message": str(e)}), 500
 

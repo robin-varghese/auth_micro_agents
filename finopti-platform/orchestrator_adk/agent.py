@@ -37,24 +37,38 @@ def detect_intent(prompt: str) -> str:
         prompt: User's natural language prompt
         
     Returns:
-        target_agent: 'gcloud' or 'monitoring'
+        target_agent: 'gcloud', 'monitoring', 'github', 'storage', or 'db'
     """
     prompt_lower = prompt.lower()
     
-    # GCloud keywords
-    gcloud_keywords = ['vm', 'instance', 'create', 'delete', 'compute', 'gcp', 'cloud', 'provision', 
-                        'machine', 'disk', 'network', 'firewall', 'storage', 'bucket']
+    # GitHub keywords
+    github_keywords = ['github', 'repo', 'repository', 'git', 'pull request', 'pr', 'issue', 'code', 'commit']
+    # Storage keywords
+    storage_keywords = ['bucket', 'object', 'blob', 'gcs', 'upload', 'download']
+    # DB keywords
+    db_keywords = ['database', 'sql', 'query', 'table', 'postgres', 'postgresql', 'schema', 'select', 'insert']
     # Monitoring keywords
     monitoring_keywords = ['cpu', 'memory', 'logs', 'metrics', 'monitor', 'alert', 'usage', 'check',
                            'performance', 'latency', 'error', 'log', 'trace', 'observability']
+    # GCloud keywords (fallback for general infra)
+    gcloud_keywords = ['vm', 'instance', 'create', 'delete', 'compute', 'gcp', 'cloud', 'provision', 
+                        'machine', 'disk', 'network', 'firewall']
     
-    gcloud_score = sum(1 for keyword in gcloud_keywords if keyword in prompt_lower)
-    monitoring_score = sum(1 for keyword in monitoring_keywords if keyword in prompt_lower)
+    scores = {
+        'github': sum(1 for k in github_keywords if k in prompt_lower),
+        'storage': sum(1 for k in storage_keywords if k in prompt_lower),
+        'db': sum(1 for k in db_keywords if k in prompt_lower),
+        'monitoring': sum(1 for k in monitoring_keywords if k in prompt_lower),
+        'gcloud': sum(1 for k in gcloud_keywords if k in prompt_lower)
+    }
     
-    if monitoring_score > gcloud_score:
-        return 'monitoring'
+    # Find agent with highest score
+    best_agent = max(scores, key=scores.get)
+    
+    if scores[best_agent] > 0:
+        return best_agent
     else:
-        # Default to gcloud if unclear
+        # Default to gcloud if unclear/no keywords match
         return 'gcloud'
 
 
@@ -64,7 +78,7 @@ def check_opa_authorization(user_email: str, target_agent: str) -> dict:
     
     Args:
         user_email: User's email address
-        target_agent: Target agent ('gcloud' or 'monitoring')
+        target_agent: Target agent name
         
     Returns:
         dict with 'allow' (bool) and 'reason' (str)
@@ -98,7 +112,7 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
     ADK tool: Route request to appropriate sub-agent
     
     Args:
-        target_agent: 'gcloud' or 'monitoring'
+        target_agent: Target agent name
         prompt: User's prompt
         user_email: User's email
         project_id: Optional GCP project ID
@@ -110,7 +124,10 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
         # Map agent to endpoint
         agent_endpoints = {
             'gcloud': f"{config.APISIX_URL}/agent/gcloud/execute",
-            'monitoring': f"{config.APISIX_URL}/agent/monitoring/execute"
+            'monitoring': f"{config.APISIX_URL}/agent/monitoring/execute",
+            'github': f"{config.APISIX_URL}/agent/github/execute",
+            'storage': f"{config.APISIX_URL}/agent/storage/execute",
+            'db': f"{config.APISIX_URL}/agent/db/execute"
         }
         
         if target_agent not in agent_endpoints:
@@ -157,26 +174,31 @@ orchestrator_agent = Agent(
     model=config.FINOPTIAGENTS_LLM,
     description="""
     FinOps orchestration agent that intelligently routes user requests to specialized agents.
-    Manages infrastructure and monitoring operations with proper authorization.
+    Manages infrastructure, monitoring, code, storage, and databases.
     """,
     instruction="""
-    You are the  central orchestrator for the FinOptiAgents platform.
+    You are the central orchestrator for the FinOptiAgents platform.
     
     Your responsibilities:
-    1. Understand user requests related to cloud infrastructure and monitoring
-    2. Determine which specialized agent should handle the request
-    3. Coordinate with the appropriate agent to fulfill the request
-    4. Provide clear, helpful responses to users
+    1. Understand user requests related to cloud operations.
+    2. Determine which specialized agent should handle the request.
+    3. Coordinate with the appropriate agent to fulfill the request.
     
     Available specialized agents:
-    - gcloud: Handles GCP infrastructure (VMs, networks, storage, etc.)
-    - monitoring: Handles monitoring, metrics, and logs
+    - **gcloud**: Handles general GCP infrastructure (VMs, networks, etc.).
+    - **monitoring**: Handles metrics, logs, and observability.
+    - **github**: Handles code repositories, issues, and PRs on GitHub.
+    - **storage**: Handles Google Cloud Storage buckets and objects.
+    - **db**: Handles SQL database queries (PostgreSQL).
     
-    Guidelines:
-    - For infrastructure operations (create VM, delete disk, etc.) → use gcloud agent
-    - For monitoring queries (CPU usage, logs, metrics) → use monitoring agent
-    - Be helpful and accurate in your responses
-    - Provide context and explanations when appropriate
+    Routing Logic Guidelines:
+    - **GitHub**: "List repos", "Find code", "Show PRs" -> use `github`.
+    - **Storage**: "List buckets", "Upload file", "Show blobs" -> use `storage`.
+    - **Database**: "Query table", "Show schema", "Select *" -> use `db`.
+    - **Monitoring**: "CPU usage", "Error logs", "Latency" -> use `monitoring`.
+    - **Infrastructure**: "Create VM", "Delete disk", "List instances" -> use `gcloud`.
+    
+    Note: For "List repositories", prefer `github` unless specificaly asked for Google Cloud Source Repositories.
     
     Authorization is handled separately via OPA before you receive requests.
     """,
@@ -253,10 +275,16 @@ async def process_request_async(
             project_id=project_id or config.GCP_PROJECT_ID
         )
         
+        # Propagate error if present
+        response_data = agent_response.get('data', {})
+        if not agent_response.get('success', False):
+            error_msg = agent_response.get('error', 'Unknown sub-agent error')
+            response_data = {"error": error_msg}
+
         # Add orchestrator metadata
         return {
             "success": agent_response.get('success', False),
-            "response": agent_response.get('data', {}),
+            "response": response_data,
             "orchestrator": {
                 "user_email": user_email,
                 "target_agent": target_agent,

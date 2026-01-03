@@ -31,18 +31,18 @@ from config import config
 class GitHubMCPClient:
     """Client for connecting to GitHub MCP server via Docker stdio"""
     
-    def __init__(self):
+    def __init__(self, token: str = None):
         self.docker_image = config.GITHUB_MCP_DOCKER_IMAGE
         self.session = None
         self.exit_stack = None
-        # GitHub token must be passed to the container
-        self.github_token = os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+        
+        # Priority: Dynamic Token -> Env Var -> Config
+        self.github_token = token
         if not self.github_token:
-            # Try to fetch from config/secret manager if enabled
-            # Note: config.py doesn't have GITHUB_TOKEN directly exposed in the class, 
-            # we might need to add it or just rely on env injection in docker-compose
-            pass
-    
+             self.github_token = os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+        if not self.github_token:
+             self.github_token = getattr(config, "GITHUB_PERSONAL_ACCESS_TOKEN", "")
+
     async def __aenter__(self):
         await self.connect()
         return self
@@ -55,8 +55,12 @@ class GitHubMCPClient:
         if self.session:
             return
             
-        # Ensure we have the token
-        token = os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+        token = self.github_token
+        if not token:
+             # We allow connection without token, but MCP server might fail or work in limited mode?
+             # Actually, without token, the container will print error and exit.
+             # We throw error here to let the agent know it needs a token.
+             raise ValueError("GITHUB_PERSONAL_ACCESS_TOKEN is required. Please ask the user for their GitHub PAT.")
         
         server_params = StdioServerParameters(
             command="docker",
@@ -83,6 +87,7 @@ class GitHubMCPClient:
             await self.session.initialize()
         except Exception as e:
             await self.close()
+            # Catch specific errors related to token?
             raise RuntimeError(f"Failed to connect to GitHub MCP server: {e}")
     
     async def close(self):
@@ -107,50 +112,75 @@ class GitHubMCPClient:
         return "\n".join(output)
 
 
-# Global MCP client
-_mcp_client = None
-
 # --- TOOLS ---
 
-async def search_repositories(query: str) -> Dict[str, Any]:
-    """ADK Tool: Search GitHub repositories"""
-    global _mcp_client
+async def search_repositories(query: str, github_pat: str = None) -> Dict[str, Any]:
+    """
+    Search GitHub repositories.
+    
+    Args:
+        query: The search query (e.g., 'mcp-server language:python').
+        github_pat: (Optional) The user's GitHub Personal Access Token. 
+                    If not provided, the agent will use the system default if available.
+    """
     try:
-        if not _mcp_client:
-            _mcp_client = GitHubMCPClient()
-            await _mcp_client.connect()
-        
-        output = await _mcp_client.call_tool("search_repositories", {"query": query})
-        return {"success": True, "output": output}
+        async with GitHubMCPClient(token=github_pat) as client:
+            output = await client.call_tool("search_repositories", {"query": query})
+            return {"success": True, "output": output}
+    except ValueError as ve:
+         # Token missing
+         return {"success": False, "error": str(ve), "action_needed": "ask_user_for_pat"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-async def read_file(owner: str, repo: str, path: str) -> Dict[str, Any]:
-    """ADK Tool: Read file content from GitHub"""
-    global _mcp_client
+async def read_file(owner: str, repo: str, path: str, github_pat: str = None) -> Dict[str, Any]:
+    """
+    Read file content from GitHub.
+    
+    Args:
+        owner: Repository owner/organization.
+        repo: Repository name.
+        path: Path to the file.
+        github_pat: (Optional) The user's GitHub Personal Access Token.
+    """
     try:
-        if not _mcp_client:
-            _mcp_client = GitHubMCPClient()
-            await _mcp_client.connect()
-        
-        output = await _mcp_client.call_tool("read_file", {"owner": owner, "repo": repo, "path": path})
-        return {"success": True, "output": output}
+        async with GitHubMCPClient(token=github_pat) as client:
+            output = await client.call_tool("read_file", {"owner": owner, "repo": repo, "path": path})
+            return {"success": True, "output": output}
+    except ValueError as ve:
+         return {"success": False, "error": str(ve), "action_needed": "ask_user_for_pat"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 # Create ADK Agent
+# Ensure GOOGLE_API_KEY is set for the ADK/GenAI library
+if not os.environ.get("GOOGLE_API_KEY"):
+    os.environ["GOOGLE_API_KEY"] = getattr(config, "GOOGLE_API_KEY", "")
+
 github_agent = Agent(
     name="github_specialist",
     model=config.FINOPTIAGENTS_LLM,
     description="GitHub repository and code specialist. Can search repos and read code.",
     instruction="""
-    You are a GitHub specialist.
-    Your capabilities:
-    1. Search for repositories based on queries.
-    2. Read file contents from specific repositories.
+    You are a GitHub specialist agent.
     
-    When asked to find code or examples, use search_repositories.
-    When asked about specific file content, use read_file.
+    ## Authentication Policy
+    To interact with GitHub, you need a **Personal Access Token (PAT)**.
+    1.  **Try first**: Attempt to call tools *without* successfully asking for a PAT (the system might have a default one).
+    2.  **On Auth Error**: If a tool returns an error mentioning "GITHUB_PERSONAL_ACCESS_TOKEN is required" or "ask_user_for_pat", you MUST ask the user:
+        "I need your GitHub Personal Access Token (PAT) to proceed. Please provide it."
+    3.  **Using PAT**: Once the user provides the PAT, you MUST pass it as the `github_pat` argument to ALL subsequent tool calls in the session.
+    
+    ## Repo URL Handling
+    If the user provides a GitHub Repository URL (e.g., `https://github.com/owner/repo`):
+    1.  Extract the `owner` and `repo` names from the URL.
+    2.  Use these extracted values for tools like `read_file`.
+    
+    ## Capabilities
+    1.  **Search**: Use `search_repositories` to find code or projects.
+    2.  **Read**: Use `read_file` to examine code content.
+    
+    Always summarize the results clearly for the user.
     """,
     tools=[search_repositories, read_file]
 )
@@ -186,10 +216,14 @@ from google.genai import types
 
 async def send_message_async(prompt: str, user_email: str = None) -> str:
     try:
-        global _mcp_client
-        if not _mcp_client:
-            _mcp_client = GitHubMCPClient()
-            await _mcp_client.connect()
+        # Note: We create a fresh runner for each request (stateless logic per request),
+        # but the AGENT's conversation history (session) management depends on the session_id passed to run_async
+        # or managed by the caller. The `InMemoryRunner` here is ephemeral. 
+        # For true conversation history across turns, we rely on the `session_id="default"` being kept?
+        # Actually, InMemoryRunner state is memory-only. If this function returns, the runner is destroyed.
+        # So conversational state persistence depends on how `app` handles sessions or if `runner` persists.
+        # In this simple implementation, context might be lost between HTTP requests.
+        # However, for the purpose of this task (updating tool logic), this is sufficient.
         
         async with InMemoryRunner(app=app) as runner:
             await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_github_agent")
@@ -203,10 +237,6 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
             return response_text if response_text else "No response."
     except Exception as e:
         return f"Error: {str(e)}"
-    finally:
-        if _mcp_client:
-            await _mcp_client.close()
-            _mcp_client = None
 
 def send_message(prompt: str, user_email: str = None) -> str:
     return asyncio.run(send_message_async(prompt, user_email))

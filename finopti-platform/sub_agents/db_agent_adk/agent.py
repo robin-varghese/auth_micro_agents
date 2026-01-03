@@ -138,6 +138,10 @@ async def get_table_schema(table_name: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 # Create ADK Agent
+# Ensure GOOGLE_API_KEY is set for the ADK/GenAI library
+if not os.environ.get("GOOGLE_API_KEY"):
+    os.environ["GOOGLE_API_KEY"] = getattr(config, "GOOGLE_API_KEY", "")
+
 db_agent = Agent(
     name="database_specialist",
     model=config.FINOPTIAGENTS_LLM,

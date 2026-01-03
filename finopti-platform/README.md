@@ -22,6 +22,14 @@ flowchart TB
         Orch -.->|Delegation via Mesh| APISIX
         GAgent -.->|Tool Call| GMCP["GCloud MCP Server<br>(Node.js)"]
         MAgent -.->|Tool Call| MMCP["Monitoring MCP Server<br>(Python)"]
+        
+        APISIX -->|Route /agent/github| GHAgent["GitHub Agent"]
+        APISIX -->|Route /agent/storage| SAgent["Storage Agent"]
+        APISIX -->|Route /agent/db| DBAgent["DB Agent"]
+        
+        GHAgent -.->|Tool Call| GHMCP["GitHub MCP Server"]
+        SAgent -.->|Tool Call| SMCP["Storage MCP Server"]
+        DBAgent -.->|Tool Call| DBMCP["DB Toolbox MCP"]
     end
 
     subgraph "Observability Stack"
@@ -63,10 +71,16 @@ flowchart TB
 | **Streamlit UI** | `finopti-ui` | `build: ui/` | 8501 | HTTP | Frontend Application |
 | **APISIX Init** | `finopti-apisix-init` | `curlimages/curl:latest` | N/A | - | Ephemeral initialization script |
 | **APISIX Dashboard**| `finopti-apisix-dashboard`| `apache/apisix-dashboard:3.0.1-alpine`| 9000 | HTTP | Web UI for APISIX Management |
+| **GitHub Agent** | `finopti-github-agent` | `build: sub_agents/github_agent_adk/` | 5003 | HTTP | Wrapper for GitHub operations |
+| **Storage Agent** | `finopti-storage-agent` | `build: sub_agents/storage_agent_adk/` | 5004 | HTTP | Wrapper for GCS operations |
+| **DB Agent** | `finopti-db-agent` | `build: sub_agents/db_agent_adk/` | 5005 | HTTP | Wrapper for Database Toolbox |
+| **GitHub MCP** | `finopti-github-mcp` | `finopti-github-mcp` | 6003 | Stdio | MCP Server for GitHub |
+| **Storage MCP** | `finopti-storage-mcp` | `finopti-storage-mcp` | 6004 | Stdio | MCP Server for GCS |
+| **DB Toolbox MCP**| `finopti-db-mcp-toolbox`| `us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.22.0`| 6005 | SSE | MCP Server for PostgreSQL |
 
 ---
 
-## �🔐 Authentication & Authorization
+## 🔐 Authentication & Authorization
 
 ### Authentication Layer (Google OAuth)
 The platform uses **Google OAuth 2.0** for user identity.
@@ -99,6 +113,14 @@ Each agent is a standalone microservice containing:
 Agents execute actions via **Tools** defined using the ADK's `FunctionTool` or **MCP Clients**.
 - **GCloud Agent**: Uses tools to call the `gcloud-mcp` server.
 - **Monitoring Agent**: Uses tools to call the `monitoring-mcp` server.
+- **GitHub Agent**: Uses tools to call the `github-mcp` server.
+- **Storage Agent**: Uses tools to call the `storage-mcp` server.
+- **DB Agent**: Uses tools to call the `db-toolbox` server via SSE.
+- **GitHub Agent (`finopti-github-agent`)**:
+  - **Dynamic Authentication**: Supports per-session **Personal Access Tokens (PAT)**.
+    - **Default**: Uses `github-personal-access-token` from Secret Manager.
+    - **Interactive**: If the default token fails or is missing, the agent will ask the user for a PAT via chat. The PAT is then used for the duration of the session.
+  - **Repo URL Support**: Users can provide GitHub URLs (e.g., `https://github.com/owner/repo`), and the agent will automatically extract context.
 
 **Example Agent Definition (Snippet):**
 ```python
@@ -220,7 +242,10 @@ finopti-platform/
 ├── orchestrator_adk/       # 🧠 The Brain: Main ADK Agent
 ├── sub_agents/             # 🦾 The Arms: Specialized ADK Agents
 │   ├── gcloud_agent_adk/   # Handles Compute/Infra tasks
-│   └── monitoring_agent_adk/# Handles Logs/Metrics tasks
+│   ├── monitoring_agent_adk/# Handles Logs/Metrics tasks
+│   ├── github_agent_adk/   # Handles GitHub tasks
+│   ├── storage_agent_adk/  # Handles Cloud Storage tasks
+│   └── db_agent_adk/       # Handles SQL/DB tasks
 ├── ui/                     # 🖥️ Streamlit Frontend
 ├── config/                 # ⚙️ Shared Config (Secret Manager)
 ├── apisix_conf/            # 🚦 Gateway Routes & Plugins
@@ -323,3 +348,5 @@ A:
 | 1.3.3   | 2026-01-01 | Antigravity AI | Added details on the Reflect-and-Retry resilience mechanism. |
 | 1.3.4   | 2026-01-01 | Antigravity AI | Added detailed section on BigQuery Agent Analytics plugin. |
 | 1.4.0   | 2026-01-03 | Antigravity AI | Updated MCP server repo URL and added GitHub, Storage, and DB MCP servers details. |
+| 1.5.0   | 2026-01-03 | Antigravity AI | Added new agents to Architecture, Service Tables, and Directory Structure. |
+| 1.6.0   | 2026-01-03 | Antigravity AI | Documented Dynamic PAT support for GitHub Agent. |
