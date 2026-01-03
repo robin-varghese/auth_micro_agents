@@ -38,5 +38,20 @@ allow if {
     input.target_agent == "monitoring"
 }
 
+allow if {
+    user_role["gcloud_admin"]
+    input.target_agent == "github"
+}
+
+allow if {
+    user_role["gcloud_admin"]
+    input.target_agent == "storage"
+}
+
+allow if {
+    user_role["gcloud_admin"]
+    input.target_agent == "db"
+}
+
 # Deny by default
 default allow = false

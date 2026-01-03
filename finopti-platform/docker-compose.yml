@@ -348,10 +348,150 @@ services:
       GOOGLE_OAUTH_CLIENT_SECRET: "${GOOGLE_OAUTH_CLIENT_SECRET}"
       GOOGLE_OAUTH_REDIRECT_URI: "${GOOGLE_OAUTH_REDIRECT_URI}"
 
+  # ====================
+  # NEW AGENTS & MCP SERVERS
+  # ====================
+
+  # --- GitHub Agent ---
+  github_agent:
+    build:
+      context: .
+      dockerfile: sub_agents/github_agent_adk/Dockerfile
+    container_name: finopti-github-agent
+    networks:
+      - finopti-net
+    depends_on:
+      - apisix
+    environment:
+      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID}"
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+      GITHUB_MCP_DOCKER_IMAGE: "finopti-github-mcp"
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+      APISIX_URL: "http://apisix:9080"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
+      REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # GitHub MCP (Optional build service, agents spawn it, but good to have definition)
+  github_mcp:
+    image: finopti-github-mcp
+    container_name: finopti-github-mcp
+    networks:
+      - finopti-net
+    ports:
+      - "6003:6003" # Debug port
+
+  # --- Storage Agent ---
+  storage_agent:
+    build:
+      context: .
+      dockerfile: sub_agents/storage_agent_adk/Dockerfile
+    container_name: finopti-storage-agent
+    networks:
+      - finopti-net
+    depends_on:
+      - apisix
+    environment:
+      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID}"
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+      STORAGE_MCP_DOCKER_IMAGE: "finopti-storage-mcp"
+      GCLOUD_MOUNT_PATH: "${HOME}/.config/gcloud:/root/.config/gcloud"
+      APISIX_URL: "http://apisix:9080"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
+    volumes:
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5004/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Storage MCP (Optional build service)
+  storage_mcp:
+    image: finopti-storage-mcp
+    container_name: finopti-storage-mcp
+    networks:
+      - finopti-net
+    ports:
+      - "6004:6004" # Debug port
+
+  # --- Database Agent ---
+  db_agent:
+    build:
+      context: .
+      dockerfile: sub_agents/db_agent_adk/Dockerfile
+    container_name: finopti-db-agent
+    networks:
+      - finopti-net
+    depends_on:
+      - apisix
+      - db_mcp_toolbox
+    environment:
+      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID}"
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+      DB_MCP_TOOLBOX_URL: "http://db_mcp_toolbox:5000"
+      APISIX_URL: "http://apisix:9080"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5005/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Database Toolbox (Core Server) - Requires Postgres
+  db_mcp_toolbox:
+    image: us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.22.0
+    container_name: finopti-db-mcp-toolbox
+    hostname: toolbox
+    ports:
+      - "6005:5000"
+    volumes:
+      - ./config/tools.yaml:/config/tools.yaml # Needs config file
+    command: ["toolbox", "--tools-file", "/config/tools.yaml", "--address", "0.0.0.0"]
+    depends_on:
+      db_postgres:
+        condition: service_healthy
+    networks:
+      - finopti-net
+
+  # Postgres for DB Toolbox
+  db_postgres:
+    image: postgres:16-alpine
+    container_name: finopti-db-postgres
+    hostname: db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+        - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - finopti-net
+
 # ====================
 # Volume Configuration
 # ====================
 volumes:
+  postgres-data:
+    name: finopti-postgres-data
   loki-data:
     name: finopti-loki-data
   grafana-data:

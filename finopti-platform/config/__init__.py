@@ -233,10 +233,16 @@ LOGGING_TOOL_NAME = _fetch_config("LOGGING_TOOL_NAME", default="insert-user-acti
 # Service URLs (for FinOptiAgents platform)
 OPA_URL = _fetch_config("OPA_URL", default="http://opa:8181")
 APISIX_URL = _fetch_config("APISIX_URL", default="http://apisix:9080")
-GCLOUD_MCP_DOCKER_IMAGE = _fetch_config("GCLOUD_MCP_DOCKER_IMAGE", default="gcloud-mcp-image")
+GCLOUD_MCP_DOCKER_IMAGE = _fetch_config("GCLOUD_MCP_DOCKER_IMAGE", default="finopti-gcloud-mcp")
 GCLOUD_MOUNT_PATH = _fetch_config("GCLOUD_MOUNT_PATH", default="~/.config/gcloud:/root/.config/gcloud")
 MONITORING_MCP_URL = _fetch_config("MONITORING_MCP_URL", default="http://monitoring_mcp:6002")
 MONITORING_MCP_DOCKER_IMAGE = _fetch_config("MONITORING_MCP_DOCKER_IMAGE", default="finopti-monitoring-mcp")
+
+# New MCP Servers
+GITHUB_MCP_DOCKER_IMAGE = _fetch_config("GITHUB_MCP_DOCKER_IMAGE", default="finopti-github-mcp")
+STORAGE_MCP_DOCKER_IMAGE = _fetch_config("STORAGE_MCP_DOCKER_IMAGE", default="finopti-storage-mcp")
+# DB Toolbox uses a direct image reference in docker-compose, but we can config the URL if needed
+DB_MCP_TOOLBOX_URL = _fetch_config("DB_MCP_TOOLBOX_URL", default="http://db_mcp_toolbox:5000")
 
 # Observability
 LOG_LEVEL = _fetch_config("LOG_LEVEL", default="INFO")
@@ -288,6 +294,10 @@ class Config:
     GCLOUD_MOUNT_PATH = GCLOUD_MOUNT_PATH
     MONITORING_MCP_URL = MONITORING_MCP_URL
     MONITORING_MCP_DOCKER_IMAGE = MONITORING_MCP_DOCKER_IMAGE
+    
+    GITHUB_MCP_DOCKER_IMAGE = GITHUB_MCP_DOCKER_IMAGE
+    STORAGE_MCP_DOCKER_IMAGE = STORAGE_MCP_DOCKER_IMAGE
+    DB_MCP_TOOLBOX_URL = DB_MCP_TOOLBOX_URL
     
     LOG_LEVEL = LOG_LEVEL
     ENABLE_STRUCTURED_LOGGING = ENABLE_STRUCTURED_LOGGING

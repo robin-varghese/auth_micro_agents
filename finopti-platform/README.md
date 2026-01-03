@@ -234,17 +234,29 @@ finopti-platform/
 
 ### 📦 External Dependencies: MCP Servers
 
-The platform relies on two external MCP servers, built from the [robin-varghese/gcloud-mcpserver](https://github.com/robin-varghese/gcloud-mcpserver) repository:
+The platform relies on several external MCP servers, built from the [robin-varghese/mcp-server](https://github.com/robin-varghese/mcp-server/) repository:
 
 1. **GCloud MCP Server** (`finopti-gcloud-mcp`)
    - Provides `gcloud` CLI execution capabilities.
-   - [View Source Strategy](https://github.com/robin-varghese/gcloud-mcpserver/blob/main/remote-mcp-server/gcloud-mcp-server/gcloud_mcp_strategy.md)
+   - [View Source Strategy](https://github.com/robin-varghese/mcp-server/blob/main/gcloud-mcpserver/remote-mcp-server/gcloud-mcp-server/gcloud_mcp_strategy.md)
 
 2. **Monitoring MCP Server** (`finopti-monitoring-mcp`)
    - Provides Google Cloud Monitoring metrics and logs.
-   - [View Source Strategy](https://github.com/robin-varghese/gcloud-mcpserver/blob/main/remote-mcp-server/gcloud-monitoring-mcp/gcloud_monitoring_mcp_strategy.md)
+   - [View Source Strategy](https://github.com/robin-varghese/mcp-server/blob/main/gcloud-mcpserver/remote-mcp-server/gcloud-monitoring-mcp/gcloud_monitoring_mcp_strategy.md)
 
-For build instructions, see [test_run/mcp_server_build_strategy.md](test_run/mcp_server_build_strategy.md).
+3. **GitHub MCP Server** (`finopti-github-mcp`)
+   - Provides capabilities to search repositories, read files, and manage issues/PRs.
+   - [View Source](https://github.com/robin-varghese/mcp-server/blob/main/github-mcp-server)
+
+4. **Google Storage MCP** (`finopti-storage-mcp`)
+   - Provides capabilities to manage Cloud Storage buckets and objects.
+   - [View Source](https://github.com/robin-varghese/mcp-server/blob/main/gcloud-mcpserver/remote-mcp-server/google-storage-mcp)
+
+5. **Google Database Toolbox** (`finopti-db-toolbox`)
+   - A toolbox for database interactions (PostgreSQL).
+   - [View Source](https://github.com/robin-varghese/mcp-server/blob/main/gcloud-mcpserver/google-db-mcp-toolbox)
+
+For build instructions, see [docs/mcp_server_build_strategy.md](docs/mcp_server_build_strategy.md).
 
 ### 🛠️ How to Build External MCP Servers
 
@@ -252,16 +264,28 @@ Since these images are not in the main repository, you must build them manually 
 
 ```bash
 # 1. Clone the external repository
-git clone https://github.com/robin-varghese/gcloud-mcpserver.git
-cd gcloud-mcpserver/remote-mcp-server
+git clone https://github.com/robin-varghese/mcp-server.git
+cd mcp-server
 
 # 2. Build GCloud MCP Server
-cd gcloud-mcp-server
+cd gcloud-mcpserver/remote-mcp-server/gcloud-mcp-server
 docker build -t finopti-gcloud-mcp .
 
 # 3. Build Monitoring MCP Server
 cd ../gcloud-monitoring-mcp
 docker build -t finopti-monitoring-mcp .
+
+# 4. Build GitHub MCP Server
+cd ../../../github-mcp-server
+docker build -t finopti-github-mcp .
+
+# 5. Build Google Storage MCP
+cd ../gcloud-mcpserver/remote-mcp-server/google-storage-mcp
+docker build -t finopti-storage-mcp .
+
+# 6. Build Google Database Toolbox
+cd ../../../gcloud-mcpserver/google-db-mcp-toolbox
+docker-compose up -d
 ```
 
 ---
@@ -282,7 +306,7 @@ A:
 
 ---
 
-**Last Updated:** 2026-01-01
+**Last Updated:** 2026-01-03
 **Status:** Production Ready
 
 ---
@@ -298,3 +322,4 @@ A:
 | 1.3.2   | 2026-01-01 | Antigravity AI | Added manual build instructions for external MCP docker images. |
 | 1.3.3   | 2026-01-01 | Antigravity AI | Added details on the Reflect-and-Retry resilience mechanism. |
 | 1.3.4   | 2026-01-01 | Antigravity AI | Added detailed section on BigQuery Agent Analytics plugin. |
+| 1.4.0   | 2026-01-03 | Antigravity AI | Updated MCP server repo URL and added GitHub, Storage, and DB MCP servers details. |

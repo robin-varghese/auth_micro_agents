@@ -152,6 +152,90 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/5" \
   }'
 
 echo ""
+
+# Route 6: GitHub Agent
+echo "Creating route: /agent/github -> github_agent:5003"
+curl -i -X PUT "${APISIX_ADMIN}/routes/6" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "github_agent_route",
+    "uri": "/agent/github/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "github_agent:5003": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 60,
+        "read": 60
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/agent/github/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
+
+# Route 7: Storage Agent
+echo "Creating route: /agent/storage -> storage_agent:5004"
+curl -i -X PUT "${APISIX_ADMIN}/routes/7" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "storage_agent_route",
+    "uri": "/agent/storage/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "storage_agent:5004": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 60,
+        "read": 60
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/agent/storage/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
+
+# Route 8: Database Agent
+echo "Creating route: /agent/db -> db_agent:5005"
+curl -i -X PUT "${APISIX_ADMIN}/routes/8" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "db_agent_route",
+    "uri": "/agent/db/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "db_agent:5005": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 60,
+        "read": 60
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/agent/db/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
 echo "All routes initialized successfully!"
 
 # List all routes

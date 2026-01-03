@@ -1,0 +1,28 @@
+tools:
+  - name: execute_query
+    description: Execute a SQL query (SELECT only by default)
+    type: postgres
+    connection:
+      host: db
+      port: 5432
+      user: postgres
+      password: postgres
+      database: postgres
+  - name: list_tables
+    description: List all tables in the database
+    type: postgres
+    connection:
+      host: db
+      port: 5432
+      user: postgres
+      password: postgres
+      database: postgres
+  - name: get_table_schema
+    description: Get schema for a specific table
+    type: postgres
+    connection:
+      host: db
+      port: 5432
+      user: postgres
+      password: postgres
+      database: postgres
