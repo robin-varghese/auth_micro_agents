@@ -233,6 +233,91 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/8" \
         "regex_uri": ["^/agent/db/(.*)", "/$1"]
       }
     }
+  }
+'
+
+echo ""
+
+# Route 9: GitHub MCP Server
+echo "Creating route: /mcp/github -> github_mcp:6003"
+curl -i -X PUT "${APISIX_ADMIN}/routes/9" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "github_mcp_route",
+    "uri": "/mcp/github/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "github_mcp:6003": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 60,
+        "read": 60
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/mcp/github/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
+
+# Route 10: Storage MCP Server
+echo "Creating route: /mcp/storage -> storage_mcp:6004"
+curl -i -X PUT "${APISIX_ADMIN}/routes/10" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "storage_mcp_route",
+    "uri": "/mcp/storage/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "storage_mcp:6004": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 60,
+        "read": 60
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/mcp/storage/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
+
+# Route 11: Database MCP Server
+echo "Creating route: /mcp/db -> db_mcp_toolbox:5000"
+curl -i -X PUT "${APISIX_ADMIN}/routes/11" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "db_mcp_route",
+    "uri": "/mcp/db/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "db_mcp_toolbox:5000": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 60,
+        "read": 60
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/mcp/db/(.*)", "/$1"]
+      }
+    }
   }'
 
 echo ""

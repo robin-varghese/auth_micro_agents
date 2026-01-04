@@ -140,11 +140,19 @@ def main():
     
     # Create all routes
     routes_to_create = [
+        # MCP Server Routes
         (1, "gcloud_mcp_route", "/mcp/gcloud/*", "gcloud_mcp", 6001),
         (2, "monitoring_mcp_route", "/mcp/monitoring/*", "monitoring_mcp", 6002),
+        (9, "github_mcp_route", "/mcp/github/*", "github_mcp", 6003),
+        (10, "storage_mcp_route", "/mcp/storage/*", "storage_mcp", 6004),
+        (11, "db_mcp_route", "/mcp/db/*", "db_mcp_toolbox", 5000),
+        # Agent Routes
         (3, "orchestrator_route", "/orchestrator/*", "orchestrator", 15000),
         (4, "gcloud_agent_route", "/agent/gcloud/*", "gcloud_agent", 15001),
         (5, "monitoring_agent_route", "/agent/monitoring/*", "monitoring_agent", 15002),
+        (6, "github_agent_route", "/agent/github/*", "github_agent", 15003),
+        (7, "storage_agent_route", "/agent/storage/*", "storage_agent", 15004),
+        (8, "db_agent_route", "/agent/db/*", "db_agent", 15005),
     ]
     
     for route_id, name, uri, service, port in routes_to_create:
@@ -154,7 +162,9 @@ def main():
     print("Testing Routes Through APISIX Gateway")
     print("=" * 60)
     
-    # Test health endpoints
+    
+    # Test MCP Server health endpoints through APISIX
+    print("\nTesting MCP Server Routes...")
     results.append((
         "GCloud MCP Health (via APISIX)",
         test_route("GCloud MCP", f"{APISIX_GATEWAY}/mcp/gcloud/health")
@@ -165,7 +175,23 @@ def main():
         test_route("Monitoring MCP", f"{APISIX_GATEWAY}/mcp/monitoring/health")
     ))
     
+    results.append((
+        "GitHub MCP Health (via APISIX)",
+        test_route("GitHub MCP", f"{APISIX_GATEWAY}/mcp/github/health")
+    ))
+    
+    results.append((
+        "Storage MCP Health (via APISIX)",
+        test_route("Storage MCP", f"{APISIX_GATEWAY}/mcp/storage/health")
+    ))
+    
+    results.append((
+        "DB MCP Health (via APISIX)",
+        test_route("DB MCP", f"{APISIX_GATEWAY}/mcp/db/health")
+    ))
+    
     # Test JSON-RPC through APISIX
+    print("\nTesting MCP JSON-RPC Endpoints...")
     results.append((
         "GCloud MCP - List VMs (via APISIX)",
         test_jsonrpc_route(
@@ -184,7 +210,7 @@ def main():
             "check_cpu",
             {"resource": "test-vm", "period": "5m"}
         )
-    ))
+))
     
     # Test agent endpoints (these might fail if agents aren't healthy yet)
     print("\n" + "=" * 60)
@@ -206,6 +232,21 @@ def main():
         test_route("Monitoring Agent", f"{APISIX_GATEWAY}/agent/monitoring/health", expected_status=200)
     ))
     
+    results.append((
+        "GitHub Agent Health (via APISIX)",
+        test_route("GitHub Agent", f"{APISIX_GATEWAY}/agent/github/health", expected_status=200)
+    ))
+    
+    results.append((
+        "Storage Agent Health (via APISIX)",
+        test_route("Storage Agent", f"{APISIX_GATEWAY}/agent/storage/health", expected_status=200)
+    ))
+    
+    results.append((
+        "DB Agent Health (via APISIX)",
+        test_route("DB Agent", f"{APISIX_GATEWAY}/agent/db/health", expected_status=200)
+    ))
+    
     # Summary
     print("\n" + "=" * 60)
     print("TEST SUMMARY")
@@ -220,7 +261,7 @@ def main():
     
     print(f"\nPassed: {passed}/{total}")
     
-    if passed >= total - 3:  # Allow 3 failures for agent health checks
+    if passed >= total - 6:  # Allow 6 failures for agent/MCP health checks
         print("\n🎉 APISIX Gateway is working! Core routes verified.")
         return 0
     else:

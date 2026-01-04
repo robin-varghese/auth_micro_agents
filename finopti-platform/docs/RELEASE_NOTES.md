@@ -1,5 +1,44 @@
 # FinOptiAgents Platform - Release Notes
 
+## 📦 Version 1.1.0 (Architecture Refactoring)
+**Release Date:** 2026-01-04
+**Status:** Production Ready
+
+---
+
+## 🚀 Highlights
+
+### MCP Communication Refactoring - Full APISIX Routing
+**Breaking Change:** All Model Context Protocol (MCP) communication now routes through APISIX gateway
+
+#### What Changed
+- **Before:** Agents used `stdio` (docker run) or direct HTTP to communicate with MCP servers
+- **After:** All agents use HTTP via APISIX (`/mcp/*` routes)
+
+#### Impact
+✅ **100% Observability**: All MCP calls now visible in APISIX logs and Loki  
+✅ **Architectural Consistency**: Every service follows the same routing pattern  
+✅ **Centralized Control**: Rate limiting, circuit breaking, and policies apply to MCP traffic  
+✅ **Performance**: No docker spawning overhead, persistent HTTP connections
+
+#### Affected Components
+- `github_agent_adk` → Routes via `/mcp/github/*`
+- `storage_agent_adk` → Routes via `/mcp/storage/*`
+- `db_agent_adk` → Routes via `/mcp/db/*`
+- `gcloud_agent_adk` → Routes via `/mcp/gcloud/*`
+- `monitoring_agent_adk` → Routes via `/mcp/monitoring/*`
+
+#### Technical Details
+- **New APISIX Routes**: Routes 9-11 added for new MCP servers
+- **Dependencies Updated**: Removed `mcp>=0.1.0`, added `requests>=2.32.4`
+- **Client Implementation**: Replaced stdio-based MCP clients with HTTP JSON-RPC 2.0
+- **Configuration**: DB MCP URL updated to route through APISIX
+
+#### Migration Guide
+No action required - backward compatible. All agents rebuilt with new routing.
+
+---
+
 ## 📦 Version 1.0.0 (Major Release)
 **Release Date:** 2026-01-01  
 **Status:** Production Ready

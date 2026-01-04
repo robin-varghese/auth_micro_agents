@@ -21,67 +21,60 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 )
 from typing import Dict, Any, List
 import asyncio
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-from contextlib import AsyncExitStack
+import json
+import requests  # For HTTP MCP client
+import logging
 
 from config import config
 
 # MCP Client for GCloud
 class GCloudMCPClient:
-    """Client for connecting to GCloud MCP server via Docker stdio"""
+    """Client for connecting to GCloud MCP server via APISIX HTTP"""
     
     def __init__(self):
-        self.docker_image = config.GCLOUD_MCP_DOCKER_IMAGE
-        self.mount_path = os.path.expanduser(config.GCLOUD_MOUNT_PATH)
-        self.session = None
-        self.exit_stack = None
+        self.apisix_url = os.getenv('APISIX_URL', 'http://apisix:9080')
+        self.mcp_endpoint = f"{self.apisix_url}/mcp/gcloud"
+        logging.info(f"GCloudMCPClient initialized with endpoint: {self.mcp_endpoint}")
     
     async def __aenter__(self):
-        await self.connect()
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
+        pass
     
-    async def connect(self):
-        """Connect to GCloud MCP server"""
-        if self.session:
-            return
-        
-        server_params = StdioServerParameters(
-            command="docker",
-            args=[
-                "run",
-                "-i",
-                "--rm",
-                "--network", "host",
-                "-v", self.mount_path,
-                self.docker_image
-            ],
-            env=None
-        )
-        
-        self.exit_stack = AsyncExitStack()
+    async def call_tool(self, tool_name: str, arguments: dict) -> Dict[str, Any]:
+        """Call GCloud MCP tool via APISIX HTTP"""
+        payload = {
+            "jsonrpc": "2.0",
+            "method": f"tools/call",
+            "params": {"name": tool_name, "arguments": arguments},
+            "id": 1
+        }
         
         try:
-            read, write = await self.exit_stack.enter_async_context(
-                stdio_client(server_params)
+            response = requests.post(
+                self.mcp_endpoint,
+                json=payload,
+                timeout=30
             )
-            self.session = await self.exit_stack.enter_async_context(
-                ClientSession(read, write)
-            )
-            await self.session.initialize()
+            response.raise_for_status()
+            result = response.json()
+            
+            # Extract text content
+            if "result" in result and "content" in result["result"]:
+                output_text = ""
+                for content in result["result"]["content"]:
+                    if content.get("type") == "text":
+                        output_text += content["text"]
+                try:
+                    return json.loads(output_text)
+                except json.JSONDecodeError:
+                    return {"output": output_text}
+            
+            return result.get("result", result)
+            
         except Exception as e:
-            await self.close()
-            raise RuntimeError(f"Failed to connect to GCloud MCP server: {e}")
-    
-    async def close(self):
-        """Close connection"""
-        if self.exit_stack:
-            await self.exit_stack.aclose()
-            self.exit_stack = None
-            self.session = None
+            raise RuntimeError(f"GCloud MCP call failed: {e}") from e
     
     async def run_gcloud_command(self, args: List[str]) -> str:
         """
@@ -93,21 +86,16 @@ class GCloudMCPClient:
         Returns:
             Command output as string
         """
-        if not self.session:
-            raise RuntimeError("Not connected. Use 'async with client:' pattern")
-        
-        result = await self.session.call_tool(
+        result = await self.call_tool(
             "run_gcloud_command",
             arguments={"args": args}
         )
         
-        # Extract text content from result
-        output = []
-        for content in result.content:
-            if content.type == "text":
-                output.append(content.text)
-        
-        return "\n".join(output)
+        # The call_tool method already handles extracting and potentially parsing JSON.
+        # If it returns a dict with an 'output' key, use that. Otherwise, convert the whole result to string.
+        if isinstance(result, dict) and "output" in result:
+            return result["output"]
+        return str(result)
 
 
 # Global MCP client (will be initialized per-request)

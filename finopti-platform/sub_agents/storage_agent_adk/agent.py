@@ -21,79 +21,59 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 )
 from typing import Dict, Any, List
 import asyncio
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-from contextlib import AsyncExitStack
+import requests  # For HTTP MCP client
+import logging
 
 from config import config
 
 # MCP Client
 class StorageMCPClient:
-    """Client for connecting to Storage MCP server via Docker stdio"""
+    """Client for connecting to Storage MCP server via APISIX HTTP"""
     
     def __init__(self):
-        self.docker_image = config.STORAGE_MCP_DOCKER_IMAGE
-        self.session = None
-        self.exit_stack = None
-        # Mount authentication
-        self.mount_path = os.path.expanduser(config.GCLOUD_MOUNT_PATH)
+        self.apisix_url = os.getenv('APISIX_URL', 'http://apisix:9080')
+        self.mcp_endpoint = f"{self.apisix_url}/mcp/storage"
+    
     
     async def __aenter__(self):
-        await self.connect()
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
+        pass
     
-    async def connect(self):
-        if self.session:
-            return
+
             
-        server_params = StdioServerParameters(
-            command="docker",
-            args=[
-                "run",
-                "-i",
-                "--rm",
-                "--network", "host",
-                "-v", self.mount_path,
-                self.docker_image
-            ],
-            env=None
-        )
-        
-        self.exit_stack = AsyncExitStack()
-        
-        try:
-            read, write = await self.exit_stack.enter_async_context(
-                stdio_client(server_params)
-            )
-            self.session = await self.exit_stack.enter_async_context(
-                ClientSession(read, write)
-            )
-            await self.session.initialize()
-        except Exception as e:
-            await self.close()
-            raise RuntimeError(f"Failed to connect to Storage MCP server: {e}")
-    
-    async def close(self):
-        if self.exit_stack:
-            await self.exit_stack.aclose()
-            self.exit_stack = None
-            self.session = None
             
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
-        if not self.session:
-            raise RuntimeError("Not connected")
+        """Call Storage MCP tool via APISIX HTTP"""
+        payload = {
+            "jsonrpc": "2.0",
+            "method": f"tools/call",
+            "params": {"name": tool_name, "arguments": arguments},
+            "id": 1
+        }
         
-        result = await self.session.call_tool(tool_name, arguments=arguments)
-        
-        output = []
-        for content in result.content:
-            if content.type == "text":
-                output.append(content.text)
-        
-        return "\n".join(output)
+        try:
+            response = requests.post(
+                self.mcp_endpoint,
+                json=payload,
+                timeout=30
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            # Extract text content
+            if "result" in result and "content" in result["result"]:
+                output = []
+                for content in result["result"]["content"]:
+                    if content.get("type") == "text":
+                        output.append(content["text"])
+                return "\n".join(output)
+            
+            return str(result.get("result", result))
+            
+        except Exception as e:
+            raise RuntimeError(f"Storage MCP call failed: {e}") from e
 
 # Global MCP client
 _mcp_client = None
@@ -102,39 +82,27 @@ _mcp_client = None
 
 async def list_buckets() -> Dict[str, Any]:
     """ADK Tool: List GCS buckets"""
-    global _mcp_client
     try:
-        if not _mcp_client:
-            _mcp_client = StorageMCPClient()
-            await _mcp_client.connect()
-        
-        output = await _mcp_client.call_tool("list_buckets", {})
+        client = StorageMCPClient()
+        output = await client.call_tool("list_buckets", {})
         return {"success": True, "output": output}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 async def list_objects(bucket_name: str, prefix: str = "") -> Dict[str, Any]:
     """ADK Tool: List objects in a bucket"""
-    global _mcp_client
     try:
-        if not _mcp_client:
-            _mcp_client = StorageMCPClient()
-            await _mcp_client.connect()
-        
-        output = await _mcp_client.call_tool("list_objects", {"bucket_name": bucket_name, "prefix": prefix})
+        client = StorageMCPClient()
+        output = await client.call_tool("list_objects", {"bucket_name": bucket_name, "prefix": prefix})
         return {"success": True, "output": output}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 async def read_object(bucket_name: str, object_name: str) -> Dict[str, Any]:
     """ADK Tool: Read object content"""
-    global _mcp_client
     try:
-        if not _mcp_client:
-            _mcp_client = StorageMCPClient()
-            await _mcp_client.connect()
-        
-        output = await _mcp_client.call_tool("read_object", {"bucket_name": bucket_name, "object_name": object_name})
+        client = StorageMCPClient()
+        output = await client.call_tool("read_object", {"bucket_name": bucket_name, "object_name": object_name})
         return {"success": True, "output": output}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -191,11 +159,6 @@ from google.genai import types
 
 async def send_message_async(prompt: str, user_email: str = None) -> str:
     try:
-        global _mcp_client
-        if not _mcp_client:
-            _mcp_client = StorageMCPClient()
-            await _mcp_client.connect()
-        
         async with InMemoryRunner(app=app) as runner:
             await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_storage_agent")
             message = types.Content(parts=[types.Part(text=prompt)])
@@ -208,10 +171,6 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
             return response_text if response_text else "No response."
     except Exception as e:
         return f"Error: {str(e)}"
-    finally:
-        if _mcp_client:
-            await _mcp_client.close()
-            _mcp_client = None
 
 def send_message(prompt: str, user_email: str = None) -> str:
     return asyncio.run(send_message_async(prompt, user_email))

@@ -243,7 +243,7 @@ GITHUB_PERSONAL_ACCESS_TOKEN = _fetch_config("GITHUB_PERSONAL_ACCESS_TOKEN")
 GITHUB_MCP_DOCKER_IMAGE = _fetch_config("GITHUB_MCP_DOCKER_IMAGE", default="finopti-github-mcp")
 STORAGE_MCP_DOCKER_IMAGE = _fetch_config("STORAGE_MCP_DOCKER_IMAGE", default="finopti-storage-mcp")
 # DB Toolbox uses a direct image reference in docker-compose, but we can config the URL if needed
-DB_MCP_TOOLBOX_URL = _fetch_config("DB_MCP_TOOLBOX_URL", default="http://db_mcp_toolbox:5000")
+DB_MCP_TOOLBOX_URL = _fetch_config("DB_MCP_TOOLBOX_URL", default=f"{APISIX_URL}/mcp/db")
 
 # Observability
 LOG_LEVEL = _fetch_config("LOG_LEVEL", default="INFO")

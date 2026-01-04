@@ -46,7 +46,7 @@ flowchart TB
 | **Service Mesh** | Apache APISIX | Centralized Routing, Rate Limiting, Observability Injection |
 | **Orchestrator** | Google ADK (Python) | Intent Detection, Plan Generation, Agent Delegation |
 | **Sub-Agents** | Google ADK (Python) | Domain-specific execution (GCloud resource mgmt, Monitoring) |
-| **Mock Servers** | MCP Protocol | Standardized tool execution for GCloud and Monitoring tools |
+| **MCP Servers** | MCP Protocol | Standardized tool execution for GCloud and Monitoring tools |
 | **Frontend** | Streamlit + OAuth | User Interface with Google Sign-In integration |
 | **Security** | OPA (Rego) | Fine-grained Role-Based Access Control (RBAC) |
 | **Config** | Secret Manager | Secure storage for API keys and Service Account credentials |
@@ -63,8 +63,8 @@ flowchart TB
 | **Orchestrator** | `finopti-orchestrator` | `build: orchestrator_adk/` | 5000 | HTTP | Main ADK Agent (Brain) |
 | **GCloud Agent** | `finopti-gcloud-agent` | `build: sub_agents/gcloud_agent_adk/` | 5001 | HTTP | Wrapper for GCloud operations |
 | **Monitoring Agent** | `finopti-monitoring-agent` | `build: sub_agents/monitoring_agent_adk/` | 5002 | HTTP | Wrapper for Observability tools |
-| **GCloud MCP** | `finopti-gcloud-mcp` | `finopti-gcloud-mcp` | 6001 | JSON-RPC | MCP Server for gcloud CLI |
-| **Monitoring MCP** | `finopti-monitoring-mcp` | `finopti-monitoring-mcp` | 6002 | JSON-RPC | MCP Server for logs/metrics |
+| **GCloud MCP** | `finopti-gcloud-mcp` | `finopti-gcloud-mcp` | 6001 | HTTP (via APISIX) | MCP Server for gcloud CLI |
+| **Monitoring MCP** | `finopti-monitoring-mcp` | `finopti-monitoring-mcp` | 6002 | HTTP (via APISIX) | MCP Server for logs/metrics |
 | **Loki** | `finopti-loki` | `grafana/loki:2.9.3` | 3100 | HTTP | Log Aggregation System |
 | **Promtail** | `finopti-promtail` | `grafana/promtail:3.0.0` | N/A | HTTP | Log Collector & Shipper |
 | **Grafana** | `finopti-grafana` | `grafana/grafana:10.2.3` | 3000 | HTTP | Visualization Dashboard (UI on 3001) |
@@ -74,9 +74,9 @@ flowchart TB
 | **GitHub Agent** | `finopti-github-agent` | `build: sub_agents/github_agent_adk/` | 5003 | HTTP | Wrapper for GitHub operations |
 | **Storage Agent** | `finopti-storage-agent` | `build: sub_agents/storage_agent_adk/` | 5004 | HTTP | Wrapper for GCS operations |
 | **DB Agent** | `finopti-db-agent` | `build: sub_agents/db_agent_adk/` | 5005 | HTTP | Wrapper for Database Toolbox |
-| **GitHub MCP** | `finopti-github-mcp` | `finopti-github-mcp` | 6003 | Stdio | MCP Server for GitHub |
-| **Storage MCP** | `finopti-storage-mcp` | `finopti-storage-mcp` | 6004 | Stdio | MCP Server for GCS |
-| **DB Toolbox MCP**| `finopti-db-mcp-toolbox`| `us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.22.0`| 6005 | SSE | MCP Server for PostgreSQL |
+| **GitHub MCP** | `finopti-github-mcp` | `finopti-github-mcp` | 6003 | HTTP (via APISIX) | MCP Server for GitHub |
+| **Storage MCP** | `finopti-storage-mcp` | `finopti-storage-mcp` | 6004 | HTTP (via APISIX) | MCP Server for GCS |
+| **DB Toolbox MCP**| `finopti-db-mcp-toolbox`| `us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.22.0`| 5000 | HTTP (via APISIX) | MCP Server for PostgreSQL |
 
 ---
 
@@ -338,6 +338,13 @@ A:
 
 ## 📝 Document History
 
+## Version History
+
+| Version | Date       | Changes |
+|---------|------------|---------|
+| **1.1.0** | 2026-01-04 | **MCP Refactoring** - All 5 agents now route MCP calls via APISIX (stdio/direct → HTTP). Added routes 9-11. Full observability achieved. |
+| 1.0.1   | 2026-01-02 | Added dynamic GitHub PAT injection and auth/credentials flow documentation. |
+| 1.0.0   | 2026-01-01 | Initial release: Google ADK integration, APISIX, OAuth, OPA, PLG stack. |
 | Version | Date       | Author | Revision Summary |
 |---------|------------|--------|------------------|
 | 1.1.0   | 2026-01-01 | Antigravity AI | Comprehensive update covering Service Mesh, ADK, and Observability architecture. |

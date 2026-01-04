@@ -4,6 +4,51 @@
 
 This document provides complete instructions for adding Loki + Grafana observability stack with structured logging and request ID propagation to the FinOptiAgents platform.
 
+## 🎯 MCP Observability (v1.1.0 Update)
+
+### Full APISIX Routing Achievement
+**Status:** ✅ **COMPLETE** (Jan 2026)
+
+All Model Context Protocol (MCP) communication now routes through APISIX gateway, providing complete observability:
+
+#### What's Observable Now
+- ✅ **Agent → MCP Calls**: All tool executions visible in APISIX access logs
+- ✅ **Request Tracing**: Full request path: UI → APISIX `/agent/*` → APISIX `/mcp/*` → MCP Server
+- ✅ **Performance Metrics**: MCP call latency, error rates, throughput
+- ✅ **Centralized Logging**: All MCP traffic captured by Promtail → Loki → Grafana
+
+#### MCP Routes
+| Route | Endpoint | Upstream | Purpose |
+|-------|----------|----------|---------|
+| Route 4 | `/mcp/gcloud/*` | `gcloud_mcp:6001` | GCloud operations |
+| Route 5 | `/mcp/monitoring/*` | `monitoring_mcp:6002` | Monitoring queries |
+| Route 9 | `/mcp/github/*` | `github_mcp:6003` | GitHub operations |
+| Route 10 | `/mcp/storage/*` | `storage_mcp:6004` | Storage operations |
+| Route 11 | `/mcp/db/*` | `db_mcp_toolbox:5000` | Database queries |
+
+#### Example Grafana Queries
+
+**View all MCP calls:**
+```logql
+{container_name=~"finopti-apisix"} |= "/mcp/"
+```
+
+**Track specific MCP server:**
+```logql
+{container_name=~"finopti-apisix"} |= "/mcp/github/"
+```
+
+**Find slow MCP calls:**
+```logql
+{container_name=~"finopti-.*-agent"} | json | duration_ms > 1000 | message =~ ".*MCP.*"
+```
+
+**Correlate Agent + MCP calls by request_id:**
+```logql
+{project="finopti-platform"} | json | request_id="abc-123"
+```
+
+
 ## ✅ What's Been Created
 
 ### 1. Observability Configuration Files

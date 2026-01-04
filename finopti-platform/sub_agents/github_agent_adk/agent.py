@@ -21,20 +21,18 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 )
 from typing import Dict, Any, List
 import asyncio
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-from contextlib import AsyncExitStack
+import requests  # For HTTP MCP client
+import logging
 
 from config import config
 
 # MCP Client for GitHub
 class GitHubMCPClient:
-    """Client for connecting to GitHub MCP server via Docker stdio"""
+    """Client for connecting to GitHub MCP server via APISIX HTTP"""
     
     def __init__(self, token: str = None):
-        self.docker_image = config.GITHUB_MCP_DOCKER_IMAGE
-        self.session = None
-        self.exit_stack = None
+        self.apisix_url = os.getenv('APISIX_URL', 'http://apisix:9080')
+        self.mcp_endpoint = f"{self.apisix_url}/mcp/github"
         
         # Priority: Dynamic Token -> Env Var -> Config
         self.github_token = token
@@ -42,74 +40,90 @@ class GitHubMCPClient:
              self.github_token = os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN", "")
         if not self.github_token:
              self.github_token = getattr(config, "GITHUB_PERSONAL_ACCESS_TOKEN", "")
+        
+        logger.info(f"GitHub MCP Client initialized, endpoint: {self.mcp_endpoint}")
 
     async def __aenter__(self):
-        await self.connect()
+        # No connection needed for HTTP client
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
+        # No cleanup needed for HTTP client
+        pass
     
-    async def connect(self):
-        """Connect to GitHub MCP server"""
-        if self.session:
-            return
-            
-        token = self.github_token
-        if not token:
-             # We allow connection without token, but MCP server might fail or work in limited mode?
-             # Actually, without token, the container will print error and exit.
-             # We throw error here to let the agent know it needs a token.
-             raise ValueError("GITHUB_PERSONAL_ACCESS_TOKEN is required. Please ask the user for their GitHub PAT.")
-        
-        server_params = StdioServerParameters(
-            command="docker",
-            args=[
-                "run",
-                "-i",
-                "--rm",
-                "--network", "host",
-                "-e", f"GITHUB_PERSONAL_ACCESS_TOKEN={token}",
-                self.docker_image
-            ],
-            env=None
-        )
-        
-        self.exit_stack = AsyncExitStack()
-        
-        try:
-            read, write = await self.exit_stack.enter_async_context(
-                stdio_client(server_params)
-            )
-            self.session = await self.exit_stack.enter_async_context(
-                ClientSession(read, write)
-            )
-            await self.session.initialize()
-        except Exception as e:
-            await self.close()
-            # Catch specific errors related to token?
-            raise RuntimeError(f"Failed to connect to GitHub MCP server: {e}")
-    
-    async def close(self):
-        """Close connection"""
-        if self.exit_stack:
-            await self.exit_stack.aclose()
-            self.exit_stack = None
-            self.session = None
+
     
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
-        """Generic tool caller"""
-        if not self.session:
-            raise RuntimeError("Not connected")
+        """
+        Call GitHub MCP tool via APISIX HTTP.
+        
+        Args:
+            tool_name: Name of the MCP tool to call
+            arguments: Tool arguments
             
-        result = await self.session.call_tool(tool_name, arguments=arguments)
+        Returns:
+            Tool response as string
+            
+        Raises:
+            RuntimeError: If MCP call fails
+        """
+        if not self.github_token:
+            raise ValueError("GITHUB_PERSONAL_ACCESS_TOKEN is required. Please ask the user for their GitHub PAT.")
         
-        output = []
-        for content in result.content:
-            if content.type == "text":
-                output.append(content.text)
+        payload = {
+            "jsonrpc": "2.0",
+            "method": f"tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": arguments
+            },
+            "id": 1
+        }
         
-        return "\n".join(output)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.github_token}"
+        }
+        
+        try:
+            logger.info(f"Calling GitHub MCP tool via APISIX: {tool_name}")
+            logger.debug(f"Payload: {payload}")
+            
+            response = requests.post(
+                self.mcp_endpoint,
+                json=payload,
+                headers=headers,
+                timeout=30
+            )
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            logger.info(f"GitHub MCP call successful: {tool_name}")
+            logger.debug(f"Response: {result}")
+            
+            # Extract text content from JSON-RPC response
+            if "result" in result and "content" in result["result"]:
+                output = []
+                for content in result["result"]["content"]:
+                    if content.get("type") == "text":
+                        output.append(content["text"])
+                return "\n".join(output)
+            
+            # Fallback: return entire result as string
+            return str(result.get("result", result))
+            
+        except requests.Timeout as e:
+            logger.error(f"GitHub MCP call timeout: {e}")
+            raise RuntimeError(f"GitHub MCP call timeout: {tool_name}") from e
+            
+        except requests.HTTPError as e:
+            logger.error(f"GitHub MCP HTTP error: {e.response.status_code} - {e.response.text}")
+            raise RuntimeError(f"GitHub MCP HTTP error: {e}") from e
+            
+        except Exception as e:
+            logger.error(f"Unexpected GitHub MCP error: {e}", exc_info=True)
+            raise RuntimeError(f"GitHub MCP call failed: {e}") from e
 
 
 # --- TOOLS ---
