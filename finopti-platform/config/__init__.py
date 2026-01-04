@@ -252,8 +252,7 @@ ENABLE_STRUCTURED_LOGGING = _fetch_config("ENABLE_STRUCTURED_LOGGING", default="
 # Development
 DEV_MODE = _fetch_config("DEV_MODE", default="false").lower() == "true"
 
-# OpenAI (if needed)
-OPENAI_API_KEY = _fetch_config("OPENAI_API_KEY")
+
 
 # =======================================================================================
 # VALIDATION
@@ -305,7 +304,7 @@ class Config:
     ENABLE_STRUCTURED_LOGGING = ENABLE_STRUCTURED_LOGGING
     DEV_MODE = DEV_MODE
     
-    OPENAI_API_KEY = OPENAI_API_KEY
+
     
     @classmethod
     def validate(cls) -> bool:
