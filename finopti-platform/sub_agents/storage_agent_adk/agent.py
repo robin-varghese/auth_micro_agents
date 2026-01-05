@@ -21,59 +21,165 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 )
 from typing import Dict, Any, List
 import asyncio
+import json
 import requests  # For HTTP MCP client
 import logging
 
 from config import config
 
-# MCP Client
+# Setup logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+# MCP Client for Storage via Docker Stdio
 class StorageMCPClient:
-    """Client for connecting to Storage MCP server via APISIX HTTP"""
+    """Client for connecting to Storage MCP server via Docker Stdio"""
     
     def __init__(self):
-        self.apisix_url = os.getenv('APISIX_URL', 'http://apisix:9080')
-        self.mcp_endpoint = f"{self.apisix_url}/mcp/storage"
+        self.image = os.getenv('STORAGE_MCP_DOCKER_IMAGE', 'finopti-storage-mcp')
+        self.mount_path = os.getenv('GCLOUD_MOUNT_PATH', f"{os.path.expanduser('~')}/.config/gcloud:/root/.config/gcloud")
+        self.process = None
+        self.request_id = 0
+        logger.info(f"StorageMCPClient initialized for image: {self.image}")
+        logger.info(f"StorageMCPClient command mount path: {self.mount_path}")
     
     
     async def __aenter__(self):
+        await self.connect()
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        pass
+        await self.close()
     
-
+    async def connect(self):
+        """Start the MCP server container"""
+        
+        # Check if running in a container with access to docker socket
+        cmd = [
+            "docker", "run", 
+            "-i", "--rm", 
+            "-v", self.mount_path,
+            self.image
+        ]
+        
+        logger.info(f"Starting MCP server with command: {' '.join(cmd)}")
+        
+        try:
+            self.process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            # --- MCP Initialization Handshake ---
+            # 1. Send 'initialize' request
+            init_payload = {
+                "jsonrpc": "2.0",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "finopti-storage-agent", "version": "1.0"}
+                },
+                "id": 0
+            }
+            
+            logger.info("Sending MCP initialize request...")
+            self.process.stdin.write((json.dumps(init_payload) + "\n").encode())
+            await self.process.stdin.drain()
+            
+            # 2. Wait for initialize response
+            while True:
+                line = await self.process.stdout.readline()
+                if not line:
+                     stderr = await self.process.stderr.read()
+                     raise RuntimeError(f"MCP server closed during initialization. Stderr: {stderr.decode()}")
+                
+                try:
+                    msg = json.loads(line.decode())
+                    if msg.get("id") == 0:
+                        if "error" in msg:
+                             raise RuntimeError(f"MCP initialization error: {msg['error']}")
+                        logger.info("MCP Initialized successfully.")
+                        break
+                except json.JSONDecodeError:
+                    logger.warning(f"Invalid JSON during init: {line}")
+            
+            # 3. Send 'notifications/initialized'
+            notify_payload = {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {}
+            }
+            self.process.stdin.write((json.dumps(notify_payload) + "\n").encode())
+            await self.process.stdin.drain()
+            
+        except Exception as e:
+            logger.error(f"Failed to start MCP server: {e}")
+            if self.process:
+                try:
+                    self.process.terminate()
+                except ProcessLookupError:
+                    pass
+            raise
+        
+    async def close(self):
+        """Stop the MCP server"""
+        if self.process:
+            try:
+                self.process.terminate()
+                await self.process.wait()
+            except ProcessLookupError:
+                pass
+            self.process = None
             
             
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
-        """Call Storage MCP tool via APISIX HTTP"""
+        """Call Storage MCP tool via Stdio"""
+        if not self.process:
+            raise RuntimeError("MCP client not connected")
+            
+        self.request_id += 1
         payload = {
             "jsonrpc": "2.0",
-            "method": f"tools/call",
+            "method": "tools/call",
             "params": {"name": tool_name, "arguments": arguments},
-            "id": 1
+            "id": self.request_id
         }
         
+        json_str = json.dumps(payload) + "\n"
+        
         try:
-            response = requests.post(
-                self.mcp_endpoint,
-                json=payload,
-                timeout=30
-            )
-            response.raise_for_status()
-            try:
-                result = response.json()
-            except ValueError:
-                return response.text
+            # Write request
+            self.process.stdin.write(json_str.encode())
+            await self.process.stdin.drain()
             
-            # Extract text content
-            if "result" in result and "content" in result["result"]:
-                output = []
-                for content in result["result"]["content"]:
-                    if content.get("type") == "text":
-                        output.append(content["text"])
-                return "\n".join(output)
-            
-            return str(result.get("result", result))
+            # Read response
+            while True:
+                line = await self.process.stdout.readline()
+                if not line:
+                    # EOF
+                    stderr = await self.process.stderr.read()
+                    raise RuntimeError(f"MCP server closed connection. Stderr: {stderr.decode()}")
+                
+                try:
+                    msg = json.loads(line.decode())
+                    if msg.get("id") == self.request_id:
+                        if "error" in msg:
+                            raise RuntimeError(f"MCP tool error: {msg['error']}")
+                        
+                        result = msg.get("result", {})
+                        if "content" in result:
+                            output = []
+                            for content in result["content"]:
+                                if content.get("type") == "text":
+                                    output.append(content["text"])
+                            return "\n".join(output)
+                        
+                        return str(result.get("result", result))
+                except json.JSONDecodeError:
+                     logger.warning(f"Invalid JSON from MCP server: {line}")
             
         except Exception as e:
             raise RuntimeError(f"Storage MCP call failed: {e}") from e
@@ -81,12 +187,19 @@ class StorageMCPClient:
 # Global MCP client
 _mcp_client = None
 
+async def ensure_client():
+    global _mcp_client
+    if not _mcp_client:
+        _mcp_client = StorageMCPClient()
+        await _mcp_client.connect()
+    return _mcp_client
+
 # --- TOOLS ---
 
 async def list_buckets() -> Dict[str, Any]:
     """ADK Tool: List GCS buckets"""
     try:
-        client = StorageMCPClient()
+        client = await ensure_client()
         output = await client.call_tool("list_buckets", {})
         return {"success": True, "output": output}
     except Exception as e:
@@ -95,7 +208,7 @@ async def list_buckets() -> Dict[str, Any]:
 async def list_objects(bucket_name: str, prefix: str = "") -> Dict[str, Any]:
     """ADK Tool: List objects in a bucket"""
     try:
-        client = StorageMCPClient()
+        client = await ensure_client()
         output = await client.call_tool("list_objects", {"bucket_name": bucket_name, "prefix": prefix})
         return {"success": True, "output": output}
     except Exception as e:
@@ -104,7 +217,7 @@ async def list_objects(bucket_name: str, prefix: str = "") -> Dict[str, Any]:
 async def read_object(bucket_name: str, object_name: str) -> Dict[str, Any]:
     """ADK Tool: Read object content"""
     try:
-        client = StorageMCPClient()
+        client = await ensure_client()
         output = await client.call_tool("read_object", {"bucket_name": bucket_name, "object_name": object_name})
         return {"success": True, "output": output}
     except Exception as e:

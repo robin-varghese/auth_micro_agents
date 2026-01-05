@@ -6,7 +6,7 @@ The **FinOptiAgents Platform** is an enterprise-grade AI microservices architect
 
 ## 🏗️ High-Level Architecture
 
-The platform follows a strict **Microservices & Service Mesh** pattern where all traffic is mediated by **Apache APISIX**.
+The platform follows a strict **Microservices & Service Mesh** pattern where user traffic is mediated by **Apache APISIX**, but **MCP Tool Execution** is handled via high-performance direct **Asyncio Subprocesses**.
 
 ```mermaid
 flowchart TB
@@ -16,19 +16,18 @@ flowchart TB
         APISIX -->|Route /orchestrator| Orch["Orchestrator Agent<br>(Google ADK)"]
         APISIX -->|Route /agent/gcloud| GAgent["GCloud Agent<br>(Google ADK)"]
         APISIX -->|Route /agent/monitoring| MAgent["Monitoring Agent<br>(Google ADK)"]
-
-        Orch -->|Consult Policy| OPA["OPA Sidecar<br>(AuthZ Policy)"]
-        
-        Orch -.->|Delegation via Mesh| APISIX
-        GAgent -.->|Tool Call| GMCP["GCloud MCP Server<br>(Node.js)"]
-        MAgent -.->|Tool Call| MMCP["Monitoring MCP Server<br>(Python)"]
-        
         APISIX -->|Route /agent/github| GHAgent["GitHub Agent"]
         APISIX -->|Route /agent/storage| SAgent["Storage Agent"]
         APISIX -->|Route /agent/db| DBAgent["DB Agent"]
+
+        Orch -->|Consult Policy| OPA["OPA Sidecar<br>(AuthZ Policy)"]
+        Orch -.->|Delegation via Mesh| APISIX
         
-        GHAgent -.->|Tool Call| GHMCP["GitHub MCP Server"]
-        SAgent -.->|Tool Call| SMCP["Storage MCP Server"]
+        %% Direct MCP Integration (Stdio)
+        GAgent -.->|Spawn (Stdio)| GMCP["GCloud MCP Container"]
+        MAgent -.->|Spawn (Stdio)| MMCP["Monitoring MCP Container"]
+        GHAgent -.->|Spawn (Stdio)| GHMCP["GitHub MCP Container"]
+        SAgent -.->|Spawn (Stdio)| SMCP["Storage MCP Container"]
         DBAgent -.->|Tool Call| DBMCP["DB Toolbox MCP"]
     end
 
@@ -43,17 +42,17 @@ flowchart TB
 
 | Component | Technology | Responsibility |
 |-----------|------------|----------------|
-| **Service Mesh** | Apache APISIX | Centralized Routing, Rate Limiting, Observability Injection |
+| **Service Mesh** | Apache APISIX | Centralized Routing, Rate Limiting, Observability Injection for User & Agent traffic |
 | **Orchestrator** | Google ADK (Python) | Intent Detection, Plan Generation, Agent Delegation |
 | **Sub-Agents** | Google ADK (Python) | Domain-specific execution (GCloud resource mgmt, Monitoring) |
-| **MCP Servers** | MCP Protocol | Standardized tool execution for GCloud and Monitoring tools |
+| **MCP Integration**| Asyncio Stdio | **Direct Docker Spawning** for standardized tool execution (No HTTP overhead) |
 | **Frontend** | Streamlit + OAuth | User Interface with Google Sign-In integration |
 | **Security** | OPA (Rego) | Fine-grained Role-Based Access Control (RBAC) |
 | **Config** | Secret Manager | Secure storage for API keys and Service Account credentials |
 
 ---
 
-## � Docker Services & Images
+## 🐳 Docker Services & Images
 
 | Service | Container Name | Image / Build Context | Internal Port | Protocol | Description |
 |---------|----------------|-----------------------|---------------|----------|-------------|
@@ -63,24 +62,79 @@ flowchart TB
 | **Orchestrator** | `finopti-orchestrator` | `build: orchestrator_adk/` | 5000 | HTTP | Main ADK Agent (Brain) |
 | **GCloud Agent** | `finopti-gcloud-agent` | `build: sub_agents/gcloud_agent_adk/` | 5001 | HTTP | Wrapper for GCloud operations |
 | **Monitoring Agent** | `finopti-monitoring-agent` | `build: sub_agents/monitoring_agent_adk/` | 5002 | HTTP | Wrapper for Observability tools |
-| **GCloud MCP** | `finopti-gcloud-mcp` | `finopti-gcloud-mcp` | 6001 | HTTP (via APISIX) | MCP Server for gcloud CLI |
-| **Monitoring MCP** | `finopti-monitoring-mcp` | `finopti-monitoring-mcp` | 6002 | HTTP (via APISIX) | MCP Server for logs/metrics |
+| **GCloud MCP** | `finopti-gcloud-mcp` | `finopti-gcloud-mcp` | N/A | Stdio | Spawned on-demand by GCloud Agent |
+| **Monitoring MCP** | `finopti-monitoring-mcp` | `finopti-monitoring-mcp` | N/A | Stdio | Spawned on-demand by Monitoring Agent |
 | **Loki** | `finopti-loki` | `grafana/loki:2.9.3` | 3100 | HTTP | Log Aggregation System |
 | **Promtail** | `finopti-promtail` | `grafana/promtail:3.0.0` | N/A | HTTP | Log Collector & Shipper |
 | **Grafana** | `finopti-grafana` | `grafana/grafana:10.2.3` | 3000 | HTTP | Visualization Dashboard (UI on 3001) |
 | **Streamlit UI** | `finopti-ui` | `build: ui/` | 8501 | HTTP | Frontend Application |
-| **APISIX Init** | `finopti-apisix-init` | `curlimages/curl:latest` | N/A | - | Ephemeral initialization script |
-| **APISIX Dashboard**| `finopti-apisix-dashboard`| `apache/apisix-dashboard:3.0.1-alpine`| 9000 | HTTP | Web UI for APISIX Management |
 | **GitHub Agent** | `finopti-github-agent` | `build: sub_agents/github_agent_adk/` | 5003 | HTTP | Wrapper for GitHub operations |
 | **Storage Agent** | `finopti-storage-agent` | `build: sub_agents/storage_agent_adk/` | 5004 | HTTP | Wrapper for GCS operations |
 | **DB Agent** | `finopti-db-agent` | `build: sub_agents/db_agent_adk/` | 5005 | HTTP | Wrapper for Database Toolbox |
-| **GitHub MCP** | `finopti-github-mcp` | `finopti-github-mcp` | 6003 | HTTP (via APISIX) | MCP Server for GitHub |
-| **Storage MCP** | `finopti-storage-mcp` | `finopti-storage-mcp` | 6004 | HTTP (via APISIX) | MCP Server for GCS |
-| **DB Toolbox MCP**| `finopti-db-mcp-toolbox`| `us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.22.0`| 5000 | HTTP (via APISIX) | MCP Server for PostgreSQL |
+| **GitHub MCP** | `finopti-github-mcp` | `finopti-github-mcp` | N/A | Stdio | Spawned on-demand by GitHub Agent |
+| **Storage MCP** | `finopti-storage-mcp` | `finopti-storage-mcp` | N/A | Stdio | Spawned on-demand by Storage Agent |
+| **DB Toolbox MCP**| `finopti-db-mcp-toolbox`| `us-central1-docker.pkg.dev/...`| 5000 | HTTP | Still accessed via HTTP (Toolbox pattern) |
 
 ---
 
-## 🔐 Authentication & Authorization
+## �️ Comprehensive Observability
+
+We implement a **Single Pane of Glass** observability strategy. **Log flow is confirmed from all containers to Loki.**
+
+### 1. Structured Logging (The "Trace ID")
+Every request is assigned a `trace_id` by APISIX. This ID is propagated to Orchestrator and Agents.
+
+### 2. The Stack (Loki + Grafana)
+- **Promtail**: Scrapes Docker container logs.
+- **Loki**: Aggregates logs without indexing full text (efficient).
+- **Grafana**: Visualizes logs and metrics.
+
+### 3. Troubleshooting with Grafana
+Access Grafana at **http://localhost:3001** (Default: `admin`/`admin`).
+
+#### Verified Log Queries:
+- **All Platform Logs**: `{com_docker_compose_project="finopti-platform"}`
+- **Specific Service**: `{container=~"finopti-orchestrator.*"}`
+- **Errors**: `{com_docker_compose_project="finopti-platform"} |= "ERROR"`
+
+---
+
+## 🛠️ Onboarding New Services for Observability
+
+To ensure a new Docker container's logs are automatically ingested by the observability stack, follow these rules:
+
+### Requirement 1: Use Docker Compose Project
+Ensure your service is defined in `docker-compose.yml`. Promtail is configured to scrape all containers with the label:
+`com.docker.compose.project=finopti-platform`
+*(matches the default behavior when running `docker-compose up` in this directory)*
+
+### Requirement 2: Log to Stdout/Stderr
+Your application **MUST** write logs to standard output (`stdout`) or standard error (`stderr`).
+- **Do not** write to local log files inside the container.
+- For Python, ensure output is unbuffered in your `Dockerfile`:
+  ```dockerfile
+  ENV PYTHONUNBUFFERED=1
+  ```
+
+### Requirement 3: Use Structured JSON Logging (Recommended)
+Promtail is configured to parse JSON logs and extract specific keys as indexed labels. For best results, your logs should be structured JSON with these fields:
+
+```json
+{
+  "timestamp": "2026-01-05T12:00:00Z",
+  "level": "INFO",
+  "service": "my-service-name",
+  "request_id": "12345-uuid",
+  "user_email": "user@example.com",
+  "message": "Operation completed successfully"
+}
+```
+
+If you use simple text logging, it will still be captured, but you won't be able to filter efficiently by `request_id` or `user_email` in Grafana.
+
+---
+
+## �🔐 Authentication & Authorization
 
 ### Authentication Layer (Google OAuth)
 The platform uses **Google OAuth 2.0** for user identity.
@@ -111,36 +165,21 @@ Each agent is a standalone microservice containing:
 
 ### Plugins & Tooling
 Agents execute actions via **Tools** defined using the ADK's `FunctionTool` or **MCP Clients**.
-- **GCloud Agent**: Uses tools to call the `gcloud-mcp` server.
-- **Monitoring Agent**: Uses tools to call the `monitoring-mcp` server.
-- **GitHub Agent**: Uses tools to call the `github-mcp` server.
-- **Storage Agent**: Uses tools to call the `storage-mcp` server.
-- **DB Agent**: Uses tools to call the `db-toolbox` server via SSE.
+- **GCloud Agent**: Spawns `gcloud-mcp` container via Asyncio.
+- **Monitoring Agent**: Spawns `monitoring-mcp` container via Asyncio.
+- **GitHub Agent**: Spawns `github-mcp` container via Asyncio.
+- **Storage Agent**: Spawns `storage-mcp` container via Asyncio.
 - **GitHub Agent (`finopti-github-agent`)**:
   - **Dynamic Authentication**: Supports per-session **Personal Access Tokens (PAT)**.
     - **Default**: Uses `github-personal-access-token` from Secret Manager.
-    - **Interactive**: If the default token fails or is missing, the agent will ask the user for a PAT via chat. The PAT is then used for the duration of the session.
-  - **Repo URL Support**: Users can provide GitHub URLs (e.g., `https://github.com/owner/repo`), and the agent will automatically extract context.
-
-**Example Agent Definition (Snippet):**
-```python
-model = Model(model_name="gemini-1.5-flash")
-agent = Agent(
-    model=model,
-    tools=[list_vms, create_vm],  # Tools defined via MCP
-    system_instruction="You are a GCloud infrastructure expert..."
-)
-```
+    - **Interactive**: If the default token fails or is missing, the agent will ask the user for a PAT via chat.
 
 ### 🛡️ Resilience: Reflect & Retry
 
 The platform implements **active resilience** at the application layer using the Google ADK's `ReflectAndRetryToolPlugin`.
 
 -   **Mechanism**: If an agent's tool call (e.g., a `gcloud` command) fails, the plugin intercepts the error and feeds it back to the LLM. The LLM then "reflects" on the error and attempts the call again with corrected parameters.
--   **Coverage**: Enabled on Orchestrator, GCloud Agent, and Monitoring Agent.
--   **Configuration**:
-    -   `REFLECT_RETRY_MAX_ATTEMPTS`: Max retries per tool call (Default: **3**).
-    -   `REFLECT_RETRY_THROW_ON_FAIL`: If true, raises an exception after all retries fail.
+-   **Coverage**: Enabled on all Agents.
 
 ### 📊 Agent Analytics (BigQuery)
 
@@ -148,42 +187,9 @@ We use the **Google ADK BigQuery Analytics Plugin** to telemetrically log all AD
 
 -   **Purpose**: Provides deep insights into agent behavior, token usage, tool execution success/failure, and user intent.
 -   **Configuration**:
-    -   `BQ_ANALYTICS_ENABLED`: Master switch (Default: `true`).
+    -   `BQ_ANALYTICS_ENABLED`: Master switch (Set to `false` if causing shutdown delays).
     -   `BQ_ANALYTICS_DATASET`: Target Dataset (Default: `agent_analytics`).
     -   `BQ_ANALYTICS_TABLE`: Target Table (Default: `agent_events_v2`).
--   **Data Captured**:
-    -   `timestamp`: Event time.
-    -   `event_type`: Type of operation (e.g., `TOOL_CALL`, `AGENT_RESPONSE`).
-    -   `agent_name`: Identity of the agent.
-    -   `user_email`: Traceable to the specific user.
-    -   `tool_name`: Which tool was invoked (if applicable).
-
----
-
-## 👁️ Comprehensive Observability
-
-We implement a **Single Pane of Glass** observability strategy.
-
-### 1. Structured Logging (The "Trace ID")
-Every request is assigned a `trace_id` by APISIX. This ID is propagated to:
-- Orchestrator
-- Sub-Agents
-- MCP Servers
-
-This allows us to trace a single user prompt across the entire microservices chain.
-
-### 2. The Stack (Loki + Grafana)
-- **Promtail**: Scrapes Docker container logs.
-- **Loki**: Aggregates logs without indexing full text (efficient).
-- **Grafana**: Visualizes logs and metrics.
-
-### 3. Troubleshooting with Grafana
-Access Grafana at **http://localhost:3001** (Default: `admin`/`admin`).
-
-**Common Queries:**
-- **Find all logs for a request**: `{trace_id="<id_from_ui>"}`
-- **Filter errors**: `{container_name=~"finopti.+"} |= "ERROR"`
-- **Agent Performance**: `{service="orchestrator"}` to see reasoning steps.
 
 ---
 
@@ -225,13 +231,9 @@ python3 run_tests.py
 ```
 
 ### Test Phases
-1. **MCP Phase**: Validates that Mock Servers respond to JSON-RPC.
-2. **APISIX Phase**: Verifies Gateway routing and Upstream health.
-3. **Agent Phase**: Tests individual agents (Orchestrator, GCloud) in isolation.
-4. **End-to-End (E2E) Phase**: Simulates a real user prompt flowing through the system.
-
-### BigQuery Analytics Testing
-Set `BQ_ANALYTICS_ENABLED=true` in Secret Manager to enable cost analysis testing. The `run_tests.py` script will verify that rows are inserted into BigQuery during E2E tests.
+1. **APISIX Phase**: Verifies Gateway routing and Upstream health.
+2. **Agent Phase**: Tests individual agents (Orchestrator, GCloud) in isolation.
+3. **End-to-End (E2E) Phase**: Simulates a real user prompt flowing through the system.
 
 ---
 
@@ -241,15 +243,15 @@ Set `BQ_ANALYTICS_ENABLED=true` in Secret Manager to enable cost analysis testin
 finopti-platform/
 ├── orchestrator_adk/       # 🧠 The Brain: Main ADK Agent
 ├── sub_agents/             # 🦾 The Arms: Specialized ADK Agents
-│   ├── gcloud_agent_adk/   # Handles Compute/Infra tasks
-│   ├── monitoring_agent_adk/# Handles Logs/Metrics tasks
-│   ├── github_agent_adk/   # Handles GitHub tasks
-│   ├── storage_agent_adk/  # Handles Cloud Storage tasks
-│   └── db_agent_adk/       # Handles SQL/DB tasks
+│   ├── gcloud_agent_adk/   # 
+│   ├── monitoring_agent_adk/
+│   ├── github_agent_adk/   
+│   ├── storage_agent_adk/  
+│   └── db_agent_adk/       
 ├── ui/                     # 🖥️ Streamlit Frontend
 ├── config/                 # ⚙️ Shared Config (Secret Manager)
-├── apisix_conf/            # 🚦 Gateway Routes & Plugins
-├── opa_policy/             # 🛡️ AuthZ Rules (Rego)
+├── apisix_conf/            # 🚦 Gateway Routes
+├── opa_policy/             # 🛡️ AuthZ Rules
 ├── observability/          # 👁️ Loki/Promtail/Grafana Config
 ├── docs/                   # 📚 Detailed Documentation
 ├── scripts/                # 🔧 DevOps & Setup Scripts
@@ -262,98 +264,20 @@ finopti-platform/
 The platform relies on several external MCP servers, built from the [robin-varghese/mcp-server](https://github.com/robin-varghese/mcp-server/) repository:
 
 1. **GCloud MCP Server** (`finopti-gcloud-mcp`)
-   - Provides `gcloud` CLI execution capabilities.
-   - [View Source Strategy](https://github.com/robin-varghese/mcp-server/blob/main/gcloud-mcpserver/remote-mcp-server/gcloud-mcp-server/gcloud_mcp_strategy.md)
-
 2. **Monitoring MCP Server** (`finopti-monitoring-mcp`)
-   - Provides Google Cloud Monitoring metrics and logs.
-   - [View Source Strategy](https://github.com/robin-varghese/mcp-server/blob/main/gcloud-mcpserver/remote-mcp-server/gcloud-monitoring-mcp/gcloud_monitoring_mcp_strategy.md)
-
 3. **GitHub MCP Server** (`finopti-github-mcp`)
-   - Provides capabilities to search repositories, read files, and manage issues/PRs.
-   - [View Source](https://github.com/robin-varghese/mcp-server/blob/main/github-mcp-server)
-
 4. **Google Storage MCP** (`finopti-storage-mcp`)
-   - Provides capabilities to manage Cloud Storage buckets and objects.
-   - [View Source](https://github.com/robin-varghese/mcp-server/blob/main/gcloud-mcpserver/remote-mcp-server/google-storage-mcp)
-
 5. **Google Database Toolbox** (`finopti-db-toolbox`)
-   - A toolbox for database interactions (PostgreSQL).
-   - [View Source](https://github.com/robin-varghese/mcp-server/blob/main/gcloud-mcpserver/google-db-mcp-toolbox)
 
 For build instructions, see [docs/mcp_server_build_strategy.md](docs/mcp_server_build_strategy.md).
 
-### 🛠️ How to Build External MCP Servers
-
-Since these images are not in the main repository, you must build them manually **before** running `deploy-local.sh`.
-
-```bash
-# 1. Clone the external repository
-git clone https://github.com/robin-varghese/mcp-server.git
-cd mcp-server
-
-# 2. Build GCloud MCP Server
-cd gcloud-mcpserver/remote-mcp-server/gcloud-mcp-server
-docker build -t finopti-gcloud-mcp .
-
-# 3. Build Monitoring MCP Server
-cd ../gcloud-monitoring-mcp
-docker build -t finopti-monitoring-mcp .
-
-# 4. Build GitHub MCP Server
-cd ../../../github-mcp-server
-docker build -t finopti-github-mcp .
-
-# 5. Build Google Storage MCP
-cd ../gcloud-mcpserver/remote-mcp-server/google-storage-mcp
-docker build -t finopti-storage-mcp .
-
-# 6. Build Google Database Toolbox
-cd ../../../gcloud-mcpserver/google-db-mcp-toolbox
-docker-compose up -d
-```
-
 ---
 
-## 🐛 Troubleshooting & FAQ
-
-**Q: "OAuth Disabled" in UI?**
-A: Ensure your GCP user has access to the Secret Manager secrets defined in `SECRET_MANAGER_SETUP.md`.
-
-**Q: Agents can't talk to each other?**
-A: Check `docker-compose ps`. All containers must be healthy. ensure `finopti-net` bridge network is effectively bridging them.
-
-**Q: How to add a new plugin?**
-A:
-1. Define the tool in `sub_agents/<agent>/tools.py`.
-2. Register it in `agent.py`.
-3. Rebuild the agent container: `docker-compose build <service>`.
-
----
-
-**Last Updated:** 2026-01-03
-**Status:** Production Ready
-
----
-
-## 📝 Document History
-
-## Version History
+## 📝 version History
 
 | Version | Date       | Changes |
 |---------|------------|---------|
-| **1.1.0** | 2026-01-04 | **MCP Refactoring** - All 5 agents now route MCP calls via APISIX (stdio/direct → HTTP). Added routes 9-11. Full observability achieved. |
+| **2.0.0** | 2026-01-05 | **Architecture Overhaul**: Removed APISIX requirement for MCP protocols. Implemented direct, asynchronous stdio integration via Docker spawning for GCloud, Monitoring, GitHub, and Storage agents. Fixed timeout issues by optimizing I/O. |
+| 1.1.0   | 2026-01-04 | MCP Refactoring - HTTP via APISIX (Deprecated in v2.0). |
 | 1.0.1   | 2026-01-02 | Added dynamic GitHub PAT injection and auth/credentials flow documentation. |
 | 1.0.0   | 2026-01-01 | Initial release: Google ADK integration, APISIX, OAuth, OPA, PLG stack. |
-| Version | Date       | Author | Revision Summary |
-|---------|------------|--------|------------------|
-| 1.1.0   | 2026-01-01 | Antigravity AI | Comprehensive update covering Service Mesh, ADK, and Observability architecture. |
-| 1.2.0   | 2026-01-01 | Antigravity AI | Added detailed Docker Services & Images reference. |
-| 1.3.0   | 2026-01-01 | Antigravity AI | Added external link to MCP Server source code repository. |
-| 1.3.1   | 2026-01-01 | Antigravity AI | Detailed specific links for GCloud vs Monitoring MCP servers. |
-| 1.3.2   | 2026-01-01 | Antigravity AI | Added manual build instructions for external MCP docker images. |
-| 1.3.3   | 2026-01-01 | Antigravity AI | Added details on the Reflect-and-Retry resilience mechanism. |
-| 1.3.4   | 2026-01-01 | Antigravity AI | Added detailed section on BigQuery Agent Analytics plugin. |
-| 1.4.0   | 2026-01-03 | Antigravity AI | Updated MCP server repo URL and added GitHub, Storage, and DB MCP servers details. |
-| 1.5.0   | 2026-01-03 | Antigravity AI | Added new agents to Architecture, Service Tables, and Directory Structure. |
-| 1.6.0   | 2026-01-03 | Antigravity AI | Documented Dynamic PAT support for GitHub Agent. |

@@ -27,65 +27,110 @@ import logging
 
 from config import config
 
-# MCP Client for Monitoring
+# MCP Client for Monitoring via Docker Stdio
 class MonitoringMCPClient:
-    """Client for connecting to Monitoring MCP server via APISIX HTTP"""
+    """Client for connecting to Monitoring MCP server via Docker Stdio"""
     
     def __init__(self):
-        self.apisix_url = os.getenv('APISIX_URL', 'http://apisix:9080')
-        self.mcp_endpoint = f"{self.apisix_url}/mcp/monitoring"
+        self.image = os.getenv('MONITORING_MCP_DOCKER_IMAGE', 'finopti-monitoring-mcp')
+        self.mount_path = os.getenv('GCLOUD_MOUNT_PATH', f"{os.path.expanduser('~')}/.config/gcloud:/root/.config/gcloud")
+        self.process = None
+        self.request_id = 0
+        logging.info(f"MonitoringMCPClient initialized for image: {self.image}")
+        logging.info(f"MonitoringMCPClient command mount path: {self.mount_path}")
     
     
     async def __aenter__(self):
+        await self.connect()
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        pass
+        await self.close()
     
     async def connect(self):
-        """Establish connection (no-op for HTTP)"""
-        pass
+        """Start the MCP server container"""
+        import subprocess
+        
+        # Check if running in a container with access to docker socket
+        cmd = [
+            "docker", "run", 
+            "-i", "--rm", 
+            "-v", self.mount_path,
+            self.image
+        ]
+        
+        logging.info(f"Starting MCP server with command: {' '.join(cmd)}")
+        
+        try:
+            self.process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1  # Line buffered
+            )
+            
+        except Exception as e:
+            logging.error(f"Failed to start MCP server: {e}")
+            raise
         
     async def close(self):
-        """Close connection (no-op for HTTP)"""
-        pass
+        """Stop the MCP server"""
+        if self.process:
+            self.process.terminate()
+            self.process.wait()
+            self.process = None
 
     
     async def call_tool(self, tool_name: str, arguments: dict) -> Dict[str, Any]:
-        """Call Monitoring MCP tool via APISIX HTTP"""
+        """Call Monitoring MCP tool via Stdio"""
+        if not self.process:
+            raise RuntimeError("MCP client not connected")
+            
+        self.request_id += 1
         payload = {
             "jsonrpc": "2.0",
-            "method": f"tools/call",
+            "method": "tools/call",
             "params": {"name": tool_name, "arguments": arguments},
-            "id": 1
+            "id": self.request_id
         }
         
+        json_str = json.dumps(payload) + "\n"
+        
         try:
-            response = requests.post(
-                self.mcp_endpoint,
-                json=payload,
-                timeout=30
-            )
-            response.raise_for_status()
-            try:
-                result = response.json()
-            except json.JSONDecodeError:
-                # Handle empty or non-JSON response gracefully
-                logging.warning(f"Invalid JSON response: {response.text}")
-                return {"result": {"content": [{"type": "text", "text": response.text}]}}
+            # Write request
+            self.process.stdin.write(json_str)
+            self.process.stdin.flush()
             
-            # Extract text content
-            if "result" in result and "content" in result["result"]:
-                output_text = ""
-                for content in result["result"]["content"]:
-                    if content.get("type") == "text":
-                        output_text += content["text"]
+            # Read response
+            while True:
+                line = self.process.stdout.readline()
+                if not line:
+                    # EOF
+                    stderr = self.process.stderr.read()
+                    raise RuntimeError(f"MCP server closed connection. Stderr: {stderr}")
+                
                 try:
-                    return json.loads(output_text)
+                    msg = json.loads(line)
+                    if msg.get("id") == self.request_id:
+                        if "error" in msg:
+                            raise RuntimeError(f"MCP tool error: {msg['error']}")
+                        
+                        result = msg.get("result", {})
+                        if "content" in result:
+                            output_text = ""
+                            for content in result["content"]:
+                                if content.get("type") == "text":
+                                    output_text += content["text"]
+                            try:
+                                return json.loads(output_text)
+                            except json.JSONDecodeError:
+                                return {"output": output_text}
+                        
+                        return result
                 except json.JSONDecodeError:
-                    return {"output": output_text}
-            
-            return result.get("result", result)
+                     logging.warning(f"Invalid JSON from MCP server: {line}")
             
         except Exception as e:
             raise RuntimeError(f"Monitoring MCP call failed: {e}") from e

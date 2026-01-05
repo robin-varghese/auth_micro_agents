@@ -27,68 +27,114 @@ import logging
 
 from config import config
 
-# MCP Client for GCloud
+# MCP Client for GCloud via Docker Stdio
 class GCloudMCPClient:
-    """Client for connecting to GCloud MCP server via APISIX HTTP"""
+    """Client for connecting to GCloud MCP server via Docker Stdio"""
     
     def __init__(self):
-        self.apisix_url = os.getenv('APISIX_URL', 'http://apisix:9080')
-        self.mcp_endpoint = f"{self.apisix_url}/mcp/gcloud"
-        logging.info(f"GCloudMCPClient initialized with endpoint: {self.mcp_endpoint}")
+        self.image = os.getenv('GCLOUD_MCP_DOCKER_IMAGE', 'finopti-gcloud-mcp')
+        self.mount_path = os.getenv('GCLOUD_MOUNT_PATH', f"{os.path.expanduser('~')}/.config/gcloud:/root/.config/gcloud")
+        self.process = None
+        self.request_id = 0
+        logging.info(f"GCloudMCPClient initialized for image: {self.image}")
+        logging.info(f"GCloudMCPClient command mount path: {self.mount_path}")
     
     async def __aenter__(self):
+        await self.connect()
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        pass
+        await self.close()
 
     async def connect(self):
-        """Establish connection (no-op for HTTP)"""
-        pass
+        """Start the MCP server container"""
+        import subprocess
         
-    async def close(self):
-        """Close connection (no-op for HTTP)"""
-        pass
-    
-    async def call_tool(self, tool_name: str, arguments: dict) -> Dict[str, Any]:
-        """Call GCloud MCP tool via APISIX HTTP"""
-        payload = {
-            "jsonrpc": "2.0",
-            "method": f"tools/call",
-            "params": {"name": tool_name, "arguments": arguments},
-            "id": 1
-        }
+        # Check if running in a container with access to docker socket
+        # The command: docker run -i --rm -v <mount> <image>
+        # Note: -i is crucial for stdin. -t is NOT used to avoid TTY control chars.
+        cmd = [
+            "docker", "run", 
+            "-i", "--rm", 
+            "-v", self.mount_path,
+            self.image
+        ]
+        
+        logging.info(f"Starting MCP server with command: {' '.join(cmd)}")
         
         try:
-            response = requests.post(
-                self.mcp_endpoint,
-                json=payload,
-                timeout=30
+            self.process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1  # Line buffered
             )
-            response.raise_for_status()
-            try:
-                result = response.json()
-            except json.JSONDecodeError:
-                 # Handle empty or non-JSON response gracefully
-                logging.warning(f"Invalid JSON response: {response.text}")
-                return {"output": response.text}
-            
-            # Extract text content
-            if "result" in result and "content" in result["result"]:
-                output_text = ""
-                for content in result["result"]["content"]:
-                    if content.get("type") == "text":
-                        output_text += content["text"]
-                try:
-                    return json.loads(output_text)
-                except json.JSONDecodeError:
-                    return {"output": output_text}
-            
-            return result.get("result", result)
             
         except Exception as e:
-            raise RuntimeError(f"GCloud MCP call failed: {e}") from e
+            logging.error(f"Failed to start MCP server: {e}")
+            raise
+
+    async def close(self):
+        """Stop the MCP server"""
+        if self.process:
+            self.process.terminate()
+            self.process.wait()
+            self.process = None
     
+    async def call_tool(self, tool_name: str, arguments: dict) -> Dict[str, Any]:
+        """Call GCloud MCP tool via Stdio"""
+        if not self.process:
+            raise RuntimeError("MCP client not connected")
+            
+        self.request_id += 1
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {"name": tool_name, "arguments": arguments},
+            "id": self.request_id
+        }
+        
+        json_str = json.dumps(payload) + "\n"
+        
+        try:
+            # Write request
+            self.process.stdin.write(json_str)
+            self.process.stdin.flush()
+            
+            # Read response
+            while True:
+                line = self.process.stdout.readline()
+                if not line:
+                    # EOF
+                    stderr = self.process.stderr.read()
+                    raise RuntimeError(f"MCP server closed connection. Stderr: {stderr}")
+                
+                try:
+                    msg = json.loads(line)
+                    if msg.get("id") == self.request_id:
+                        if "error" in msg:
+                            raise RuntimeError(f"MCP tool error: {msg['error']}")
+                        
+                        result = msg.get("result", {})
+                        if "content" in result:
+                            output_text = ""
+                            for content in result["content"]:
+                                if content.get("type") == "text":
+                                    output_text += content["text"]
+                            try:
+                                return json.loads(output_text)
+                            except json.JSONDecodeError:
+                                return {"output": output_text}
+                        
+                        return result
+                except json.JSONDecodeError:
+                     logging.warning(f"Invalid JSON from MCP server: {line}")
+                     
+        except Exception as e:
+             raise RuntimeError(f"MCP call failed: {e}") from e
+
     async def run_gcloud_command(self, args: List[str]) -> str:
         """
         Execute a gcloud command via MCP server
@@ -104,8 +150,6 @@ class GCloudMCPClient:
             arguments={"args": args}
         )
         
-        # The call_tool method already handles extracting and potentially parsing JSON.
-        # If it returns a dict with an 'output' key, use that. Otherwise, convert the whole result to string.
         if isinstance(result, dict) and "output" in result:
             return result["output"]
         return str(result)

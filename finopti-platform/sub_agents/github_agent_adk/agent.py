@@ -21,18 +21,22 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 )
 from typing import Dict, Any, List
 import asyncio
+import json
 import requests  # For HTTP MCP client
 import logging
 
 from config import config
 
-# MCP Client for GitHub
+# Setup logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+# MCP Client for GitHub via Docker Stdio
 class GitHubMCPClient:
-    """Client for connecting to GitHub MCP server via APISIX HTTP"""
+    """Client for connecting to GitHub MCP server via Docker Stdio"""
     
     def __init__(self, token: str = None):
-        self.apisix_url = os.getenv('APISIX_URL', 'http://apisix:9080')
-        self.mcp_endpoint = f"{self.apisix_url}/mcp/github"
+        self.image = os.getenv('GITHUB_MCP_DOCKER_IMAGE', 'finopti-github-mcp')
         
         # Priority: Dynamic Token -> Env Var -> Config
         self.github_token = token
@@ -40,94 +44,165 @@ class GitHubMCPClient:
              self.github_token = os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN", "")
         if not self.github_token:
              self.github_token = getattr(config, "GITHUB_PERSONAL_ACCESS_TOKEN", "")
+             
+        self.process = None
+        self.request_id = 0
         
-        logger.info(f"GitHub MCP Client initialized, endpoint: {self.mcp_endpoint}")
+        logger.info(f"GitHub MCP Client initialized for image: {self.image}")
 
     async def __aenter__(self):
-        # No connection needed for HTTP client
+        await self.connect()
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        # No cleanup needed for HTTP client
-        pass
+        await self.close()
     
+    async def connect(self):
+        """Start the MCP server container and perform handshake"""
+        
+        if not self.github_token:
+             logger.warning("No GITHUB_PERSONAL_ACCESS_TOKEN provided. Basic auth might fail.")
+
+        # Check if running in a container with access to docker socket
+        # Use asyncio.create_subprocess_exec for non-blocking I/O
+        cmd = [
+            "docker", "run", 
+            "-i", "--rm", 
+            "-e", f"GITHUB_PERSONAL_ACCESS_TOKEN={self.github_token}",
+            self.image
+        ]
+        
+        logger.info(f"Starting MCP server with command: docker run ... {self.image}")
+        
+        try:
+            self.process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            # --- MCP Initialization Handshake ---
+            # 1. Send 'initialize' request
+            init_payload = {
+                "jsonrpc": "2.0",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "finopti-github-agent", "version": "1.0"}
+                },
+                "id": 0
+            }
+            
+            logger.info("Sending MCP initialize request...")
+            self.process.stdin.write((json.dumps(init_payload) + "\n").encode())
+            await self.process.stdin.drain()
+            
+            # 2. Wait for initialize response
+            while True:
+                line = await self.process.stdout.readline()
+                if not line:
+                     stderr = await self.process.stderr.read()
+                     raise RuntimeError(f"MCP server closed during initialization. Stderr: {stderr.decode()}")
+                
+                try:
+                    msg = json.loads(line.decode())
+                    if msg.get("id") == 0:
+                        if "error" in msg:
+                             raise RuntimeError(f"MCP initialization error: {msg['error']}")
+                        logger.info("MCP Initialized successfully.")
+                        break
+                except json.JSONDecodeError:
+                    logger.warning(f"Invalid JSON during init: {line}")
+            
+            # 3. Send 'notifications/initialized'
+            notify_payload = {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {}
+            }
+            self.process.stdin.write((json.dumps(notify_payload) + "\n").encode())
+            await self.process.stdin.drain()
+            
+        except Exception as e:
+            logger.error(f"Failed to start or initialize MCP server: {e}")
+            if self.process:
+                try:
+                    self.process.terminate()
+                except ProcessLookupError:
+                    pass
+            raise
+
+    async def close(self):
+        """Stop the MCP server"""
+        if self.process:
+            try:
+                self.process.terminate()
+                await self.process.wait()
+            except ProcessLookupError:
+                pass
+            self.process = None
 
     
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
-        """
-        Call GitHub MCP tool via APISIX HTTP.
-        
-        Args:
-            tool_name: Name of the MCP tool to call
-            arguments: Tool arguments
+        """Call GitHub MCP tool via Stdio"""
+        if not self.process:
+            raise RuntimeError("MCP client not connected")
             
-        Returns:
-            Tool response as string
-            
-        Raises:
-            RuntimeError: If MCP call fails
-        """
         if not self.github_token:
             raise ValueError("GITHUB_PERSONAL_ACCESS_TOKEN is required. Please ask the user for their GitHub PAT.")
         
+        self.request_id += 1
         payload = {
             "jsonrpc": "2.0",
-            "method": f"tools/call",
+            "method": "tools/call",
             "params": {
                 "name": tool_name,
                 "arguments": arguments
             },
-            "id": 1
+            "id": self.request_id
         }
         
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.github_token}"
-        }
+        json_str = json.dumps(payload) + "\n"
         
         try:
-            logger.info(f"Calling GitHub MCP tool via APISIX: {tool_name}")
-            logger.debug(f"Payload: {payload}")
+            logger.info(f"Calling GitHub MCP tool via Stdio: {tool_name}")
             
-            response = requests.post(
-                self.mcp_endpoint,
-                json=payload,
-                headers=headers,
-                timeout=30
-            )
+            # Write request
+            self.process.stdin.write(json_str.encode())
+            await self.process.stdin.drain()
             
-            response.raise_for_status()
-            try:
-                result = response.json()
-            except ValueError:
-                # Handle empty or non-JSON response gracefully
-                logger.warning(f"Invalid JSON response: {response.text}")
-                return response.text
-            
-            logger.info(f"GitHub MCP call successful: {tool_name}")
-            logger.debug(f"Response: {result}")
-            
-            # Extract text content from JSON-RPC response
-            if "result" in result and "content" in result["result"]:
-                output = []
-                for content in result["result"]["content"]:
-                    if content.get("type") == "text":
-                        output.append(content["text"])
-                return "\n".join(output)
-            
-            # Fallback: return entire result as string
-            return str(result.get("result", result))
-            
-        except requests.Timeout as e:
-            logger.error(f"GitHub MCP call timeout: {e}")
-            raise RuntimeError(f"GitHub MCP call timeout: {tool_name}") from e
-            
-        except requests.HTTPError as e:
-            logger.error(f"GitHub MCP HTTP error: {e.response.status_code} - {e.response.text}")
-            raise RuntimeError(f"GitHub MCP HTTP error: {e}") from e
+            # Read response
+            while True:
+                line = await self.process.stdout.readline()
+                if not line:
+                    # EOF
+                    stderr = await self.process.stderr.read()
+                    raise RuntimeError(f"MCP server closed connection. Stderr: {stderr.decode()}")
+                
+                try:
+                    msg = json.loads(line.decode())
+                    if msg.get("id") == self.request_id:
+                        if "error" in msg:
+                            raise RuntimeError(f"MCP tool error: {msg['error']}")
+                        
+                        result = msg.get("result", {})
+                        logger.info(f"GitHub MCP call successful: {tool_name}")
+                        
+                        if "content" in result:
+                            output_text = ""
+                            for content in result["content"]:
+                                if content.get("type") == "text":
+                                    output_text += content["text"]
+                            return output_text
+                        
+                        return str(result.get("result", result))
+                except json.JSONDecodeError:
+                     logger.warning(f"Invalid JSON from MCP server: {line}")
             
         except Exception as e:
-            logger.error(f"Unexpected GitHub MCP error: {e}", exc_info=True)
+            logger.error(f"GitHub MCP error: {e}")
             raise RuntimeError(f"GitHub MCP call failed: {e}") from e
 
 

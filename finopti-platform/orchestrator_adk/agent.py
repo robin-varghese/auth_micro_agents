@@ -168,11 +168,36 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
         headers = propagate_request_id(headers)
         
         response = requests.post(endpoint, json=payload, headers=headers, timeout=120)
-        response.raise_for_status()
         
+        try:
+            response.raise_for_status()
+            data = response.json()
+        except requests.exceptions.HTTPError as e:
+            # Handle HTTP errors (4xx, 5xx)
+            try:
+                error_data = response.json()
+                return {
+                    "success": False,
+                    "error": error_data.get("message", str(e)),
+                    "agent": target_agent
+                }
+            except ValueError:
+                 return {
+                    "success": False,
+                    "error": f"Agent request failed: {str(e)}. Response: {response.text[:200]}",
+                    "agent": target_agent
+                }
+        except ValueError:
+            # Handle valid 200 OK but invalid JSON
+             return {
+                "success": False,
+                "error": f"Invalid JSON response from agent: {response.text[:200]}",
+                "agent": target_agent
+            }
+
         return {
             "success": True,
-            "data": response.json(),
+            "data": data,
             "agent": target_agent
         }
     

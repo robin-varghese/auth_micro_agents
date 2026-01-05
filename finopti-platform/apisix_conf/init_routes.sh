@@ -28,8 +28,8 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/1" \
       },
       "timeout": {
         "connect": 6,
-        "send": 60,
-        "read": 60
+        "send": 120,
+        "read": 120
       }
     },
     "plugins": {
@@ -56,8 +56,8 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/2" \
       },
       "timeout": {
         "connect": 6,
-        "send": 60,
-        "read": 60
+        "send": 120,
+        "read": 120
       }
     },
     "plugins": {
@@ -84,8 +84,8 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/3" \
       },
       "timeout": {
         "connect": 6,
-        "send": 60,
-        "read": 60
+        "send": 120,
+        "read": 120
       }
     },
     "plugins": {
@@ -112,8 +112,8 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/4" \
       },
       "timeout": {
         "connect": 6,
-        "send": 60,
-        "read": 60
+        "send": 120,
+        "read": 120
       }
     },
     "plugins": {
@@ -140,8 +140,8 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/5" \
       },
       "timeout": {
         "connect": 6,
-        "send": 60,
-        "read": 60
+        "send": 120,
+        "read": 120
       }
     },
     "plugins": {
@@ -168,8 +168,8 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/6" \
       },
       "timeout": {
         "connect": 6,
-        "send": 60,
-        "read": 60
+        "send": 120,
+        "read": 120
       }
     },
     "plugins": {
@@ -196,8 +196,8 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/7" \
       },
       "timeout": {
         "connect": 6,
-        "send": 60,
-        "read": 60
+        "send": 120,
+        "read": 120
       }
     },
     "plugins": {
@@ -224,8 +224,8 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/8" \
       },
       "timeout": {
         "connect": 6,
-        "send": 60,
-        "read": 60
+        "send": 120,
+        "read": 120
       }
     },
     "plugins": {
@@ -253,8 +253,8 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/9" \
       },
       "timeout": {
         "connect": 6,
-        "send": 60,
-        "read": 60
+        "send": 120,
+        "read": 120
       }
     },
     "plugins": {
@@ -281,8 +281,8 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/10" \
       },
       "timeout": {
         "connect": 6,
-        "send": 60,
-        "read": 60
+        "send": 120,
+        "read": 120
       }
     },
     "plugins": {
@@ -309,8 +309,8 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/11" \
       },
       "timeout": {
         "connect": 6,
-        "send": 60,
-        "read": 60
+        "send": 120,
+        "read": 120
       }
     },
     "plugins": {
