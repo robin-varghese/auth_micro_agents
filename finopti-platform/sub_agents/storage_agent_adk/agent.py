@@ -60,7 +60,10 @@ class StorageMCPClient:
                 timeout=30
             )
             response.raise_for_status()
-            result = response.json()
+            try:
+                result = response.json()
+            except ValueError:
+                return response.text
             
             # Extract text content
             if "result" in result and "content" in result["result"]:

@@ -97,7 +97,12 @@ class GitHubMCPClient:
             )
             
             response.raise_for_status()
-            result = response.json()
+            try:
+                result = response.json()
+            except ValueError:
+                # Handle empty or non-JSON response gracefully
+                logger.warning(f"Invalid JSON response: {response.text}")
+                return response.text
             
             logger.info(f"GitHub MCP call successful: {tool_name}")
             logger.debug(f"Response: {result}")

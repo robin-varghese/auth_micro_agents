@@ -62,6 +62,8 @@ if 'auth_method' not in st.session_state:
     st.session_state.auth_method = None  # 'oauth' or 'simulated'
 if 'messages' not in st.session_state:
     st.session_state.messages = []
+if 'pending_prompt' not in st.session_state:
+    st.session_state.pending_prompt = None
 
 def login_simulated(user_email: str):
     """Simulate user login (development mode)"""
@@ -262,25 +264,31 @@ with st.sidebar:
             logout()
             st.rerun()
     
-    # Help section
+    # Help section & Shortcuts
     st.markdown("---")
-    st.subheader("💡 Example Prompts")
-    st.markdown("""
-    **GCloud Operations:**
-    - Create a VM instance
-    - List all VMs
-    - Delete a VM
+    st.subheader("⚡ Sample Prompts")
     
-    **Monitoring:**
-    - Check CPU usage
-    - Check memory usage
-    - Query error logs
-    - Get metrics
-    """)
+    def set_prompt(txt):
+        st.session_state.pending_prompt = txt
     
+    if st.button("List GCloud VMs", use_container_width=True):
+        set_prompt("List all VMs in my google cloud project vector-search-poc")
+        st.rerun()
+        
+    if st.button("List Recent Operations", use_container_width=True):
+         set_prompt("list last 10 operations in my google cloud project vector-search-poc")
+         st.rerun()
+
+    if st.button("List GitHub Repos", use_container_width=True):
+        set_prompt("list all GitHub code repos in my account https://github.com/robin-varghese")
+        st.rerun()
+
+    if st.button("List GCS Buckets", use_container_width=True):
+        set_prompt("list all google cloud storage buckets in my google cloud project vector-search-poc")
+        st.rerun()
+        
     st.markdown("---")
     st.caption("FinOptiAgents Platform v1.0")
-    st.caption("Built with Streamlit, APISIX, and OPA")
 
 # Main content
 if not st.session_state.authenticated:
@@ -312,17 +320,24 @@ else:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
     
-    # Chat input
-    if prompt := st.chat_input("Ask me to perform GCloud or Monitoring operations..."):
+    # Chat input logic
+    user_input = st.chat_input("Ask me to perform GCloud or Monitoring operations...")
+    
+    # Check for pending prompt from shortcuts
+    if st.session_state.pending_prompt:
+        user_input = st.session_state.pending_prompt
+        st.session_state.pending_prompt = None
+    
+    if user_input:
         # Add user message to chat
-        st.session_state.messages.append({"role": "user", "content": prompt})
+        st.session_state.messages.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
-            st.markdown(prompt)
+            st.markdown(user_input)
         
         # Send to orchestrator with simple loading state
         with st.status("🤔 Thinking...", expanded=True) as status:
             st.write("🔄 Orchestrating request...")
-            response = send_message(prompt)
+            response = send_message(user_input)
             
             if response.get("success"):
                 status.update(label="✅ Response received!", state="complete", expanded=False)

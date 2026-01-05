@@ -42,8 +42,14 @@ class MonitoringMCPClient:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         pass
     
+    async def connect(self):
+        """Establish connection (no-op for HTTP)"""
+        pass
+        
+    async def close(self):
+        """Close connection (no-op for HTTP)"""
+        pass
 
-    
     
     async def call_tool(self, tool_name: str, arguments: dict) -> Dict[str, Any]:
         """Call Monitoring MCP tool via APISIX HTTP"""
@@ -61,7 +67,12 @@ class MonitoringMCPClient:
                 timeout=30
             )
             response.raise_for_status()
-            result = response.json()
+            try:
+                result = response.json()
+            except json.JSONDecodeError:
+                # Handle empty or non-JSON response gracefully
+                logging.warning(f"Invalid JSON response: {response.text}")
+                return {"result": {"content": [{"type": "text", "text": response.text}]}}
             
             # Extract text content
             if "result" in result and "content" in result["result"]:

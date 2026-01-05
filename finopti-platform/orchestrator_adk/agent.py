@@ -30,7 +30,7 @@ from structured_logging import propagate_request_id
 
 def detect_intent(prompt: str) -> str:
     """
-    Simple keyword-based intent detection.
+    Simple keyword-based intent detection with improved accuracy.
     In production, this could be enhanced with ADK's capabilities.
     
     Args:
@@ -40,7 +40,22 @@ def detect_intent(prompt: str) -> str:
         target_agent: 'gcloud', 'monitoring', 'github', 'storage', or 'db'
     """
     prompt_lower = prompt.lower()
+    words = set(prompt_lower.split())
     
+    # Helper for robust matching
+    def count_matches(keywords: List[str]) -> int:
+        score = 0
+        for k in keywords:
+            # For short keywords/acronyms, require exact word match
+            if len(k) <= 3:
+                if k in words:
+                    score += 1
+            # For longer phrases, use substring match
+            else:
+                if k in prompt_lower:
+                    score += 1
+        return score
+
     # GitHub keywords
     github_keywords = ['github', 'repo', 'repository', 'git', 'pull request', 'pr', 'issue', 'code', 'commit']
     # Storage keywords
@@ -52,17 +67,18 @@ def detect_intent(prompt: str) -> str:
                            'performance', 'latency', 'error', 'log', 'trace', 'observability']
     # GCloud keywords (fallback for general infra)
     gcloud_keywords = ['vm', 'instance', 'create', 'delete', 'compute', 'gcp', 'cloud', 'provision', 
-                        'machine', 'disk', 'network', 'firewall']
+                        'machine', 'disk', 'network', 'firewall', 'operations', 'project', 'region', 'zone']
     
     scores = {
-        'github': sum(1 for k in github_keywords if k in prompt_lower),
-        'storage': sum(1 for k in storage_keywords if k in prompt_lower),
-        'db': sum(1 for k in db_keywords if k in prompt_lower),
-        'monitoring': sum(1 for k in monitoring_keywords if k in prompt_lower),
-        'gcloud': sum(1 for k in gcloud_keywords if k in prompt_lower)
+        'github': count_matches(github_keywords),
+        'storage': count_matches(storage_keywords),
+        'db': count_matches(db_keywords),
+        'monitoring': count_matches(monitoring_keywords),
+        'gcloud': count_matches(gcloud_keywords)
     }
     
     # Find agent with highest score
+    # Use fallback to 'gcloud' if tie or all zero (but handle tie logic explicitly if needed)
     best_agent = max(scores, key=scores.get)
     
     if scores[best_agent] > 0:
@@ -218,9 +234,12 @@ orchestrator_agent = Agent(
     - "Show logs from service X", "Memory consumption"
     
     **Key Rules:**
-    1. "operations in GCP/cloud/project" → **gcloud**
-    2. "GitHub repos/code" → **github**  
-    3. Default for infrastructure → **gcloud**
+    1. "operations in GCP/cloud/project" → **gcloud** (NEVER github)
+    2. Mention of "project ID" or "GCP Project" → **gcloud**
+    3. "GitHub repos/code" → **github**  
+    4. Default for infrastructure → **gcloud**
+    
+    WARNING: Do NOT route "cloud project" or "project operations" to the github agent. The github agent only handles code repositories on github.com. GCP operations like "list operations" MUST go to gcloud.
     
     Authorization is handled separately via OPA before you receive requests.
     """,
