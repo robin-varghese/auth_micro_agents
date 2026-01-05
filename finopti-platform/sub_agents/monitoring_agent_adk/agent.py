@@ -39,7 +39,6 @@ class MonitoringMCPClient:
         logging.info(f"MonitoringMCPClient initialized for image: {self.image}")
         logging.info(f"MonitoringMCPClient command mount path: {self.mount_path}")
     
-    
     async def __aenter__(self):
         await self.connect()
         return self
@@ -49,7 +48,6 @@ class MonitoringMCPClient:
     
     async def connect(self):
         """Start the MCP server container"""
-        import subprocess
         
         # Check if running in a container with access to docker socket
         cmd = [
@@ -62,27 +60,75 @@ class MonitoringMCPClient:
         logging.info(f"Starting MCP server with command: {' '.join(cmd)}")
         
         try:
-            self.process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1  # Line buffered
+            self.process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
             )
+            
+            # --- MCP Initialization Handshake ---
+            # 1. Send 'initialize' request
+            init_payload = {
+                "jsonrpc": "2.0",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "finopti-monitoring-agent", "version": "1.0"}
+                },
+                "id": 0
+            }
+            
+            logging.info("Sending MCP initialize request...")
+            self.process.stdin.write((json.dumps(init_payload) + "\n").encode())
+            await self.process.stdin.drain()
+            
+            # 2. Wait for initialize response
+            while True:
+                line = await self.process.stdout.readline()
+                if not line:
+                     stderr = await self.process.stderr.read()
+                     raise RuntimeError(f"MCP server closed during initialization. Stderr: {stderr.decode()}")
+                
+                try:
+                    msg = json.loads(line.decode())
+                    if msg.get("id") == 0:
+                        if "error" in msg:
+                             raise RuntimeError(f"MCP initialization error: {msg['error']}")
+                        logging.info("MCP Initialized successfully.")
+                        break
+                except json.JSONDecodeError:
+                    logging.warning(f"Invalid JSON during init: {line}")
+            
+            # 3. Send 'notifications/initialized'
+            notify_payload = {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {}
+            }
+            self.process.stdin.write((json.dumps(notify_payload) + "\n").encode())
+            await self.process.stdin.drain()
             
         except Exception as e:
             logging.error(f"Failed to start MCP server: {e}")
+            if self.process:
+                try:
+                    self.process.terminate()
+                except ProcessLookupError:
+                    pass
             raise
         
     async def close(self):
         """Stop the MCP server"""
         if self.process:
-            self.process.terminate()
-            self.process.wait()
+            try:
+                self.process.terminate()
+                await self.process.wait()
+            except ProcessLookupError:
+                pass
             self.process = None
 
-    
     async def call_tool(self, tool_name: str, arguments: dict) -> Dict[str, Any]:
         """Call Monitoring MCP tool via Stdio"""
         if not self.process:
@@ -100,19 +146,19 @@ class MonitoringMCPClient:
         
         try:
             # Write request
-            self.process.stdin.write(json_str)
-            self.process.stdin.flush()
+            self.process.stdin.write(json_str.encode())
+            await self.process.stdin.drain()
             
             # Read response
             while True:
-                line = self.process.stdout.readline()
+                line = await self.process.stdout.readline()
                 if not line:
                     # EOF
-                    stderr = self.process.stderr.read()
-                    raise RuntimeError(f"MCP server closed connection. Stderr: {stderr}")
+                    stderr = await self.process.stderr.read()
+                    raise RuntimeError(f"MCP server closed connection. Stderr: {stderr.decode()}")
                 
                 try:
-                    msg = json.loads(line)
+                    msg = json.loads(line.decode())
                     if msg.get("id") == self.request_id:
                         if "error" in msg:
                             raise RuntimeError(f"MCP tool error: {msg['error']}")

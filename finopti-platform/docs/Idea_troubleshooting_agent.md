@@ -1,12 +1,9 @@
+Now we will build a new agent will use these sub agents to do application troubleshooting. we will start simple. Lets imagine we have one new web application developed and deployed on GCP in the same project where the logged-in user has permission. we will place a new button in the left pane-'application troubleshooting'. This will trigger a series of questions from agent inorder to do the troubleshooting. Agent will list all the gcp projects where this logged-in user has access with numbers and asking the user to select a number where thr troubleshooting will happen. when the project info is provided, ask for code repo details like github repo details and the branch which is used to build the application and deploy it where the issue is happening. For Github user has to provide the Personal Access Token so that agent can access the code. Now with access to code and logs, agent can troubleshoot the issue. You can ask for the Root Cause Analysis templet which needs to be poluplated. using the cloud storage mcp server you can store this document into gcs bucket. Every troubleshooting project needs to have a troubleshooting unique identifier. this identifier can be used in the above steps to distinguish the docs, buckets, etc. based on the template uploaded by the user, prepare the RCA document and  share the same with the user.   
+
 This is a sophisticated architecture. You are moving from simple "alerting" to **Autonomous Level 2 remediation** (Diagnosis & Suggested Fix).
 
 Since you already have the **MCP (Model Context Protocol)** servers for GCloud, Monitoring, and GitHub, you have the "Tools." What you are missing is the **"Orchestrator" (The Agentic Brain)** and the **"Trigger Pipeline."**
 
-Regarding your question on **Google Anti-Gravity / Gemini CLI**:
-*   There is no public product called "Anti-Gravity APIs." You likely mean **Vertex AI** (specifically Gemini 1.5 Pro with its massive context window).
-*   **Gemini CLI** is for human interaction. For this platform, you must use the **Vertex AI SDK (Python)** to integrate Gemini programmatically as the "Brain" of your agents.
-
-Here is the overall design and implementation plan.
 
 ---
 
@@ -44,12 +41,12 @@ You need a lightweight "Pre-processor" before waking up the AI Agents to save co
 
 Since MCP is usually client-server (like Claude Desktop connecting to a server), you need a **Custom MCP Host** application running on Cloud Run. This app receives the webhook from Phase 1 and instantiates the Agents.
 
-**Technology:** Python (LangGraph or PydanticAI) + Vertex AI SDK (Gemini 1.5 Pro).
+**Technology:** Python (LangGraph or PydanticAI) + Vertex AI SDK (Gemini 3.0 Pro).
 
 **The Workflow Code Logic:**
 
 1.  **Receive Context:** The Host receives the 201 logs (1 error + 100 before/after).
-2.  **Initialize Gemini 1.5 Pro:** You need the 1M+ token window to dump all 200 logs and potential code files into the context.
+2.  **Initialize Gemini 3.0 Pro:** You need the 1M+ token window to dump all 200 logs and potential code files into the context.
 
 #### Phase 3: Agentic Capabilities & Prompt Engineering
 *Goal: Define the specific jobs for the AI.*
