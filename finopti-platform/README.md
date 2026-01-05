@@ -97,6 +97,28 @@ Access Grafana at **http://localhost:3001** (Default: `admin`/`admin`).
 - **Specific Service**: `{container=~"finopti-orchestrator.*"}`
 - **Errors**: `{com_docker_compose_project="finopti-platform"} |= "ERROR"`
 
+  volumes:
+    - loki-data:/loki
+  ```
+This ensures that all logs and indices survive container restarts or upgrades.
+
+#### 4. Summary Diagram
+```mermaid
+flowchart LR
+    Container["Docker Container<br>(stdout/stderr)"] -->|Docker Socket| Promtail
+    Promtail -->|Parse & Label| Loki["Loki Service"]
+    
+    subgraph "Loki Internal Storage"
+        Loki -->|Index Metadata| Index["BoltDB Index<br>(/loki/boltdb-shipper-active)"]
+        Loki -->|Compressed Logs| Chunks["Filesystem Chunks<br>(/loki/chunks)"]
+    end
+    
+    subgraph "Host Persistence"
+        Index & Chunks --> Vol["Docker Volume:<br>finopti-loki-data"]
+    end
+
+
+
 ---
 
 ## 🛠️ Onboarding New Services for Observability
