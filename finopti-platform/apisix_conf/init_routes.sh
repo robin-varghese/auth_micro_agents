@@ -321,6 +321,88 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/11" \
   }'
 
 echo ""
+# Route 12: Cloud Run Agent
+echo "Creating route: /agent/cloud-run -> cloud_run_agent:5006"
+curl -i -X PUT "${APISIX_ADMIN}/routes/12" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "cloud_run_agent_route",
+    "uri": "/agent/cloud-run/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "cloud_run_agent:5006": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 120,
+        "read": 120
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/agent/cloud-run/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
+
+# Route 13: Cloud Run MCP Server
+echo "Creating route: /mcp/cloud-run -> cloud_run_mcp:6006"
+curl -i -X PUT "${APISIX_ADMIN}/routes/13" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "cloud_run_mcp_route",
+    "uri": "/mcp/cloud-run/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "cloud_run_mcp:6006": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 120,
+        "read": 120
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/mcp/cloud-run/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
+# Route 14: MATS Orchestrator
+echo "Creating route: /agent/mats -> mats-orchestrator:8084"
+curl -i -X PUT "${APISIX_ADMIN}/routes/14" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "mats_orchestrator_route",
+    "uri": "/agent/mats/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "mats-orchestrator:8084": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 300,
+        "read": 300
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/agent/mats/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
 echo "All routes initialized successfully!"
 
 # List all routes

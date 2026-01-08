@@ -1,6 +1,6 @@
-# FinOptiAgents Platform
+# MATS (Multimodal Autonomous Troubleshooting System)
 
-The **FinOptiAgents Platform** is an enterprise-grade AI microservices architecture designed to automate Google Cloud operations. It leverages the **Google Agent Development Kit (ADK)** to build autonomous agents that interact through a **Service Mesh** secured by **Google OAuth** and analyzed via full-stack **Observability**.
+**MATS** is an enterprise-grade AI microservices architecture designed to automate Google Cloud operations. It leverages the **Google Agent Development Kit (ADK)** to build autonomous agents that interact through a **Service Mesh** secured by **Google OAuth** and analyzed via full-stack **Observability**.
 
 ---
 

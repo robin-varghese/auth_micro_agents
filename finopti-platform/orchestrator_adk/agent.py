@@ -37,7 +37,7 @@ def detect_intent(prompt: str) -> str:
         prompt: User's natural language prompt
         
     Returns:
-        target_agent: 'gcloud', 'monitoring', 'github', 'storage', or 'db'
+        target_agent: 'gcloud', 'monitoring', 'github', 'storage', 'db', or 'cloud-run'
     """
     prompt_lower = prompt.lower()
     words = set(prompt_lower.split())
@@ -68,12 +68,15 @@ def detect_intent(prompt: str) -> str:
     # GCloud keywords (fallback for general infra)
     gcloud_keywords = ['vm', 'instance', 'create', 'delete', 'compute', 'gcp', 'cloud', 'provision', 
                         'machine', 'disk', 'network', 'firewall', 'operations', 'project', 'region', 'zone']
+    # Cloud Run keywords
+    cloud_run_keywords = ['cloud run', 'service', 'revision', 'container', 'serverless', 'deploy', 'traffic', 'image', 'knative', 'job']
     
     scores = {
         'github': count_matches(github_keywords),
         'storage': count_matches(storage_keywords),
         'db': count_matches(db_keywords),
         'monitoring': count_matches(monitoring_keywords),
+        'cloud-run': count_matches(cloud_run_keywords),
         'gcloud': count_matches(gcloud_keywords)
     }
     
@@ -143,16 +146,23 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
             'monitoring': f"{config.APISIX_URL}/agent/monitoring/execute",
             'github': f"{config.APISIX_URL}/agent/github/execute",
             'storage': f"{config.APISIX_URL}/agent/storage/execute",
-            'db': f"{config.APISIX_URL}/agent/db/execute"
+            'storage': f"{config.APISIX_URL}/agent/storage/execute",
+            'db': f"{config.APISIX_URL}/agent/db/execute",
+            'cloud-run': f"{config.APISIX_URL}/agent/cloud-run" # Note: New agent uses /agent/cloud-run directly or via execute if consistent
         }
         
-        if target_agent not in agent_endpoints:
+        # Adjust endpoint for cloud-run if following Flask pattern
+        if target_agent == 'cloud-run':
+             endpoint = f"{config.APISIX_URL}/agent/cloud-run"
+        else:
+             endpoint = agent_endpoints[target_agent]
+        
+        if target_agent not in agent_endpoints and target_agent != 'cloud-run':
             return {
                 "success": False,
                 "error": f"Unknown agent: {target_agent}"
             }
         
-        endpoint = agent_endpoints[target_agent]
         
         # Prepare payload
         payload = {
@@ -230,16 +240,23 @@ orchestrator_agent = Agent(
     - **monitoring**: Handles metrics, logs, and observability queries.
     - **github**: Handles GitHub repositories, issues, and PRs (NOT Google Cloud Source Repos).
     - **storage**: Handles Google Cloud Storage buckets and objects.
+    - **storage**: Handles Google Cloud Storage buckets and objects.
     - **db**: Handles SQL database queries (PostgreSQL).
+    - **cloud-run**: Handles Cloud Run services, jobs, and deployments.
     
     Routing Logic Guidelines (CRITICAL - Follow Exactly):
     
-    **GCloud Agent** - Use for ANY GCP-related request:
+    **GCloud Agent** - Use for generic GCP-related request (VMs, Networks):
     - GCP operations: "list operations", "cloud operations", "recent changes"
     - Infrastructure: "Create VM", "Delete disk", "List instances", "Show VMs"
     - Cloud activity: "What changed", "Recent deployments", "Audit logs"
-    - GCP services: Compute Engine, Cloud Run, GKE, Cloud Functions
+    - GCP services: Compute Engine, GKE, Cloud Functions
     - Resource management: "Resize VM", "Stop instance", "Network config"
+
+    **Cloud Run Agent** - Use for Cloud Run / Serverless Containers:
+    - "Deploy to Cloud Run", "List Cloud Run services"
+    - "Show revisions", "Update traffic split", "Cloud Run jobs"
+    - "Serverless deployment"
     
     **GitHub Agent** - Use ONLY for GitHub.com:
     - "List GitHub repos", "Show my repositories on GitHub"

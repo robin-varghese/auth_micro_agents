@@ -1,8 +1,8 @@
 """
-GCloud ADK Agent - Google Cloud Infrastructure Specialist
+Cloud Run ADK Agent - Serverless Container Specialist
 
-This agent uses Google ADK to handle GCP infrastructure management requests.
-It integrates with the GCloud MCP server for executing gcloud commands.
+This agent uses Google ADK to handle Cloud Run management requests.
+It integrates with the Cloud Run MCP server for executing gcloud run commands.
 """
 
 import os
@@ -22,22 +22,21 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 from typing import Dict, Any, List
 import asyncio
 import json
-import requests  # For HTTP MCP client
 import logging
 
 from config import config
 
-# MCP Client for GCloud via Docker Stdio
-class GCloudMCPClient:
-    """Client for connecting to GCloud MCP server via Docker Stdio"""
+# MCP Client for Cloud Run via Docker Stdio
+class CloudRunMCPClient:
+    """Client for connecting to Cloud Run MCP server via Docker Stdio"""
     
     def __init__(self):
-        self.image = os.getenv('GCLOUD_MCP_DOCKER_IMAGE', 'finopti-gcloud-mcp')
+        self.image = os.getenv('CLOUD_RUN_MCP_DOCKER_IMAGE', 'finopti-cloud-run-mcp')
         self.mount_path = os.getenv('GCLOUD_MOUNT_PATH', f"{os.path.expanduser('~')}/.config/gcloud:/root/.config/gcloud")
         self.process = None
         self.request_id = 0
-        logging.info(f"GCloudMCPClient initialized for image: {self.image}")
-        logging.info(f"GCloudMCPClient command mount path: {self.mount_path}")
+        logging.info(f"CloudRunMCPClient initialized for image: {self.image}")
+        logging.info(f"CloudRunMCPClient command mount path: {self.mount_path}")
     
     async def __aenter__(self):
         await self.connect()
@@ -75,7 +74,7 @@ class GCloudMCPClient:
                 "params": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {},
-                    "clientInfo": {"name": "finopti-gcloud-agent", "version": "1.0"}
+                    "clientInfo": {"name": "finopti-cloud-run-agent", "version": "1.0"}
                 },
                 "id": 0
             }
@@ -130,7 +129,7 @@ class GCloudMCPClient:
             self.process = None
     
     async def call_tool(self, tool_name: str, arguments: dict) -> Dict[str, Any]:
-        """Call GCloud MCP tool via Stdio"""
+        """Call Cloud Run MCP tool via Stdio"""
         if not self.process:
             raise RuntimeError("MCP client not connected")
             
@@ -181,9 +180,9 @@ class GCloudMCPClient:
         except Exception as e:
              raise RuntimeError(f"MCP call failed: {e}") from e
 
-    async def run_gcloud_command(self, args: List[str]) -> str:
+    async def run_cloud_run_command(self, args: List[str]) -> str:
         """
-        Execute a gcloud command via MCP server
+        Execute a gcloud run command via MCP server
         
         Args:
             args: List of gcloud command arguments (without 'gcloud' prefix)
@@ -192,7 +191,7 @@ class GCloudMCPClient:
             Command output as string
         """
         result = await self.call_tool(
-            "run_gcloud_command",
+            "run_cloud_run_command",
             arguments={"args": args}
         )
         
@@ -204,12 +203,12 @@ class GCloudMCPClient:
 # Global MCP client (will be initialized per-request)
 _mcp_client = None
 
-async def execute_gcloud_command(args: List[str]) -> Dict[str, Any]:
+async def execute_cloud_run_command(args: List[str]) -> Dict[str, Any]:
     """
-    ADK tool: Execute gcloud command
+    ADK tool: Execute gcloud run command
     
     Args:
-        args: List of gcloud command arguments
+        args: List of gcloud run command arguments (e.g. ['services', 'list'])
     
     Returns:
         Dictionary with execution result
@@ -218,59 +217,56 @@ async def execute_gcloud_command(args: List[str]) -> Dict[str, Any]:
     
     try:
         if not _mcp_client:
-            _mcp_client = GCloudMCPClient()
+            _mcp_client = CloudRunMCPClient()
             await _mcp_client.connect()
         
-        output = await _mcp_client.run_gcloud_command(args)
+        output = await _mcp_client.run_cloud_run_command(args)
         
         return {
             "success": True,
             "output": output,
-            "command": f"gcloud {' '.join(args)}"
+            "command": f"gcloud run {' '.join(args)}"
         }
     except Exception as e:
         return {
             "success": False,
             "error": str(e),
-            "command": f"gcloud {' '.join(args)}"
+            "command": f"gcloud run {' '.join(args)}"
         }
 
 
 # Create ADK Agent
-gcloud_agent = Agent(
-    name="gcloud_infrastructure_specialist",
+cloud_run_agent = Agent(
+    name="cloud_run_specialist",
     model=config.FINOPTIAGENTS_LLM,
     description="""
-    Google Cloud Platform infrastructure management specialist.
-    Expert in managing VMs, networks, storage, and other GCP resources using gcloud CLI.
-    Can execute gcloud commands to list, create, modify, and delete cloud resources.
+    Google Cloud Run specialist.
+    Expert in deploying and managing serverless containers using Cloud Run.
+    Can execute gcloud run commands to list services, deploy new revisions, and manage traffic.
     """,
     instruction="""
-    You are a Google Cloud Platform (GCP) infrastructure specialist with deep expertise in gcloud CLI.
+    You are a Google Cloud Run specialist.
     
     Your responsibilities:
-    1. Understand user requests related to GCP infrastructure
-    2. Translate natural language to appropriate gcloud commands
+    1. Understand user requests related to Cloud Run services and jobs
+    2. Translate natural language to appropriate `gcloud run` commands
     3. Execute commands safely and return results
     4. Provide clear, helpful responses
     
     Guidelines:
-    - For listing operations: Use appropriate --format flags for readable output
-    - For modifications: Confirm the operation before executing if it's destructive
-    - For VM operations: Remember that changing machine types requires stopping the instance first
-    - For cost optimization: Suggest recommendations when appropriate
-    - For listing operations: Use --limit=X and --sort-by filters to avoid timeouts on large datasets
+    - Assume `gcloud run` prefix is handled by the tool. Pass arguments starting after `run`.
+      Example: to list services, pass `['services', 'list']`.
+    - For deployments: Ask for all necessary details (image, region, allow-unauthenticated) if missing.
+    - For destructive actions (delete): Always confirm with the user first.
     
     Common patterns:
-    - List VMs: gcloud compute instances list
-    - Create VM: gcloud compute instances create <name> --zone=<zone> --machine-type=<type>
-    - Delete VM: gcloud compute instances delete <name> --zone=<zone>
-    - Stop/Start VM: gcloud compute instances stop/start <name> --zone=<zone>
-    - Change machine type: (stop VM first, then set-machine-type, then start)
+    - List Services: arguments=['services', 'list']
+    - Describe Service: arguments=['services', 'describe', 'SERVICE_NAME', '--region=REGION']
+    - Deploy: arguments=['deploy', 'SERVICE_NAME', '--image=IMAGE_URL', '--region=REGION']
     
-    Always be helpful, accurate, and safe in your operations.
+    Always be helpful, accurate, and safe.
     """,
-    tools=[execute_gcloud_command]
+    tools=[execute_cloud_run_command]
 )
 
 # Configure BigQuery Analytics Plugin
@@ -295,8 +291,8 @@ if config.GOOGLE_API_KEY:
 
 # Create the App
 app = App(
-    name="finopti_gcloud_agent",
-    root_agent=gcloud_agent,
+    name="finopti_cloud_run_agent",
+    root_agent=cloud_run_agent,
     plugins=[
         ReflectAndRetryToolPlugin(
             max_retries=int(os.getenv("REFLECT_RETRY_MAX_ATTEMPTS", "3")),
@@ -312,7 +308,7 @@ from google.genai import types
 
 async def send_message_async(prompt: str, user_email: str = None) -> str:
     """
-    Send a message to the GCloud agent
+    Send a message to the Cloud Run agent
     
     Args:
         prompt: User's natural language request
@@ -325,7 +321,7 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
         # Initialize MCP client if needed
         global _mcp_client
         if not _mcp_client:
-            _mcp_client = GCloudMCPClient()
+            _mcp_client = CloudRunMCPClient()
             await _mcp_client.connect()
         
         # Use InMemoryRunner to execute the app
@@ -335,7 +331,7 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
             await runner.session_service.create_session(
                 session_id=sid, 
                 user_id=uid,
-                app_name="finopti_gcloud_agent"
+                app_name="finopti_cloud_run_agent"
             )
             
             message = types.Content(parts=[types.Part(text=prompt)])
@@ -388,4 +384,4 @@ if __name__ == "__main__":
         print(response)
     else:
         print("Usage: python agent.py <prompt>")
-        print("Example: python agent.py 'list all VMs'")
+        print("Example: python agent.py 'list services'")

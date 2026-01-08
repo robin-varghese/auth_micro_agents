@@ -53,5 +53,10 @@ allow if {
     input.target_agent == "db"
 }
 
+allow if {
+    user_role["gcloud_admin"]
+    input.target_agent == "mats"
+}
+
 # Deny by default
 default allow = false

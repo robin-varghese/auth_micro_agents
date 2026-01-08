@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy all Python files (app.py, oauth_helper.py, oauth_config.py)
 COPY *.py .
+COPY assets ./assets
 
 EXPOSE 8501
 

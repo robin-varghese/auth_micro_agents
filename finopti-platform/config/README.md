@@ -69,7 +69,7 @@ gcloud secrets create google-api-key \
   --data-file=- <<< "your-api-key-value"
 
 gcloud secrets create finoptiagents-llm \
-  --data-file=- <<< "gemini-2.0-flash"
+  --data-file=- <<< "gemini-3-pro-preview"
 
 gcloud secrets create google-project-id \
   --data-file=- <<< "your-project-id"

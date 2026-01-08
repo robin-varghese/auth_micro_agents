@@ -20,11 +20,25 @@ import oauth_helper
 
 # Page configuration
 st.set_page_config(
-    page_title="FinOptiAgents Platform",
-    page_icon="🤖",
+    page_title="MATS Platform",
+    page_icon="assets/mats_logo.jpg",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Custom CSS for styling
+st.markdown("""
+    <style>
+        /* Sidebar background to white */
+        [data-testid="stSidebar"] {
+            background-color: #FFFFFF;
+        }
+        /* Main content background to light gray */
+        .stApp {
+            background-color: #F8F9FA;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
 # Configuration
 APISIX_URL = "http://apisix:9080"
@@ -97,13 +111,12 @@ def send_message(prompt: str) -> dict:
             "prompt": prompt
         }
         
-        with st.spinner("Processing your request..."):
-            response = requests.post(
-                ORCHESTRATOR_ENDPOINT,
-                headers=headers,
-                json=payload,
-                timeout=60
-            )
+        response = requests.post(
+            ORCHESTRATOR_ENDPOINT,
+            headers=headers,
+            json=payload,
+            timeout=120
+        )
         
         if response.status_code == 200:
             return {
@@ -178,22 +191,20 @@ if oauth_helper.is_oauth_enabled():
 
 # Sidebar - Login
 with st.sidebar:
-    st.title("🤖 FinOptiAgents")
+    st.image("assets/mats_logo.jpg", width=250)
+    # st.title("🤖 MATS")
     st.markdown("---")
     
     # Show OAuth status
-    if oauth_helper.is_oauth_enabled():
-        st.caption(oauth_helper.get_oauth_status())
+    # Removed as per user request
+
     
     if not st.session_state.authenticated:
-        st.subheader("🔐 Login")
-        
         # Tab for OAuth vs Simulated auth
         if oauth_helper.is_oauth_enabled():
             auth_tab1, auth_tab2 = st.tabs(["Google OAuth", "Simulated"])
             
             with auth_tab1:
-                st.caption("Real Google Authentication")
                 oauth_url = oauth_helper.get_oauth_login_url()
                 st.markdown(
                     f'<a href="{oauth_url}" target="_self">'
@@ -202,10 +213,8 @@ with st.sidebar:
                     '🔐 Login with Google</button></a>',
                     unsafe_allow_html=True
                 )
-                st.caption("Redirects to Google for authentication")
             
             with auth_tab2:
-                st.caption("Development Mode (No Auth)")
                 selected_user = st.selectbox(
                     "Select User:",
                     options=list(AVAILABLE_USERS.keys()),
@@ -213,107 +222,78 @@ with st.sidebar:
                     key="simulated_user"
                 )
                 
-                if selected_user:
-                    user_info = AVAILABLE_USERS[selected_user]
-                    st.info(f"**Role:** {user_info['role']}\n\n{user_info['description']}")
-                
                 if st.button("🚀 Login (Simulated)", use_container_width=True):
                     login_simulated(selected_user)
                     st.rerun()
         else:
-            # OAuth disabled - simulated auth only
-            st.caption("⚠️ OAuth Not Configured - Using Simulated Auth")
-            st.markdown("To enable OAuth, configure:")
-            st.code("GOOGLE_OAUTH_CLIENT_ID\nGOOGLE_OAUTH_CLIENT_SECRET")
-            
+             # OAuth disabled - simulated auth only
             selected_user = st.selectbox(
                 "Select User:",
                 options=list(AVAILABLE_USERS.keys()),
-                format_func=lambda x: f"{AVAILABLE_USERS[x]['name']} ({x})"
+                format_func=lambda x: f"{AVAILABLE_USERS[x]['name']}",
+                label_visibility="collapsed"
             )
-            
-            if selected_user:
-                user_info = AVAILABLE_USERS[selected_user]
-                st.info(f"**Role:** {user_info['role']}\n\n{user_info['description']}")
             
             if st.button("🚀 Login", use_container_width=True):
                 login_simulated(selected_user)
                 st.rerun()
     
     else:
-        st.success("✅ Logged In")
-        
-        # Show auth method
-        auth_method = st.session_state.get('auth_method', 'unknown')
-        if auth_method == 'oauth':
-            st.caption("🔐 Google OAuth")
-        elif auth_method == 'simulated':
-            st.caption("⚙️ Simulated Auth (Dev Mode)")
-        
+        # Logged In state - kept minimal
         user_name = st.session_state.get('user_name', st.session_state.user_email)
-        st.write(f"**Name:** {user_name}")
-        st.write(f"**Email:** {st.session_state.user_email}")
-        
-        # Show role if available
-        if st.session_state.user_email in AVAILABLE_USERS:
-            st.write(f"**Role:** {AVAILABLE_USERS[st.session_state.user_email]['role']}")
-        
-        st.markdown("---")
-        
+        st.success(f"Hi, {user_name}")
+
         if st.button("🚪 Logout", use_container_width=True):
             logout()
             st.rerun()
-    
-    # Help section & Shortcuts
-    st.markdown("---")
-    st.subheader("⚡ Sample Prompts")
-    
-    def set_prompt(txt):
-        st.session_state.pending_prompt = txt
-    
-    if st.button("List GCloud VMs", use_container_width=True):
-        set_prompt("List all VMs in my google cloud project vector-search-poc")
-        st.rerun()
-        
-    if st.button("List Recent Operations", use_container_width=True):
-         set_prompt("list last 10 operations in my google cloud project vector-search-poc")
-         st.rerun()
 
-    if st.button("List GitHub Repos", use_container_width=True):
-        set_prompt("list all GitHub code repos in my account https://github.com/robin-varghese")
-        st.rerun()
+    # Help section & Shortcuts (Only show when authenticated)
+    if st.session_state.authenticated:
+        st.markdown("---")
+        st.subheader("⚡ Sample Prompts")
+        
+        def set_prompt(txt):
+            st.session_state.pending_prompt = txt
+        
+        if st.button("List GCloud VMs", use_container_width=True):
+            set_prompt("List all VMs in my google cloud project vector-search-poc")
+            st.rerun()
+            
+        if st.button("List Recent Operations", use_container_width=True):
+             set_prompt("list last 10 operations in my google cloud project vector-search-poc")
+             st.rerun()
+    
+        if st.button("List GitHub Repos", use_container_width=True):
+            set_prompt("list all GitHub code repos in my account https://github.com/robin-varghese")
+            st.rerun()
+    
+        if st.button("List GCS Buckets", use_container_width=True):
+            set_prompt("list all google cloud storage buckets in my google cloud project vector-search-poc")
+            st.rerun()
 
-    if st.button("List GCS Buckets", use_container_width=True):
-        set_prompt("list all google cloud storage buckets in my google cloud project vector-search-poc")
-        st.rerun()
         
     st.markdown("---")
-    st.caption("FinOptiAgents Platform v1.0")
+    st.caption("MATS Platform v1.0")
 
 # Main content
 if not st.session_state.authenticated:
-    st.title("Welcome to FinOptiAgents 🤖")
+    st.title("Welcome to MATS")
     st.markdown("""
-    ### FinOps Agentic Platform with Hub-and-Spoke Architecture
+    ### Intelligent Application Troubleshooting
     
-    This platform demonstrates a secure, scalable architecture for AI agents with:
+    MATS serves as your autonomous Site Reliability Engineer. It simplifies troubleshooting by coordinating specialized agents to:
     
-    - **🎯 Orchestrator Agent**: Central hub for routing requests
-    - **🔐 OPA Authorization**: Role-based access control
-    - **🌐 Apache APISIX**: API Gateway for observability and routing
-    - **🤖 Sub-Agents**: Specialized agents for GCloud and Monitoring
-    - **🔧 MCP Servers**: Model Context Protocol servers for tools
+    1.  **Understand Context**: Identifies your GCP projects and relevant resources.
+    2.  **Analyze Code & Logs**: Connects to your GitHub repositories and specific branches to correlate code with production logs.
+    3.  **Diagnose Issues**: Uses factual evidence from logs and metrics to pinpoint root causes, acting as a "Senior SRE" to extract the smoking gun.
     
-    **👈 Please login from the sidebar to get started.**
+    **Get Started:**
+    Login from the sidebar to begin an autonomous troubleshooting session.
     """)
-    
-    # Architecture diagram
-    st.markdown("### Architecture Overview")
-    st.image("https://via.placeholder.com/800x400/2E3440/88C0D0?text=User+→+APISIX+→+Orchestrator+→+OPA+→+Sub-Agents+→+MCP+Servers", 
-             caption="Hub-and-Spoke Architecture")
+
 
 else:
-    st.title("FinOptiAgents Chat 💬")
+    st.title("MATS Chat 💬")
     
     # Display chat messages
     for message in st.session_state.messages:
@@ -335,12 +315,11 @@ else:
             st.markdown(user_input)
         
         # Send to orchestrator with simple loading state
-        with st.status("🤔 Thinking...", expanded=True) as status:
-            st.write("🔄 Orchestrating request...")
+        with st.status("🔄 Processing your request...", expanded=False) as status:
             response = send_message(user_input)
             
             if response.get("success"):
-                status.update(label="✅ Response received!", state="complete", expanded=False)
+                status.update(label="✅ Request completed", state="complete", expanded=False)
             else:
                 status.update(label="❌ Request failed", state="error", expanded=True)
         
