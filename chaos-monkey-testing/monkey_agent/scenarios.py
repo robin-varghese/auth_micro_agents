@@ -9,7 +9,7 @@ SCENARIOS = {
         "name": "Service Blackout",
         "description": "Completely deletes the service in us-central1.",
         "break_prompt": "Delete the Cloud Run service named 'calculator-app' in GCP project 'vector-search-poc', region 'us-central1'. Confirm the deletion immediately without asking for further permission.",
-        "restore_prompt": "Deploy a new Cloud Run service named 'calculator-app' to GCP project 'vector-search-poc', region 'us-central1'. Use the image 'gcr.io/vector-search-poc/calculator-app'. Ensure it allows unauthenticated access (allow-unauthenticated)."
+        "restore_prompt": "Deploy a new Cloud Run service named 'calculator-app' to GCP project 'vector-search-poc', region 'us-central1'. Use the image 'us-central1-docker.pkg.dev/vector-search-poc/cloud-run-source-deploy/calculator-app'. Ensure it allows unauthenticated access (allow-unauthenticated)."
     },
     "2": {
         "name": "Auth Lockdown",
@@ -21,7 +21,7 @@ SCENARIOS = {
         "name": "Broken Deployment",
         "description": "Deploys a crashing image (pause container) to force 503 errors.",
         "break_prompt": "Deploy a new revision of the Cloud Run service 'calculator-app' in GCP project 'vector-search-poc', region 'us-central1'. Use the image 'gcr.io/google-containers/pause:1.0' (or any image that doesn't listen on PORT 8080) to force a startup failure.",
-        "restore_prompt": "Deploy a new revision of the Cloud Run service 'calculator-app' in GCP project 'vector-search-poc', region 'us-central1' using the known good image 'gcr.io/vector-search-poc/calculator-app'. Ensure 100% of traffic is routed to this new healthy revision."
+        "restore_prompt": "Deploy a new revision of the Cloud Run service 'calculator-app' in GCP project 'vector-search-poc', region 'us-central1' using the known good image 'us-central1-docker.pkg.dev/vector-search-poc/cloud-run-source-deploy/calculator-app'. Ensure 100% of traffic is routed to this new healthy revision."
     },
     "4": {
         "name": "Traffic Void",
@@ -62,7 +62,7 @@ SCENARIOS = {
     "10": {
         "name": "Region Failover",
         "description": "Deletes from Central1 and Deploys to West1.",
-        "break_prompt": "Step 1: Delete the Cloud Run service 'calculator-app' in GCP project 'vector-search-poc', region 'us-central1'. Step 2: Immediately deploy the service 'calculator-app' to GCP project 'vector-search-poc', region 'us-west1' using image 'gcr.io/vector-search-poc/calculator-app'.",
-        "restore_prompt": "Step 1: Delete the Cloud Run service 'calculator-app' in GCP project 'vector-search-poc', region 'us-west1'. Step 2: Redeploy the service 'calculator-app' to GCP project 'vector-search-poc', region 'us-central1' using image 'gcr.io/vector-search-poc/calculator-app'."
+        "break_prompt": "Step 1: Delete the Cloud Run service 'calculator-app' in GCP project 'vector-search-poc', region 'us-central1'. Step 2: Immediately deploy the service 'calculator-app' to GCP project 'vector-search-poc', region 'us-west1' using image 'us-central1-docker.pkg.dev/vector-search-poc/cloud-run-source-deploy/calculator-app'.",
+        "restore_prompt": "Step 1: Delete the Cloud Run service 'calculator-app' in GCP project 'vector-search-poc', region 'us-west1'. Step 2: Redeploy the service 'calculator-app' to GCP project 'vector-search-poc', region 'us-central1' using image 'us-central1-docker.pkg.dev/vector-search-poc/cloud-run-source-deploy/calculator-app'."
     }
 }

@@ -2,7 +2,7 @@
 Cloud Run ADK Agent - Serverless Container Specialist
 
 This agent uses Google ADK to handle Cloud Run management requests.
-It integrates with the Cloud Run MCP server for executing gcloud run commands.
+It executes `gcloud run` commands directly via subprocess.
 """
 
 import os
@@ -19,219 +19,112 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
     BigQueryAgentAnalyticsPlugin,
     BigQueryLoggerConfig
 )
+from google.adk.runners import InMemoryRunner
+from google.genai import types
 from typing import Dict, Any, List
 import asyncio
 import json
 import logging
+import subprocess
+import shlex
 
 from config import config
 
-# MCP Client for Cloud Run via Docker Stdio
-class CloudRunMCPClient:
-    """Client for connecting to Cloud Run MCP server via Docker Stdio"""
-    
-    def __init__(self):
-        self.image = os.getenv('CLOUD_RUN_MCP_DOCKER_IMAGE', 'finopti-cloud-run-mcp')
-        self.mount_path = os.getenv('GCLOUD_MOUNT_PATH', f"{os.path.expanduser('~')}/.config/gcloud:/root/.config/gcloud")
-        self.process = None
-        self.request_id = 0
-        logging.info(f"CloudRunMCPClient initialized for image: {self.image}")
-        logging.info(f"CloudRunMCPClient command mount path: {self.mount_path}")
-    
-    async def __aenter__(self):
-        await self.connect()
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
+import shutil
 
-    async def connect(self):
-        """Start the MCP server container"""
+# Global flag to track if config is setup
+_gcloud_config_setup = False
+
+def setup_gcloud_config():
+    """Copy mounted gcloud config to writable temp location to avoid Read-Only errors"""
+    global _gcloud_config_setup
+    if _gcloud_config_setup:
+        return
+
+    src = "/root/.config/gcloud"
+    dst = "/tmp/gcloud_config"
+    
+    if os.path.exists(dst):
+        shutil.rmtree(dst)
         
-        # Check if running in a container with access to docker socket
-        cmd = [
-            "docker", "run", 
-            "-i", "--rm", 
-            "-v", self.mount_path,
-            self.image
-        ]
-        
-        logging.info(f"Starting MCP server with command: {' '.join(cmd)}")
-        
+    if os.path.exists(src):
         try:
-            self.process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-
-            # --- MCP Initialization Handshake ---
-            # 1. Send 'initialize' request
-            init_payload = {
-                "jsonrpc": "2.0",
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "finopti-cloud-run-agent", "version": "1.0"}
-                },
-                "id": 0
-            }
-            
-            logging.info("Sending MCP initialize request...")
-            self.process.stdin.write((json.dumps(init_payload) + "\n").encode())
-            await self.process.stdin.drain()
-            
-            # 2. Wait for initialize response
-            while True:
-                line = await self.process.stdout.readline()
-                if not line:
-                     stderr = await self.process.stderr.read()
-                     raise RuntimeError(f"MCP server closed during initialization. Stderr: {stderr.decode()}")
-                
-                try:
-                    msg = json.loads(line.decode())
-                    if msg.get("id") == 0:
-                        if "error" in msg:
-                             raise RuntimeError(f"MCP initialization error: {msg['error']}")
-                        logging.info("MCP Initialized successfully.")
-                        break
-                except json.JSONDecodeError:
-                    logging.warning(f"Invalid JSON during init: {line}")
-            
-            # 3. Send 'notifications/initialized'
-            notify_payload = {
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized",
-                "params": {}
-            }
-            self.process.stdin.write((json.dumps(notify_payload) + "\n").encode())
-            await self.process.stdin.drain()
-            
+            logging.info(f"Copying gcloud config from {src} to {dst}")
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+            _gcloud_config_setup = True
         except Exception as e:
-            logging.error(f"Failed to start MCP server: {e}")
-            if self.process:
-                try:
-                    self.process.terminate()
-                except ProcessLookupError:
-                    pass
-            raise
+            logging.error(f"Failed to copy gcloud config: {e}")
+    else:
+        logging.warning(f"GCloud config source {src} not found")
 
-    async def close(self):
-        """Stop the MCP server"""
-        if self.process:
-            try:
-                self.process.terminate()
-                await self.process.wait()
-            except ProcessLookupError:
-                pass
-            self.process = None
-    
-    async def call_tool(self, tool_name: str, arguments: dict) -> Dict[str, Any]:
-        """Call Cloud Run MCP tool via Stdio"""
-        if not self.process:
-            raise RuntimeError("MCP client not connected")
-            
-        self.request_id += 1
-        payload = {
-            "jsonrpc": "2.0",
-            "method": "tools/call",
-            "params": {"name": tool_name, "arguments": arguments},
-            "id": self.request_id
-        }
-        
-        json_str = json.dumps(payload) + "\n"
-        
-        try:
-            # Write request
-            self.process.stdin.write(json_str.encode())
-            await self.process.stdin.drain()
-            
-            # Read response
-            while True:
-                line = await self.process.stdout.readline()
-                if not line:
-                    # EOF
-                    stderr = await self.process.stderr.read()
-                    raise RuntimeError(f"MCP server closed connection. Stderr: {stderr.decode()}")
-                
-                try:
-                    msg = json.loads(line.decode())
-                    if msg.get("id") == self.request_id:
-                        if "error" in msg:
-                            raise RuntimeError(f"MCP tool error: {msg['error']}")
-                        
-                        result = msg.get("result", {})
-                        if "content" in result:
-                            output_text = ""
-                            for content in result["content"]:
-                                if content.get("type") == "text":
-                                    output_text += content["text"]
-                            try:
-                                return json.loads(output_text)
-                            except json.JSONDecodeError:
-                                return {"output": output_text}
-                        
-                        return result
-                except json.JSONDecodeError:
-                     logging.warning(f"Invalid JSON from MCP server: {line}")
-                     
-        except Exception as e:
-             raise RuntimeError(f"MCP call failed: {e}") from e
-
-    async def run_cloud_run_command(self, args: List[str]) -> str:
-        """
-        Execute a gcloud run command via MCP server
-        
-        Args:
-            args: List of gcloud command arguments (without 'gcloud' prefix)
-        
-        Returns:
-            Command output as string
-        """
-        result = await self.call_tool(
-            "run_cloud_run_command",
-            arguments={"args": args}
-        )
-        
-        if isinstance(result, dict) and "output" in result:
-            return result["output"]
-        return str(result)
-
-
-# Global MCP client (will be initialized per-request)
-_mcp_client = None
-
-async def execute_cloud_run_command(args: List[str]) -> Dict[str, Any]:
+async def run_cloud_run_command(command_args: str) -> Dict[str, Any]:
     """
-    ADK tool: Execute gcloud run command
+    ADK tool: Execute gcloud run command directly via CLI
     
     Args:
-        args: List of gcloud run command arguments (e.g. ['services', 'list'])
+        command_args: Space-separated arguments for gcloud run (e.g. 'services list')
     
     Returns:
         Dictionary with execution result
     """
-    global _mcp_client
+    
+    # Ensure config requires write access is in a writable place
+    setup_gcloud_config()
+    
+    # Parse string into list
+    try:
+        args = shlex.split(command_args)
+    except Exception:
+        args = command_args.split()
+
+    full_cmd = ["gcloud", "run"] + args
+    
+    # Prepare environment with custom config path
+    env = os.environ.copy()
+    env["CLOUDSDK_CONFIG"] = "/tmp/gcloud_config"
+    # Disable file logging to prevent clutter/errors
+    env["CLOUDSDK_CORE_DISABLE_FILE_LOGGING"] = "1" 
     
     try:
-        if not _mcp_client:
-            _mcp_client = CloudRunMCPClient()
-            await _mcp_client.connect()
+        logging.info(f"Executing: {' '.join(full_cmd)}")
         
-        output = await _mcp_client.run_cloud_run_command(args)
+        # Execute synchronously 
+        result = subprocess.run(
+            full_cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env
+        )
         
+        if result.returncode == 0:
+            logging.info(f"Command succeeded: {result.stdout[:200]}...")
+            return {
+                "success": True,
+                "output": result.stdout,
+                "command": f"gcloud run {command_args}"
+            }
+        else:
+            logging.error(f"Command failed: {result.stderr}")
+            return {
+                "success": False,
+                "error": result.stderr,
+                "command": f"gcloud run {command_args}"
+            }
+
+    except subprocess.TimeoutExpired:
+        logging.error("Command timed out")
         return {
-            "success": True,
-            "output": output,
-            "command": f"gcloud run {' '.join(args)}"
+            "success": False,
+            "error": "Command timed out after 120s",
+            "command": f"gcloud run {command_args}"
         }
     except Exception as e:
+        logging.error(f"Execution failed: {e}")
         return {
             "success": False,
             "error": str(e),
-            "command": f"gcloud run {' '.join(args)}"
+            "command": f"gcloud run {command_args}"
         }
 
 
@@ -249,24 +142,25 @@ cloud_run_agent = Agent(
     
     Your responsibilities:
     1. Understand user requests related to Cloud Run services and jobs
-    2. Translate natural language to appropriate `gcloud run` commands
+    2. Translate natural language to appropriate arguments for the `run_cloud_run_command` tool.
     3. Execute commands safely and return results
     4. Provide clear, helpful responses
     
     Guidelines:
-    - Assume `gcloud run` prefix is handled by the tool. Pass arguments starting after `run`.
-      Example: to list services, pass `['services', 'list']`.
+    - Use the `run_cloud_run_command` tool.
+    - Pass arguments as a SINGLE STRING (space-separated). Do not use a list.
+    - Example: to list services, pass `command_args="services list"`.
     - For deployments: Ask for all necessary details (image, region, allow-unauthenticated) if missing.
     - For destructive actions (delete): Always confirm with the user first.
     
     Common patterns:
-    - List Services: arguments=['services', 'list']
-    - Describe Service: arguments=['services', 'describe', 'SERVICE_NAME', '--region=REGION']
-    - Deploy: arguments=['deploy', 'SERVICE_NAME', '--image=IMAGE_URL', '--region=REGION']
+    - List Services: `command_args="services list"`
+    - Describe Service: `command_args="services describe SERVICE_NAME --region=REGION"`
+    - Deploy: `command_args="deploy SERVICE_NAME --image=IMAGE_URL --region=REGION"`
     
     Always be helpful, accurate, and safe.
     """,
-    tools=[execute_cloud_run_command]
+    tools=[run_cloud_run_command]
 )
 
 # Configure BigQuery Analytics Plugin
@@ -302,10 +196,6 @@ app = App(
     ]
 )
 
-
-from google.adk.runners import InMemoryRunner
-from google.genai import types
-
 async def send_message_async(prompt: str, user_email: str = None) -> str:
     """
     Send a message to the Cloud Run agent
@@ -318,12 +208,6 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
         Agent's response as string
     """
     try:
-        # Initialize MCP client if needed
-        global _mcp_client
-        if not _mcp_client:
-            _mcp_client = CloudRunMCPClient()
-            await _mcp_client.connect()
-        
         # Use InMemoryRunner to execute the app
         async with InMemoryRunner(app=app) as runner:
             sid = "default"
@@ -351,12 +235,6 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
 
     except Exception as e:
         return f"Error processing request: {str(e)}"
-    finally:
-        # Clean up MCP client
-        if _mcp_client:
-            await _mcp_client.close()
-            _mcp_client = None
-
 
 def send_message(prompt: str, user_email: str = None) -> str:
     """

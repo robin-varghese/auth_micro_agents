@@ -1,142 +1,150 @@
-# Chaos Monkey Testing Application Strategy
+# Chaos Monkey Testing Application Strategy (Implemented)
 
 ## 🎯 Objective
-Develop a **Monkey Testing Web Application** to orchestrate controlled disruptions (chaos engineering) on the target Cloud Run service (`calculator-app`). 
+The **Monkey Testing Web Application** orchestrates controlled disruptions (chaos engineering) on the target Cloud Run service (`calculator-app`). It provides a user-friendly interface to trigger 10 distinct failure scenarios and verify the system's resilience and self-healing capabilities via the MATS (Multimodal Autonomous Troubleshooting System) agents.
 
-**Target Application Details:**
+**Target Application:**
 *   **Service Name**: `calculator-app`
-*   **Cloud Run URL**: [https://calculator-app-912533822336.us-central1.run.app](https://calculator-app-912533822336.us-central1.run.app)
-*   **GitHub Repository**: [https://github.com/robin-varghese/calculator-app](https://github.com/robin-varghese/calculator-app)
-
-The app will allow users to select from **10 distinct chaos scenarios**, execute them via an ADK-based agent, and revert the changes to restore service.
+*   **Region**: `us-central1`
+*   **Project**: `vector-search-poc`
+*   **Image**: `us-central1-docker.pkg.dev/vector-search-poc/cloud-run-source-deploy/calculator-app`
 
 ## 🏗️ Architecture Design
 
-The solution will be integrated into the existing `finopti-platform` ecosystem, explicitly leveraging the **natively integrated MCP Servers** for direct, efficient control.
+The solution is fully integrated into the `finopti-platform` ecosystem.
 
 ### 1. Components
-*   **Monkey UI (Frontend)**: 
-    *   A dedicated, separate Web UI (HTML/CSS/JS).
-    *   Displays a dashboard of available scenarios with "🔥 Break" and "🚑 Restore" buttons.
-    *   Shows real-time status of operations.
-*   **Monkey Agent (Backend)**:
-    *   **Type**: Google ADK Agent (Python).
-    *   **Role**: Orchestrator for Chaos. 
-    *   **Logic**: It delegates tasks to the specialized sub-agents which natively run MCP tools.
-*   **Specialized Agents & Native MCPs**:
-    *   **Cloud Run Agent** (uses `finopti-cloud-run-mcp`): Handles service deletion, traffic shifts, revision management, and configuration updates.
-    *   **GCloud Agent** (uses `finopti-gcloud-mcp`): Handles IAM bindings (`run.invoker`) and region-level operations.
-    *   **Monitoring Agent** (uses `finopti-monitoring-mcp`): Can be used to verify "death" (lack of logs/metrics) or "resurrection" (return of healthy signals).
-    *   **GitHub Agent** (uses `finopti-github-mcp`): Can be used to trigger "Bad Deployments" by pointing to bad commits or branches if needed (optional extension).
+
+#### 🐵 Monkey UI (Frontend)
+*   **Tech Stack**: Vanilla HTML/CSS/JS served by Nginx.
+*   **Location**: `auth_micro_agents/chaos-monkey-testing/monkey_ui/`
+*   **Functionality**:
+    *   Dashboard displaying 10 scenarios.
+    *   **Simulate �**: Triggers the `break_prompt`.
+    *   **Restore 🟢**: Triggers the `restore_prompt`.
+    *   **Live Logs**: Displays the natural language response from the Orchestrator.
+
+#### 🧠 Monkey Agent (Backend)
+*   **Tech Stack**: Python (Flask).
+*   **Location**: `auth_micro_agents/chaos-monkey-testing/monkey_agent/`
+*   **Port**: 5007
+*   **Endpoints**:
+    *   `GET /scenarios`: Returns list of available chaos scenarios.
+    *   `POST /execute`: Accepts `{id, action}` and forwards the prompt to the Orchestrator.
+*   **Integration**: Calls `http://apisix:9080/orchestrator/ask` to trigger agentic workflows.
+
+#### 🌩️ Cloud Run Agent (The Executor)
+*   **Tech Stack**: Python (Google ADK).
+*   **Location**: `auth_micro_agents/finopti-platform/sub_agents/cloud_run_agent_adk/`
+*   **Execution Model**: 
+    *   Originally designed to use an MCP Server.
+    *   **Current Implementation**: Uses direct `subprocess` calls to the `gcloud` CLI installed in the container for maximum reliability and feature coverage.
+    *   **Filesystem Workaround**: Copies read-only mounted gcloud configuration to `/tmp/gcloud_config` at runtime to allow write operations (lock files, logs).
 
 ### 2. Communication Flow
-`[User]` -> `[Monkey UI]` --(HTTP)--> `[Monkey Agent]` --(HTTP)--> `[Orchestrator]` --(Routing)--> `[Sub-Agents]`
-
-**Sub-Agent Execution:**
-*   `[Cloud Run Agent]` --(Stdio)--> `[Cloud Run MCP]` --(API)--> `[GCP Cloud Run]`
-*   `[GCloud Agent]` --(Stdio)--> `[GCloud MCP]` --(API)--> `[GCP IAM/Compute]`
-*   `[Monitoring Agent]` --(Stdio)--> `[Monitoring MCP]` --(API)--> `[GCP Operations]`
-
-## 💥 Chaos Scenarios (10 Fault Injections)
-
-## 💥 Chaos Scenarios: Multi-Step Prompts
-
-The Monkey Agent will execute these scenarios by sending the following **Natural Language Prompts** to the Orchestrator, which will direct them to the appropriate specialized agents (Cloud Run Agent, GCloud Agent, etc.).
-
-### 1. Service Blackout (Total Destruction)
-**Goal**: Completely remove the service to simulate a catastrophic regional failure or accidental deletion.
-*   **🔴 Break Prompt**: 
-    > "Delete the Cloud Run service named 'calculator-app' in region 'us-central1'. Confirm the deletion immediately without asking for further permission."
-*   **🟢 Restore Prompt**:
-    > "Deploy a new Cloud Run service named 'calculator-app' to region 'us-central1'. Use the image 'gcr.io/vector-search-poc/calculator-app'. Ensure it allows unauthenticated access (allow-unauthenticated)."
-
-### 2. Auth Lockdown (Permission Denied)
-**Goal**: Revoke public access to simulate an IAM misconfiguration.
-*   **🔴 Break Prompt**:
-    > "Remove the IAM policy binding for the role 'roles/run.invoker' from member 'allUsers' on the Cloud Run service 'calculator-app' in region 'us-central1'."
-*   **🟢 Restore Prompt**:
-    > "Add an IAM policy binding to the Cloud Run service 'calculator-app' in region 'us-central1'. Grant the role 'roles/run.invoker' to the member 'allUsers' to make it publicly accessible."
-
-### 3. Broken Deployment (CrashLoopBackOff)
-**Goal**: Deploy a container image that immediately crashes to simulate a bad code push.
-*   **🔴 Break Prompt**:
-    > "Deploy a new revision of the Cloud Run service 'calculator-app' in region 'us-central1'. Use the image 'gcr.io/google-containers/pause:1.0' (or any image that doesn't listen on PORT 8080) to force a startup failure."
-*   **🟢 Restore Prompt**:
-    > "Deploy a new revision of the Cloud Run service 'calculator-app' in region 'us-central1' using the known good image 'gcr.io/vector-search-poc/calculator-app'. Ensure 100% of traffic is routed to this new healthy revision."
-
-### 4. Traffic Void (Misrouting)
-**Goal**: Set traffic splitting configuration to drop traffic or route to a dummy "maintenance" mode.
-*   **🔴 Break Prompt**:
-    > "Update the traffic configuration for Cloud Run service 'calculator-app' in 'us-central1'. Set traffic to 0% for the latest revision, effectively stopping all requests." (Note: If 0% isn't allowed, route 100% to a non-functional revision).
-*   **🟢 Restore Prompt**:
-    > "Update the traffic configuration for Cloud Run service 'calculator-app' in 'us-central1'. Send 100% of traffic to the 'LATEST' revision."
-
-### 5. Resource Starvation (OOM Kill)
-**Goal**: Reduce memory to a point where the app crashes under load.
-*   **🔴 Break Prompt**:
-    > "Update the Cloud Run service 'calculator-app' in region 'us-central1'. Set the memory limit to '64Mi' (minimum possible)."
-*   **🟢 Restore Prompt**:
-    > "Update the Cloud Run service 'calculator-app' in region 'us-central1'. Set the memory limit back to '512Mi' (or previous working value)."
-
-### 6. Concurrency Freeze (Latency Spike)
-**Goal**: Artificially limit concurrency to force queuing and timeouts.
-*   **🔴 Break Prompt**:
-    > "Update the Cloud Run service 'calculator-app' in region 'us-central1'. Set the maximum concurrency per instance to 1 and set max-instances to 1."
-*   **🟢 Restore Prompt**:
-    > "Update the Cloud Run service 'calculator-app' in region 'us-central1'. Set concurrency to default (80) and remove the max-instances limit (or set to 100)."
-
-### 7. Bad Environment (Config Failure)
-**Goal**: Inject invalid environment variables that break application logic or connectivity.
-*   **🔴 Break Prompt**:
-    > "Update the Cloud Run service 'calculator-app' in 'us-central1'. Set the environment variable 'DB_CONNECTION_STRING' to 'invalid_host:5432' to force database connection errors."
-*   **🟢 Restore Prompt**:
-    > "Update the Cloud Run service 'calculator-app' in 'us-central1'. Remove the environment variable 'DB_CONNECTION_STRING' (or set it back to the valid connection string if known)."
-
-### 8. Network Isolation (Ingress Restriction)
-**Goal**: Restrict ingress to "Internal" or "Load Balancing" only, blocking public internet access.
-*   **🔴 Break Prompt**:
-    > "Update the Cloud Run service 'calculator-app' in 'us-central1'. Set the ingress traffic settings to 'internal'. This should block external HTTP traffic."
-*   **🟢 Restore Prompt**:
-    > "Update the Cloud Run service 'calculator-app' in 'us-central1'. Set the ingress traffic settings to 'all' to allow public internet access."
-
-### 9. Cold Start Freeze (Scale to Zero)
-**Goal**: Force aggressive scaling to zero and limit scaling up, causing cold starts for every request (or denial of service if clamped at 0).
-*   **🔴 Break Prompt**:
-    > "Update the Cloud Run service 'calculator-app' in 'us-central1'. Set 'min-instances' to 0 and 'max-instances' to 0 (effectively suspending the service) OR set max-instances to 1 to force serialization."
-*   **🟢 Restore Prompt**:
-    > "Update the Cloud Run service 'calculator-app' in 'us-central1'. Set 'min-instances' to 1 (to keep it warm) and remove the 'max-instances' limit."
-
-### 10. Region Failover (Disaster Recovery Simulation)
-**Goal**: Simulate US-Central1 going down and failing over to US-West1.
-*   **🔴 Break Prompt (Multi-Step)**:
-    > "Step 1: Delete the Cloud Run service 'calculator-app' in 'us-central1'. Step 2: Immediately deploy the service 'calculator-app' to region 'us-west1' using image 'gcr.io/vector-search-poc/calculator-app'."
-*   **🟢 Restore Prompt (Multi-Step)**:
-    > "Step 1: Delete the Cloud Run service 'calculator-app' in 'us-west1'. Step 2: Redeploy the service 'calculator-app' to region 'us-central1' using image 'gcr.io/vector-search-poc/calculator-app'."
-
-*Note: Scenario 1 ("Delete Service") is destructive. The Restore action assumes the image is still in Registry.*
-
-## 🚀 Implementation Plan
-
-### Phase 1: Monkey Agent (ADK) Setup
-1.  Create `mats-chaos-monkey` directory.
-2.  Scaffold a basic ADK agent (`main.py`, `agent.py`).
-3.  Implement `POST /trigger_chaos` endpoint accepting `scenario_id` and `action` ('break' | 'restore').
-4.  Implement the logic to map `scenario_id` to the prompts defined above.
-5.  Implement the `http_client` to call `GCloud Agent`.
-
-### Phase 2: Monkey UI
-1.  Create a simple dashboard `monkey-ui/index.html`.
-2.  List the 10 scenarios with status indicators.
-3.  Implement buttons to call the Monkey Agent.
-
-### Phase 3: Integration
-1.  Add `monkey-agent` to `docker-compose.yml`.
-2.  Add `monkey-ui` to `docker-compose.yml` (or bundle with agent).
-3.  Configure network routes in APISIX.
-
-## ❓ Questions
-1.  Do you want me to proceed with creating the `mats-chaos-monkey` folder now?
-2.  Shall I use `docker-compose` to run this alongside the existing MATS stack?
+1.  **User** clicks "Simulate" on Monkey UI.
+2.  **Monkey UI** sends `POST /execute` to Monkey Agent.
+3.  **Monkey Agent** looks up the `break_prompt` for the scenario.
+4.  **Monkey Agent** sends the prompt to **FinOpti Orchestrator** via APISIX.
+5.  **Orchestrator** routes the request to **Cloud Run Agent**.
+6.  **Cloud Run Agent** translates the prompt into a `gcloud run` command and executes it locally.
+7.  **Result** is returned up the chain to the User.
 
 ---
-**Ready to proceed?**
+
+## 💥 Implemented Chaos Scenarios
+
+The following 10 scenarios are defined in `monkey_agent/scenarios.py` and actively running.
+
+### 1. Service Blackout (Total Destruction)
+*   **Action**: `gcloud run services delete calculator-app ...`
+*   **Impact**: 404 Not Found. Service completely removed.
+*   **Restore**: Redeploys the service using the Artifact Registry image.
+
+### 2. Auth Lockdown (Permission Denied)
+*   **Action**: Removes `roles/run.invoker` from `allUsers`.
+*   **Impact**: 403 Forbidden for public users.
+*   **Restore**: Re-grants `roles/run.invoker` to `allUsers`.
+
+### 3. Broken Deployment (CrashLoopBackOff)
+*   **Action**: Deploys `gcr.io/google-containers/pause:1.0` (simulating a bad image).
+*   **Impact**: 503 Service Unavailable / Deployment Failure.
+*   **Restore**: Redeploys the correct `calculator-app` image.
+
+### 4. Traffic Void (Misrouting)
+*   **Action**: Sets traffic to 0% (or routes to non-existent revision).
+*   **Impact**: 404 or 503 depending on implementation.
+*   **Restore**: Routes 100% traffic to `LATEST`.
+
+### 5. Resource Starvation (OOM Kill)
+*   **Action**: Sets memory limit to `64Mi`.
+*   **Impact**: Container crashes with "Memory limit exceeded" under load.
+*   **Restore**: Sets memory limit back to `512Mi`.
+
+### 6. Concurrency Freeze (Latency Spike)
+*   **Action**: Sets `concurrency=1` and `max-instances=1`.
+*   **Impact**: Massive request queuing and high latency (504s).
+*   **Restore**: Resets concurrency to default (80).
+
+### 7. Bad Environment (Config Failure)
+*   **Action**: Injects `DB_CONNECTION_STRING=invalid_host:5432`.
+*   **Impact**: Application logic fails (500 Internal Server Error) when trying to connect.
+*   **Restore**: Removes the invalid environment variable.
+
+### 8. Network Isolation (Ingress Restriction)
+*   **Action**: Sets ingress to `internal`.
+*   **Impact**: 403 Forbidden (or 404) for external traffic.
+*   **Restore**: Sets ingress to `all`.
+
+### 9. Cold Start Freeze (Scale to Zero)
+*   **Action**: Sets `min-instances=0` and `max-instances=0`.
+*   **Impact**: Service is effectively suspended; will not scale up for requests.
+*   **Restore**: Sets `min-instances=1` (warm) and removes max limit.
+
+### 10. Region Failover (Disaster Recovery)
+*   **Action**: Deletes from `us-central1` AND deploys to `us-west1`.
+*   **Impact**: Service available but with higher latency/different URL (if not using global LB).
+*   **Restore**: Deletes from `us-west1` and redeploys to `us-central1`.
+
+---
+
+## 🔧 Technical Implementation Details
+
+### Docker Configuration
+Managed via the main `docker-compose.yml` in `finopti-platform`:
+
+```yaml
+  monkey_agent:
+    build: ../chaos-monkey-testing/monkey_agent
+    environment:
+      - ORCHESTRATOR_URL=http://apisix:9080/orchestrator/ask
+    networks:
+      - finopti-net
+
+  monkey_ui:
+    build: ../chaos-monkey-testing/monkey_ui
+    ports:
+      - "8080:80"
+    networks:
+      - finopti-net
+```
+
+### Cloud Run Agent "Subprocess" Fix
+To bypass limitations of the MCP server protocol for complex gcloud commands, the agent uses Python's `subprocess`:
+
+```python
+# Copy config to writable location to fix Read-Only errors
+shutil.copytree("/root/.config/gcloud", "/tmp/gcloud_config")
+
+# Execute command
+subprocess.run(
+    ["gcloud", "run", "deploy", ...],
+    env={"CLOUDSDK_CONFIG": "/tmp/gcloud_config"}
+)
+```
+
+## 🧪 Verification
+The setup has been verified by running the **Service Blackout** scenario:
+1.  **Break**: UI clicked -> Service deleted on GCP.
+2.  **Troubleshoot**: MATS agents detected the 404 and identified the deletion.
+3.  **Restore**: UI clicked -> Service successfully redeployed and accessible.
