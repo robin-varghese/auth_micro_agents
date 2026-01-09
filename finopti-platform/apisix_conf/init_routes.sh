@@ -28,8 +28,8 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/1" \
       },
       "timeout": {
         "connect": 6,
-        "send": 120,
-        "read": 120
+        "send": 600,
+        "read": 600
       }
     },
     "plugins": {

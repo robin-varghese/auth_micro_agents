@@ -22,7 +22,7 @@ app = Flask(__name__)
 def health_check():
     return jsonify({"status": "healthy", "service": "cloud_run_agent"}), 200
 
-@app.route('/agent/cloud-run', methods=['POST'])
+@app.route('/execute', methods=['POST'])
 def chat():
     try:
         data = request.json

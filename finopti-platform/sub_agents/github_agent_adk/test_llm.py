@@ -24,7 +24,7 @@ def check_environment():
     # Check 3: LLM Connectivity (if key exists)
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(os.environ.get("FINOPTIAGENTS_LLM", "gemini-3-pro-preview")) # Use configured model
+        model = genai.GenerativeModel(os.environ.get("FINOPTIAGENTS_LLM", "gemini-3-flash-preview")) # Use configured model
         print("[INFO] Attempting to generate content...")
         response = model.generate_content("Ping")
         print(f"[PASS] Generation successful. Response: {response.text.strip()}")

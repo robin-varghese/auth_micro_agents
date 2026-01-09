@@ -35,7 +35,7 @@ Execute a GCloud operation
   "success": true,
   "response": "Here are your VMs...",
   "agent": "gcloud_adk",
-  "model": "gemini-3-pro-preview"
+  "model": "gemini-3-flash-preview"
 }
 ```
 

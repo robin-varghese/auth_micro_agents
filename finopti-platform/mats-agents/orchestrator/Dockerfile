@@ -11,4 +11,4 @@ COPY . .
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8084", "main:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8084", "--timeout", "600", "main:app"]

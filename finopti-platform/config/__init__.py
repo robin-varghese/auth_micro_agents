@@ -203,7 +203,7 @@ def _fetch_config(secret_id: str, env_var: Optional[str] = None, default: Option
 
 # Core Google Cloud
 GOOGLE_API_KEY = _fetch_config("GOOGLE_API_KEY")
-FINOPTIAGENTS_LLM = _fetch_config("FINOPTIAGENTS_LLM", default="gemini-3-pro-preview")
+FINOPTIAGENTS_LLM = _fetch_config("FINOPTIAGENTS_LLM", default="gemini-3-flash-preview")
 GOOGLE_GENAI_USE_VERTEXAI = _fetch_config("GOOGLE_GENAI_USE_VERTEXAI", default="FALSE")
 GOOGLE_ZONE = _fetch_config("GOOGLE_ZONE", default="us-central1-a")
 

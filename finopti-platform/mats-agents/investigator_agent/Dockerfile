@@ -13,4 +13,4 @@ COPY mats-agents/investigator_agent/ .
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8082", "main:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8082", "--timeout", "600", "main:app"]

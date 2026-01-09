@@ -13,4 +13,4 @@ COPY mats-agents/architect_agent/ .
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8083", "main:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8083", "--timeout", "600", "main:app"]

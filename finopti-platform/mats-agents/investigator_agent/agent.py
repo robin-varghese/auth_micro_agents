@@ -103,31 +103,36 @@ class AsyncMCPClient:
             "arguments": arguments
         })
         
-        while True:
-            line = await self.process.stdout.readline()
-            if not line:
-                raise RuntimeError("MCP Connection Closed Unexpectedly")
-            
-            try:
-                msg = json.loads(line.decode())
-                if msg.get("id") == req_id:
-                     if "error" in msg:
-                         return {"error": msg['error']}
-                     
-                     res = msg.get("result", {})
-                     # Text extraction logic
-                     if "content" in res:
-                         text = ""
-                         for c in res["content"]:
-                             if c["type"] == "text":
-                                 text += c["text"]
-                         try:
-                             return json.loads(text)
-                         except:
-                             return {"output": text}
-                     return res
-            except json.JSONDecodeError:
-                continue
+        try:
+            while True:
+                line = await asyncio.wait_for(self.process.stdout.readline(), timeout=300.0)
+                if not line:
+                    raise RuntimeError("MCP Connection Closed Unexpectedly")
+                
+                try:
+                    msg = json.loads(line.decode())
+                    if msg.get("id") == req_id:
+                         if "error" in msg:
+                             return {"error": msg['error']}
+                         
+                         res = msg.get("result", {})
+                         # Text extraction logic
+                         if "content" in res:
+                             text = ""
+                             for c in res["content"]:
+                                 if c["type"] == "text":
+                                     text += c["text"]
+                             try:
+                                 return json.loads(text)
+                             except:
+                                 return {"output": text}
+                         return res
+                except json.JSONDecodeError:
+                    continue
+        except asyncio.TimeoutError:
+             return {"error": "Tool execution timed out after 300s"}
+        except Exception as e:
+             return {"error": f"Client Error: {e}"}
 
     async def close(self):
         if self.process:

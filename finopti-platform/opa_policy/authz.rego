@@ -58,5 +58,10 @@ allow if {
     input.target_agent == "mats"
 }
 
+allow if {
+    user_role["gcloud_admin"]
+    input.target_agent == "cloud-run"
+}
+
 # Deny by default
 default allow = false

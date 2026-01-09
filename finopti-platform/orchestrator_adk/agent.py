@@ -70,6 +70,8 @@ def detect_intent(prompt: str) -> str:
                         'machine', 'disk', 'network', 'firewall', 'operations', 'project', 'region', 'zone']
     # Cloud Run keywords
     cloud_run_keywords = ['cloud run', 'service', 'revision', 'container', 'serverless', 'deploy', 'traffic', 'image', 'knative', 'job']
+    # MATS keywords (Troubleshooting)
+    mats_keywords = ['troubleshoot', 'fix', 'debug', 'check what went wrong', 'root cause', 'why is it failing', 'investigate', 'rca', 'diagnosis']
     
     scores = {
         'github': count_matches(github_keywords),
@@ -77,7 +79,8 @@ def detect_intent(prompt: str) -> str:
         'db': count_matches(db_keywords),
         'monitoring': count_matches(monitoring_keywords),
         'cloud-run': count_matches(cloud_run_keywords),
-        'gcloud': count_matches(gcloud_keywords)
+        'gcloud': count_matches(gcloud_keywords),
+        'mats': count_matches(mats_keywords) * 10 # Strong bios for troubleshooting intent
     }
     
     # Find agent with highest score
@@ -146,14 +149,16 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
             'monitoring': f"{config.APISIX_URL}/agent/monitoring/execute",
             'github': f"{config.APISIX_URL}/agent/github/execute",
             'storage': f"{config.APISIX_URL}/agent/storage/execute",
-            'storage': f"{config.APISIX_URL}/agent/storage/execute",
             'db': f"{config.APISIX_URL}/agent/db/execute",
-            'cloud-run': f"{config.APISIX_URL}/agent/cloud-run" # Note: New agent uses /agent/cloud-run directly or via execute if consistent
+            'cloud-run': f"{config.APISIX_URL}/agent/cloud-run",
+            'mats': "http://mats-orchestrator:8084/chat"  # Direct routing to MATS Orchestrator
         }
         
         # Adjust endpoint for cloud-run if following Flask pattern
         if target_agent == 'cloud-run':
-             endpoint = f"{config.APISIX_URL}/agent/cloud-run"
+             endpoint = f"{config.APISIX_URL}/agent/cloud-run/execute"
+        elif target_agent == 'mats':
+             endpoint = agent_endpoints['mats']
         else:
              endpoint = agent_endpoints[target_agent]
         
@@ -172,12 +177,25 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
         
         if project_id:
             payload["project_id"] = project_id
+            
+        if target_agent == 'mats':
+             # Direct internal routing to MATS service
+             # Note: MATS requires specific payload structure
+             endpoint = "http://mats-orchestrator:8084/troubleshoot"
+             payload = {
+                 "project_id": project_id or config.GCP_PROJECT_ID,
+                 "repo_url": "https://github.com/robin-varghese/auth_micro_agents", # Default for this env
+                 "error_description": prompt,
+                 "branch": "main"
+             }
         
         # Call sub-agent via APISIX
         headers = {"Content-Type": "application/json"}
         headers = propagate_request_id(headers)
         
-        response = requests.post(endpoint, json=payload, headers=headers, timeout=120)
+        # Increase timeout for MATS agent which runs long chains
+        timeout = 600 if target_agent == 'mats' else 120
+        response = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
         
         try:
             response.raise_for_status()

@@ -1,0 +1,24 @@
+services:
+  monkey_agent:
+    build: ./monkey_agent
+    container_name: monkey_agent
+    ports:
+      - "5007:5007"
+    environment:
+      - ORCHESTRATOR_URL=http://apisix:9080/orchestrator/ask
+    networks:
+      - finopti-net
+
+  monkey_ui:
+    build: ./monkey_ui
+    container_name: monkey_ui
+    ports:
+      - "8089:80"
+    networks:
+      - finopti-net
+    depends_on:
+      - monkey_agent
+
+networks:
+  finopti-net:
+    external: true

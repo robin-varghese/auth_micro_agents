@@ -2,6 +2,12 @@
 
 ## 🎯 Objective
 Develop a **Monkey Testing Web Application** to orchestrate controlled disruptions (chaos engineering) on the target Cloud Run service (`calculator-app`). 
+
+**Target Application Details:**
+*   **Service Name**: `calculator-app`
+*   **Cloud Run URL**: [https://calculator-app-912533822336.us-central1.run.app](https://calculator-app-912533822336.us-central1.run.app)
+*   **GitHub Repository**: [https://github.com/robin-varghese/calculator-app](https://github.com/robin-varghese/calculator-app)
+
 The app will allow users to select from **10 distinct chaos scenarios**, execute them via an ADK-based agent, and revert the changes to restore service.
 
 ## 🏗️ Architecture Design

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chaos Monkey - FinOpti Platform</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>🐒 Chaos Monkey Dashboard</h1>
+            <p>Target: <strong>calculator-app (Cloud Run)</strong></p>
+        </header>
+
+        <div id="status-message" class="status-bar hidden">Ready</div>
+
+        <div class="scenarios-grid" id="scenarios-container">
+            <!-- Scenarios will be injected here via JS -->
+            <div class="loading">Loading scenarios...</div>
+        </div>
+
+        <div class="logs-panel">
+            <h3>📝 Operation Logs</h3>
+            <pre id="console-logs">Waiting for action...</pre>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>

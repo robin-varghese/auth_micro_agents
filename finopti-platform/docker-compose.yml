@@ -524,7 +524,7 @@ services:
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
-      - FINOPTIAGENTS_LLM=gemini-3-pro-preview
+
       - GCLOUD_MCP_DOCKER_IMAGE=finopti-gcloud-mcp
       - MONITORING_MCP_DOCKER_IMAGE=finopti-monitoring-mcp
       - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
@@ -550,7 +550,7 @@ services:
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
-      - FINOPTIAGENTS_LLM=gemini-3-pro-preview
+
       - GITHUB_MCP_DOCKER_IMAGE=finopti-github-mcp-server
       - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
       - PYTHONUNBUFFERED=1
@@ -574,7 +574,7 @@ services:
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
-      - FINOPTIAGENTS_LLM=gemini-3-pro-preview
+
       - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
       - PYTHONUNBUFFERED=1
     volumes:

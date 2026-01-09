@@ -38,46 +38,61 @@ async def run_troubleshooting_workflow(
     # 1. SRE AGENT (Triage)
     # ---------------------------------------------------------
     logger.info("Starting Phase 1: SRE Triage")
-    sre_prompt = f"""
-    Analyze logs for GCP Project '{project_id}'.
-    Context: {error_description}
-    """
-    sre_output = await call_agent(SRE_URL, sre_prompt)
-    stages.append({"stage": "SRE", "output": sre_output})
+    try:
+        sre_prompt = f"""
+        Analyze logs for GCP Project '{project_id}'.
+        Context: {error_description}
+        """
+        sre_output = await call_agent(SRE_URL, sre_prompt)
+        stages.append({"stage": "SRE", "status": "success", "output": sre_output})
+    except Exception as e:
+        logger.error(f"Phase 1 (SRE) Failed: {e}")
+        # SRE is critical, we cannot proceed without logs
+        raise RuntimeError(f"SRE Agent Failed: {e}")
     
     # ---------------------------------------------------------
     # 2. INVESTIGATOR AGENT (Code)
     # ---------------------------------------------------------
     logger.info("Starting Phase 2: Code Investigation")
-    investigtor_prompt = f"""
-    The SRE Agent has provided the following incident context:
-    {sre_output}
-    
-    The Repository is: {repo_owner}/{repo_name} (Branch: {branch})
-    
-    Please investigate the code. Locate the error source, trace the logic, and explain *why* it failed.
-    """
-    investigator_output = await call_agent(INVESTIGATOR_URL, investigtor_prompt)
-    stages.append({"stage": "Investigator", "output": investigator_output})
+    investigator_output = "Investigator Skipped/Failed"
+    try:
+        investigtor_prompt = f"""
+        The SRE Agent has provided the following incident context:
+        {sre_output}
+        
+        The Repository is: {repo_owner}/{repo_name} (Branch: {branch})
+        
+        Please investigate the code. Locate the error source, trace the logic, and explain *why* it failed.
+        """
+        investigator_output = await call_agent(INVESTIGATOR_URL, investigtor_prompt)
+        stages.append({"stage": "Investigator", "status": "success", "output": investigator_output})
+    except Exception as e:
+        logger.warning(f"Phase 2 (Investigator) Failed: {e}. Proceeding with SRE report only.")
+        stages.append({"stage": "Investigator", "status": "failed", "error": str(e)})
+        investigator_output = f"Investigator Agent Failed to analyze code. Error: {e}"
     
     # ---------------------------------------------------------
     # 3. ARCHITECT AGENT (RCA)
     # ---------------------------------------------------------
     logger.info("Starting Phase 3: Architect RCA")
-    architect_prompt = f"""
-    Here are the investigation reports:
-
-    [SRE REPORT]
-    {sre_output}
-
-    [INVESTIGATOR REPORT]
-    {investigator_output}
-
-    Generate the final Root Cause Analysis document and the recommended code fix.
-    """
-    rca_doc = await call_agent(ARCHITECT_URL, architect_prompt)
-    # stages.append({"stage": "Architect", "output": rca_doc}) # RCA is the final output
+    try:
+        architect_prompt = f"""
+        Here are the investigation reports:
     
+        [SRE REPORT]
+        {sre_output}
+    
+        [INVESTIGATOR REPORT]
+        {investigator_output}
+    
+        Generate the final Root Cause Analysis document and the recommended code fix.
+        """
+        rca_doc = await call_agent(ARCHITECT_URL, architect_prompt)
+        stages.append({"stage": "Architect", "status": "success"})
+    except Exception as e:
+        logger.error(f"Phase 3 (Architect) Failed: {e}")
+        raise RuntimeError(f"Architect Agent Failed: {e}")
+        
     return {
         "status": "success",
         "rca_markdown": rca_doc,

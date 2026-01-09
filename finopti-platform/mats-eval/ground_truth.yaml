@@ -1,0 +1,63 @@
+scenarios:
+  1:
+    name: "Service Blackout"
+    description: "Service deleted"
+    expected_keywords: ["deleted", "removed", "not found", "does not exist", "404"]
+    required_sre_tool: "query_logs" # read_logs implementation
+    expected_error_type: "404"
+  
+  2:
+    name: "Auth Lockdown"
+    description: "IAM Role Revoked"
+    expected_keywords: ["permission", "access denied", "403", "iam", "invoker", "unauthorized"]
+    required_sre_tool: "query_logs"
+    expected_error_type: "403"
+
+  3:
+    name: "Broken Deployment"
+    description: "Crashing Image"
+    expected_keywords: ["crash", "startup", "503", "container failed", "health check"]
+    required_sre_tool: "query_logs"
+    expected_error_type: "503"
+
+  4:
+    name: "Traffic Void"
+    description: "0% Traffic"
+    expected_keywords: ["traffic", "route", "100%", "configuration", "split"]
+    required_sre_tool: "query_logs"
+
+  5:
+    name: "Resource Starvation"
+    description: "OOM / Memory Limit"
+    expected_keywords: ["memory", "oom", "killed", "limit", "exceeded", "137"]
+    required_sre_tool: "query_logs"
+
+  6:
+    name: "Concurrency Freeze"
+    description: "Concurrency Limit"
+    expected_keywords: ["concurrency", "queue", "limit", "max instances", "503"]
+    required_sre_tool: "query_logs"
+
+  7:
+    name: "Bad Environment"
+    description: "Invalid Env Var"
+    expected_keywords: ["environment", "variable", "connection", "db_connection_string", "config"]
+    required_sre_tool: "query_logs"
+
+  8:
+    name: "Network Isolation"
+    description: "Internal Ingress"
+    expected_keywords: ["ingress", "internal", "public", "access", "403"]
+    required_sre_tool: "query_logs"
+
+  9: 
+    name: "Cold Start Freeze"
+    description: "0 Instances"
+    expected_keywords: ["scale", "zero", "instances", "min-instances", "max-instances"]
+    required_sre_tool: "query_logs"
+
+  10:
+    name: "Region Failover"
+    description: "Moved Region"
+    expected_keywords: ["region", "deleted", "moved", "west1", "central1"]
+    required_sre_tool: "query_logs"

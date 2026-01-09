@@ -17,4 +17,10 @@ COPY sub_agents/cloud_run_agent_adk/ .
 COPY sub_agents/cloud_run_agent_adk/agent.py .
 COPY config/ config/
 
-CMD ["python", "main.py"]
+EXPOSE 5006
+
+# Health check
+HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
+  CMD curl -f http://localhost:5006/health || exit 1
+
+CMD ["gunicorn", "--bind", "0.0.0.0:5006", "--workers", "2", "--timeout", "120", "main:app"]

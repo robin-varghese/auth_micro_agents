@@ -14,4 +14,4 @@ COPY mats-agents/sre_agent/ .
 # Set unbuffered output for logs to appear in Loki
 ENV PYTHONUNBUFFERED=1
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8081", "main:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8081", "--timeout", "600", "main:app"]
