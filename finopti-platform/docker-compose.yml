@@ -501,6 +501,184 @@ services:
       timeout: 5s
       retries: 5
 
+  # --- Brave Search Agent ---
+  brave_agent_adk:
+    build:
+      context: .
+      dockerfile: sub_agents/brave_search_agent_adk/Dockerfile
+    container_name: finopti-brave-agent
+    networks:
+      - finopti-net
+    depends_on:
+      - apisix
+    environment:
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - APISIX_URL=http://apisix:9080
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
+      # Brave API Key handled by Secret Manager logic in agent, but passing env just in case we switch
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5006/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Filesystem Agent ---
+  filesystem_agent_adk:
+    build:
+      context: .
+      dockerfile: sub_agents/filesystem_agent_adk/Dockerfile
+    container_name: finopti-filesystem-agent
+    networks:
+      - finopti-net
+    depends_on:
+      - apisix
+    environment:
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - APISIX_URL=http://apisix:9080
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
+      - FILESYSTEM_ROOT=/tmp/agent_filesystem
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+      # Bind mount for the safe fs operation
+      - /tmp/agent_filesystem:/tmp/agent_filesystem
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5007/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Analytics Agent ---
+  analytics_agent_adk:
+    build:
+      context: .
+      dockerfile: sub_agents/analytics_agent_adk/Dockerfile
+    container_name: finopti-analytics-agent
+    networks:
+      - finopti-net
+    depends_on:
+      - apisix
+    environment:
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - APISIX_URL=http://apisix:9080
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5008/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Puppeteer Agent ---
+  puppeteer_agent_adk:
+    build:
+      context: .
+      dockerfile: sub_agents/puppeteer_agent_adk/Dockerfile
+    container_name: finopti-puppeteer-agent
+    networks:
+      - finopti-net
+    depends_on:
+      - apisix
+    environment:
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - APISIX_URL=http://apisix:9080
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5009/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Sequential Thinking Agent ---
+  sequential_thinking_agent_adk:
+    build:
+      context: .
+      dockerfile: sub_agents/sequential_thinking_agent_adk/Dockerfile
+    container_name: finopti-sequential-agent
+    networks:
+      - finopti-net
+    depends_on:
+      - apisix
+    environment:
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - APISIX_URL=http://apisix:9080
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5010/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Google Search Agent ---
+  googlesearch_agent_adk:
+    build:
+      context: .
+      dockerfile: sub_agents/googlesearch_agent_adk/Dockerfile
+    container_name: finopti-googlesearch-agent
+    networks:
+      - finopti-net
+    depends_on:
+      - apisix
+    environment:
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - APISIX_URL=http://apisix:9080
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5011/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Code Execution Agent ---
+  code_execution_agent_adk:
+    build:
+      context: .
+      dockerfile: sub_agents/code_execution_agent_adk/Dockerfile
+    container_name: finopti-code-agent
+    networks:
+      - finopti-net
+    depends_on:
+      - apisix
+    environment:
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - APISIX_URL=http://apisix:9080
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - FINOPTIAGENTS_LLM=${FINOPTIAGENTS_LLM:-gemini-2.0-flash}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5012/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Cloud Run MCP (Optional build service)
   cloud_run_mcp:
     image: finopti-cloud-run-mcp
@@ -612,6 +790,41 @@ services:
       resources:
         limits:
           memory: 256M
+
+  # ==========================================
+  # Chaos Monkey Application
+  # ==========================================
+  
+  monkey_agent:
+    build:
+      context: ../chaos-monkey-testing/monkey_agent
+      dockerfile: Dockerfile
+    container_name: monkey_agent
+    environment:
+      - ORCHESTRATOR_URL=http://apisix:9080/orchestrator/ask
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - LOG_LEVEL=INFO
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "5007:5007"
+    networks:
+      - finopti-net
+    labels:
+      - "com.docker.compose.project=finopti-platform"
+      - "service=monkey_agent"
+
+  monkey_ui:
+    build:
+      context: ../chaos-monkey-testing/monkey_ui
+      dockerfile: Dockerfile
+    container_name: monkey_ui
+    ports:
+      - "8088:80"
+    networks:
+      - finopti-net
+    labels:
+      - "com.docker.compose.project=finopti-platform"
+      - "service=monkey_ui"
 
 # ====================
 # Volume Configuration

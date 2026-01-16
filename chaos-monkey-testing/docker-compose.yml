@@ -13,7 +13,7 @@ services:
     build: ./monkey_ui
     container_name: monkey_ui
     ports:
-      - "8089:80"
+      - "8088:80"
     networks:
       - finopti-net
     depends_on:

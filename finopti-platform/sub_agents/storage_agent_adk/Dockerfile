@@ -19,7 +19,7 @@ COPY sub_agents/storage_agent_adk/*.py .
 COPY config /app/config
 
 # Structured logging
-COPY orchestrator/structured_logging.py /app/orchestrator/
+COPY orchestrator_adk/structured_logging.py /app/orchestrator/
 
 EXPOSE 5004
 

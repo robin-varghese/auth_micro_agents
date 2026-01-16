@@ -1,0 +1,6 @@
+google-adk>=0.0.1
+google-genai>=0.3.0
+google-cloud-secret-manager>=2.16.0
+flask>=3.0.0
+gunicorn>=21.2.0
+requests>=2.31.0

@@ -1,13 +1,9 @@
-flask>=3.0.3
-gunicorn>=22.0.0
-google-cloud-aiplatform>=1.38.0
-google-cloud-secret-manager>=2.19.0
-google-cloud-resource-manager>=1.12.3
 google-adk>=1.21.0
 google-genai>=0.6.0
-google-generativeai>=0.8.0
+flask>=3.0.3
+gunicorn>=22.0.0
+# Native BigQuery Support
+google-cloud-bigquery>=3.13.0
+# MCP Support
 mcp>=0.1.0
-python-dotenv>=1.0.1
-structlog>=24.1.0
-httpx>=0.27.0
-Flask>=3.0.0
+requests>=2.31.0

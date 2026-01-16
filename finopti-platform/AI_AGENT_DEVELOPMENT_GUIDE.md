@@ -64,6 +64,13 @@ Use structured logging for query-ability.
 │ • github_agent_adk:5003      │ • Service-specific creds (e.g. GitHub PAT)
 │ • storage_agent_adk:5004     │
 │ • db_agent_adk:5005          │
+│ • brave_search_agent_adk:5006│
+│ • filesystem_agent_adk:5007  │
+│ • analytics_agent_adk:5008   │
+│ • puppeteer_agent_adk:5009   │
+│ • sequential_thinking_agent_adk:5010 │
+│ • googlesearch_agent_adk:5011│
+│ • code_execution_agent_adk:5012 │
 │                              │
 │ ┌──────────────────────────┐ │
 │ │ MCP Protocol (Stdio)     │ │
@@ -131,6 +138,29 @@ Use structured logging for query-ability.
 
 ---
 
+## Standard Agent Tooling Patterns
+
+The platform supports two primary patterns for agent capabilities:
+
+### 1. MCP Wrapper Agents (Asyncio Stdio)
+These agents spawn a separate Docker container for the Model Context Protocol (MCP) server.
+- **GCloud Agent**: Spawns `finopti-gcloud-mcp`
+- **Monitoring Agent**: Spawns `finopti-monitoring-mcp`
+- **GitHub Agent**: Spawns `finopti-github-mcp`
+- **Storage Agent**: Spawns `finopti-storage-mcp`
+- **Brave Search Agent**: Spawns `finopti-brave-search-mcp`
+- **Filesystem Agent**: Spawns `finopti-filesystem-mcp`
+- **Analytics Agent**: Spawns `finopti-google-analytics-mcp`
+- **Puppeteer Agent**: Spawns `finopti-puppeteer-mcp`
+
+### 2. Native ADK Tool Agents
+These agents use the ADK's native tool libraries or logic directly within the python process.
+- **Google Search Agent**: Uses `google.adk.tools.google_search`
+- **Code Execution Agent**: Uses `google.adk.code_executors.BuiltInCodeExecutor`
+- **Sequential Agent**: Uses internal Chain-of-Thought logic
+
+---
+
 ## Google ADK Plugins (MANDATORY)
 
 All agents MUST include two ADK plugins for proper operation, analytics, and error handling.
@@ -186,9 +216,39 @@ import json
 import logging
 from google.adk.agents import Agent
 from google.adk.apps import App
+from google.cloud import secretmanager
 
-logging.basicConfig(level=logging.INFO)
+# Import structured logging
+from orchestrator.structured_logging import propagate_request_id
+
+# Configure structured logging
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
+
+def get_gemini_model(project_id: str) -> str:
+    """
+    Fetch the Gemini model name dynamically.
+    Priority:
+    1. FINOPTIAGENTS_LLM Environment Variable
+    2. Google Secret Manager: 'finoptiagents-llm'
+    3. Default: 'gemini-2.0-flash-exp'
+    """
+    # 1. Check Env Var
+    env_model = os.getenv("FINOPTIAGENTS_LLM")
+    if env_model:
+        return env_model
+        
+    # 2. Check Secret Manager
+    try:
+        client = secretmanager.SecretManagerServiceClient()
+        name = f"projects/{project_id}/secrets/finoptiagents-llm/versions/latest"
+        response = client.access_secret_version(request={"name": name})
+        return response.payload.data.decode("UTF-8").strip()
+    except Exception as e:
+        logger.warning(f"Could not fetch LLM model from Secret Manager: {e}")
+        
+    # 3. Default
+    return "gemini-2.0-flash-exp"
 
 # ═══════════════════════════════════════════════════════════
 # MCP CLIENT - ASYNCIO STDIO
@@ -203,28 +263,40 @@ class ServiceMCPClient:
         self.request_id = 0
 
     async def __aenter__(self):
-        await self.connect()
-        return self
-    
+        try:
+            await self.connect()
+            return self
+        except Exception as e:
+            logger.error(f"Failed to connect to MCP: {e}", exc_info=True)
+            raise
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
     
     async def connect(self):
         """Start container and perform handshake"""
+        logger.info(f"Starting MCP container: {self.image}")
         cmd = ["docker", "run", "-i", "--rm", 
                "-e", f"TOKEN={self.token}", 
                self.image]
         
-        # Async subprocess creation
-        self.process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        
-        # MCP Handshake
-        await self._send_handshake()
+        try:
+            # Async subprocess creation
+            self.process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            # MCP Handshake
+            await self._send_handshake()
+            logger.info("MCP Handshake successful")
+            
+        except Exception as e:
+            logger.error(f"MCP Connection failed: {e}")
+            await self.close()
+            raise
 
     async def _send_handshake(self):
         # 1. Initialize
@@ -240,13 +312,24 @@ class ServiceMCPClient:
         await self._send_notification("notifications/initialized", {})
 
     async def _send_notification(self, method, params):
+        if not self.process:
+             raise RuntimeError("Process not running")
         payload = {"jsonrpc": "2.0", "method": method, "params": params}
         self.process.stdin.write((json.dumps(payload) + "\n").encode())
         await self.process.stdin.drain()
 
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
         # Implementation using await self.process.stdout.readline()
-        pass
+        # Ensure comprehensive try/catch around JSON parsing
+        try:
+            # ... implementation ...
+            pass
+        except json.JSONDecodeError as e:
+             logger.error(f"Failed to decode MCP response: {e}")
+             raise
+        except Exception as e:
+             logger.error(f"Tool execution failed: {e}")
+             raise
 
     async def close(self):
         if self.process:
@@ -294,6 +377,64 @@ Before considering an agent "complete", verify:
 - [ ] Health check passes: `curl /agent/{service}/health`
 - [ ] Agent executes prompt correctly: `curl -X POST ...`
 
+
+---
+
+## V. Deployment and Security Integration (MANDATORY)
+
+After coding your agent, you MUST complete these integration steps for it to be reachable and secure.
+
+### 1. Update OPA Policy (Security)
+The platform uses Open Policy Agent (OPA) for authorization. You must explicit allow access to your new agent.
+
+**File:** `opa_policy/authz.rego`
+```rego
+allow if {
+    user_role["gcloud_admin"]
+    input.target_agent == "your_agent_name"  # e.g. "code_execution"
+}
+```
+
+### 2. Update Deployment Scripts
+**File:** `docker-compose.yml`
+Add your service definition:
+```yaml
+  your_agent_name:
+    build:
+      context: .
+      dockerfile: sub_agents/your_agent_name/Dockerfile
+    environment:
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    ports:
+      - "50xx:50xx"
+    networks:
+      - finopti-net
+```
+*Note: `deploy-local.sh` automatically picks up changes from `docker-compose.yml`, so no changes needed there unless you have custom build logic.*
+
+### 3. Update Orchestrator Routing
+The Orchestrator agent decides which sub-agent handles a request.
+**File:** `orchestrator_adk/agent.py`
+
+1.  **Add Keywords:** Update `detect_intent` to recognize your agent's domain.
+2.  **Register Endpoint:** Update `agent_endpoints` map in `route_to_agent`.
+    ```python
+    'your_agent': f"{config.APISIX_URL}/agent/your_agent/execute",
+    ```
+3.  **Update Prompt:** Update the system instruction in `orchestrator_agent` to make the LLM aware of the new capability.
+
+### 4. Create APISIX Route
+**File:** `apisix_conf/init_routes.sh`
+Add a new route for your agent:
+```bash
+# Route X: Your Agent
+curl -i -X PUT "${APISIX_ADMIN}/routes/X" ...
+    "uri": "/agent/your_agent/*",
+    "upstream": { "nodes": { "your_agent_name:50xx": 1 } }
+    # ...
+```
+
 ---
 
 ## Summary
@@ -301,8 +442,10 @@ Before considering an agent "complete", verify:
 **Core Principle:** User traffic flows through APISIX. Agent-to-MCP traffic is direct (Stdio) and asynchronous.
 
 **Implementation Checklist:**
-1. Async MCP client (Stdio)
-2. MCP Handshake
-3. Extensive logging (stdout)
-4. Test scripts
-5. README updates
+1. Async MCP client (Stdio) with Handshake
+2. Dynamic LLM Model Name (Env/Secret Manager)
+3. Structured Logging & Exception Handling
+4. OPA Policy Update (authz.rego)
+5. Docker Compose Service Definition
+6. Orchestrator Routing & APISIX Route
+

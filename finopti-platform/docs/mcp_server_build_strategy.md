@@ -63,6 +63,46 @@ cd ../../google-db-mcp-toolbox
 docker-compose up -d
 ```
 
+### F. Google Analytics MCP (`finopti-analytics-mcp`)
+*Provides GA4 reporting capabilities.*
+
+```bash
+cd ../remote-mcp-server/google-analytics-mcp
+docker build -t finopti-analytics-mcp .
+```
+
+### G. Sequential Thinking MCP (`finopti-sequential-thinking`)
+*Provides advanced reasoning capabilities.*
+
+```bash
+cd ../../../sequentialthinking
+docker build -t finopti-sequential-thinking .
+```
+
+### H. Filesystem MCP (`finopti-filesystem`)
+*Provides local file management.*
+
+```bash
+cd ../filesystem
+docker build -t finopti-filesystem .
+```
+
+### I. Brave Search MCP (`finopti-brave-search`)
+*Provides web and local search.*
+
+```bash
+cd ../brave-search
+docker build -t finopti-brave-search .
+```
+
+### J. Puppeteer MCP (`finopti-puppeteer`)
+*Provides browser automation.*
+
+```bash
+cd ../puppeteer
+docker build -t finopti-puppeteer .
+```
+
 ## 3. Integration with FinOpti Platform
 
 Once built, these images are used by the main platform's `docker-compose.yml`. Ensure the image tags match what is expected in the main `docker-compose.yml` (e.g., `finopti-gcloud-mcp`).

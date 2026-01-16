@@ -251,9 +251,28 @@ async def read_file(owner: str, repo: str, path: str, github_pat: str = None) ->
 if not os.environ.get("GOOGLE_API_KEY"):
     os.environ["GOOGLE_API_KEY"] = getattr(config, "GOOGLE_API_KEY", "")
 
+# Helper: Dynamic Model Loading
+def get_gemini_model(default_model: str = "gemini-1.5-flash-001") -> str:
+    """
+    Fetch Gemini model name from Env Var -> Secret -> Default.
+    """
+    model = os.getenv("FINOPTIAGENTS_LLM")
+    if model:
+        return model
+    
+    # Try Secret Manager via config if available
+    try:
+        model = getattr(config, "FINOPTIAGENTS_LLM", None)
+        if model:
+            return model
+    except Exception:
+        pass
+        
+    return default_model
+
 github_agent = Agent(
     name="github_specialist",
-    model=config.FINOPTIAGENTS_LLM,
+    model=get_gemini_model(),
     description="GitHub repository and code specialist. Can search repos and read code.",
     instruction="""
     You are a GitHub specialist agent.

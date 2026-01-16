@@ -271,6 +271,32 @@ with st.sidebar:
             set_prompt("list all google cloud storage buckets in my google cloud project vector-search-poc")
             st.rerun()
 
+        st.markdown("**New Capabilities**")
+
+        if st.button("Google Search", use_container_width=True):
+            set_prompt("Search google for 'latest Google Cloud Run features'")
+            st.rerun()
+
+        if st.button("Code Execution", use_container_width=True):
+            set_prompt("Calculate the 100th Fibonacci number using Python")
+            st.rerun()
+
+        if st.button("Filesystem List", use_container_width=True):
+            set_prompt("List files in the current directory")
+            st.rerun()
+
+        if st.button("Google Analytics Report", use_container_width=True):
+            set_prompt("Run a report for active users in the last 7 days")
+            st.rerun()
+
+        if st.button("Puppeteer Screenshot", use_container_width=True):
+            set_prompt("Take a screenshot of https://www.google.com")
+            st.rerun()
+
+        if st.button("Sequential Planning", use_container_width=True):
+            set_prompt("Plan a 3-day itinerary for a trip to Tokyo step-by-step")
+            st.rerun()
+
         
     st.markdown("---")
     st.caption("MATS Platform v1.0")

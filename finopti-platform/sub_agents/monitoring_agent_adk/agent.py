@@ -2,12 +2,21 @@
 Monitoring ADK Agent - Google Cloud Monitoring and Logging Specialist
 
 This agent uses Google ADK to handle GCP monitoring and logging requests.
-It integrates with the Monitoring MCP server via Stdio (Docker spawning).
+UPDATED: Uses direct `gcloud` subprocess for `query_logs` to ensure stability for Live Logs.
+Retains MCP Client for `query_time_series` (metrics).
 """
 
 import os
 import sys
+import asyncio
+import json
+import logging
+import subprocess
+import shlex
+import shutil
+import datetime
 from pathlib import Path
+from typing import Dict, Any, List
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -19,15 +28,45 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
     BigQueryAgentAnalyticsPlugin,
     BigQueryLoggerConfig
 )
-from typing import Dict, Any, List
-import asyncio
-import json
-import requests  # For HTTP MCP client
-import logging
+from google.adk.runners import InMemoryRunner
+from google.genai import types
 
 from config import config
 
-# MCP Client for Monitoring via Docker Stdio
+# Configure Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# -------------------------------------------------------------------------
+# GCLOUD CONFIG HELPER (Fix for Read-Only Filesystem)
+# -------------------------------------------------------------------------
+_gcloud_config_setup = False
+
+def setup_gcloud_config():
+    """Copy mounted gcloud config to writable temp location to avoid Read-Only errors"""
+    global _gcloud_config_setup
+    if _gcloud_config_setup:
+        return
+
+    src = "/root/.config/gcloud"
+    dst = "/tmp/gcloud_config"
+    
+    if os.path.exists(dst):
+        shutil.rmtree(dst)
+        
+    if os.path.exists(src):
+        try:
+            logger.info(f"Copying gcloud config from {src} to {dst}")
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+            _gcloud_config_setup = True
+        except Exception as e:
+            logger.error(f"Failed to copy gcloud config: {e}")
+    else:
+        logger.warning(f"GCloud config source {src} not found")
+
+# -------------------------------------------------------------------------
+# MCP Client for Monitoring (Legacy/Metrics only)
+# -------------------------------------------------------------------------
 class MonitoringMCPClient:
     """Client for connecting to Monitoring MCP server via Docker Stdio"""
     
@@ -37,19 +76,9 @@ class MonitoringMCPClient:
         self.process = None
         self.request_id = 0
         logging.info(f"MonitoringMCPClient initialized for image: {self.image}")
-        logging.info(f"MonitoringMCPClient command mount path: {self.mount_path}")
-    
-    async def __aenter__(self):
-        await self.connect()
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
     
     async def connect(self):
         """Start the MCP server container"""
-        
-        # Check if running in a container with access to docker socket
         cmd = [
             "docker", "run", 
             "-i", "--rm", 
@@ -58,7 +87,6 @@ class MonitoringMCPClient:
         ]
         
         logging.info(f"Starting MCP server with command: {' '.join(cmd)}")
-        
         try:
             self.process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -80,7 +108,6 @@ class MonitoringMCPClient:
                 "id": 0
             }
             
-            logging.info("Sending MCP initialize request...")
             self.process.stdin.write((json.dumps(init_payload) + "\n").encode())
             await self.process.stdin.drain()
             
@@ -90,23 +117,17 @@ class MonitoringMCPClient:
                 if not line:
                      stderr = await self.process.stderr.read()
                      raise RuntimeError(f"MCP server closed during initialization. Stderr: {stderr.decode()}")
-                
                 try:
                     msg = json.loads(line.decode())
                     if msg.get("id") == 0:
                         if "error" in msg:
                              raise RuntimeError(f"MCP initialization error: {msg['error']}")
-                        logging.info("MCP Initialized successfully.")
                         break
                 except json.JSONDecodeError:
-                    logging.warning(f"Invalid JSON during init: {line}")
+                    continue
             
             # 3. Send 'notifications/initialized'
-            notify_payload = {
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized",
-                "params": {}
-            }
+            notify_payload = {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
             self.process.stdin.write((json.dumps(notify_payload) + "\n").encode())
             await self.process.stdin.drain()
             
@@ -145,44 +166,26 @@ class MonitoringMCPClient:
         json_str = json.dumps(payload) + "\n"
         
         try:
-            # Write request
             self.process.stdin.write(json_str.encode())
             await self.process.stdin.drain()
             
-            # Read response
             while True:
                 line = await self.process.stdout.readline()
                 if not line:
-                    # EOF
-                    stderr = await self.process.stderr.read()
-                    raise RuntimeError(f"MCP server closed connection. Stderr: {stderr.decode()}")
+                    raise RuntimeError("MCP server closed connection.")
                 
                 try:
                     msg = json.loads(line.decode())
                     if msg.get("id") == self.request_id:
                         if "error" in msg:
                             raise RuntimeError(f"MCP tool error: {msg['error']}")
-                        
-                        result = msg.get("result", {})
-                        if "content" in result:
-                            output_text = ""
-                            for content in result["content"]:
-                                if content.get("type") == "text":
-                                    output_text += content["text"]
-                            try:
-                                return json.loads(output_text)
-                            except json.JSONDecodeError:
-                                return {"output": output_text}
-                        
-                        return result
+                        return msg.get("result", {})
                 except json.JSONDecodeError:
-                     logging.warning(f"Invalid JSON from MCP server: {line}")
-            
+                    continue
         except Exception as e:
             raise RuntimeError(f"Monitoring MCP call failed: {e}") from e
 
-
-# Global MCP client (will be initialized per-request)
+# Global MCP client
 _mcp_client = None
 
 async def ensure_client():
@@ -192,6 +195,81 @@ async def ensure_client():
         await _mcp_client.connect()
     return _mcp_client
 
+# -------------------------------------------------------------------------
+# ADK TOOLS
+# -------------------------------------------------------------------------
+
+async def query_logs(
+    project_id: str,
+    filter_str: str = "",
+    hours_ago: int = 24,
+    limit: int = 100
+) -> Dict[str, Any]:
+    """ADK tool: Query log entries from Cloud Logging using LOCAL GCLOUD CLI (Subprocess)"""
+    
+    # Use subprocess for logs to support real-time fetching reliably
+    setup_gcloud_config()
+    
+    # Calculate timestamp
+    cutoff_time = datetime.datetime.utcnow() - datetime.timedelta(hours=hours_ago)
+    time_str = cutoff_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+    
+    full_filter = f'({filter_str}) AND timestamp >= "{time_str}"' if filter_str else f'timestamp >= "{time_str}"'
+    
+    cmd = [
+        "gcloud", "logging", "read",
+        full_filter,
+        f"--project={project_id}",
+        "--format=json",
+        f"--limit={limit}",
+        "--order=desc" 
+    ]
+    
+    env = os.environ.copy()
+    env["CLOUDSDK_CONFIG"] = "/tmp/gcloud_config"
+    env["CLOUDSDK_CORE_DISABLE_FILE_LOGGING"] = "1"
+    
+    logger.info(f"Executing Log Query via Subprocess: {' '.join(cmd)}")
+    
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None, 
+            lambda: subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=True, 
+                timeout=60, 
+                env=env
+            )
+        )
+        
+        if result.returncode == 0:
+            try:
+                logs = json.loads(result.stdout)
+                # Map to schema expected by consumers
+                mapped_logs = []
+                for log in logs:
+                    mapped_logs.append({
+                        "text_payload": log.get("textPayload"),
+                        "json_payload": log.get("jsonPayload"),
+                        "severity": log.get("severity"),
+                        "timestamp": log.get("timestamp"),
+                        "resource": log.get("resource")
+                    })
+                return {
+                    "success": True,
+                    "data": {"log_entries": mapped_logs}, # Match MCP result structure roughly
+                    "tool": "query_logs"
+                }
+            except json.JSONDecodeError:
+                return {"success": False, "error": "Failed to parse JSON output"}
+        else:
+             return {"success": False, "error": f"gcloud failed: {result.stderr}"}
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 
 async def query_time_series(
     project_id: str,
@@ -199,7 +277,7 @@ async def query_time_series(
     resource_filter: str = "",
     minutes_ago: int = 60
 ) -> Dict[str, Any]:
-    """ADK tool: Query time series metrics from Cloud Monitoring"""
+    """ADK tool: Query time series metrics (Uses MCP Client)"""
     try:
         client = await ensure_client()
         result = await client.call_tool(
@@ -211,47 +289,16 @@ async def query_time_series(
                 "minutes_ago": minutes_ago
             }
         )
-        return {
-            "success": True,
-            "data": result,
-            "tool": "query_time_series"
-        }
+        return {"success": True, "data": result, "tool": "query_time_series"}
     except Exception as e:
         return {"success": False, "error": str(e), "tool": "query_time_series"}
-
-
-async def query_logs(
-    project_id: str,
-    filter_str: str = "",
-    hours_ago: int = 24,
-    limit: int = 100
-) -> Dict[str, Any]:
-    """ADK tool: Query log entries from Cloud Logging"""
-    try:
-        client = await ensure_client()
-        result = await client.call_tool(
-            "query_logs", 
-            arguments={
-                "project_id": project_id,
-                "filter": filter_str or "",
-                "hours_ago": hours_ago,
-                "limit": limit
-            }
-        )
-        return {
-            "success": True,
-            "data": result,
-            "tool": "query_logs"
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e), "tool": "query_logs"}
 
 
 async def list_metrics(
     project_id: str,
     filter_str: str = ""
 ) -> Dict[str, Any]:
-    """ADK tool: List available metric descriptors"""
+    """ADK tool: List available metric descriptors (Uses MCP Client)"""
     try:
         client = await ensure_client()
         result = await client.call_tool(
@@ -261,61 +308,54 @@ async def list_metrics(
                 "filter": filter_str or ""
             }
         )
-        return {
-            "success": True,
-            "data": result,
-            "tool": "list_metrics"
-        }
+        return {"success": True, "data": result, "tool": "list_metrics"}
     except Exception as e:
         return {"success": False, "error": str(e), "tool": "list_metrics"}
 
 
-# Create ADK Agent
+# -------------------------------------------------------------------------
+# AGENT DEFINITION
+# -------------------------------------------------------------------------
+# Helper: Dynamic Model Loading
+def get_gemini_model(default_model: str = "gemini-1.5-flash-001") -> str:
+    """
+    Fetch Gemini model name from Env Var -> Secret -> Default.
+    """
+    model = os.getenv("FINOPTIAGENTS_LLM")
+    if model:
+        return model
+    
+    # Try Secret Manager via config if available
+    try:
+        model = getattr(config, "FINOPTIAGENTS_LLM", None)
+        if model:
+            return model
+    except Exception:
+        pass
+        
+    return default_model
+
 monitoring_agent = Agent(
     name="cloud_monitoring_specialist",
-    model=config.FINOPTIAGENTS_LLM,
-    description="""
-    Google Cloud monitoring and logging specialist.
-    Expert in querying metrics, logs, and monitoring data from GCP Cloud Monitoring and Cloud Logging.
-    Can retrieve CPU usage, memory metrics, log entries, and analyze system health.
-    """,
+    model=get_gemini_model(),
+    description="Google Cloud monitoring and logging specialist.",
     instruction="""
     You are a Google Cloud Platform (GCP) monitoring and observability specialist.
     
     Your responsibilities:
-    1. Understand user requests related to monitoring, logging, and observability
-    2. Query appropriate metrics and logs from Cloud Monitoring and Cloud Logging
-    3. Analyze and present monitoring data clearly
-    4. Provide insights and recommendations based on monitoring data
+    1. Query appropriate metrics and logs.
+    2. Analyze and present monitoring data clearly.
     
-    Available tools:
-    - query_time_series: Get time-series metrics (CPU, memory, disk, network)
-    - query_logs: Search and retrieve log entries
-    - list_metrics: Discover available metrics
-    
-    Common patterns:
-    - CPU usage: metric_type='compute.googleapis.com/instance/cpu/utilization'
-    - Memory usage: metric_type='compute.googleapis.com/instance/memory/usage'
-    - Query error logs: filter='severity>=ERROR'
-    - Recent logs: Use hours_ago parameter
-    
-    Guidelines:
-    - For monitoring queries: Use appropriate metric types and filters
-    - For log queries: Craft effective filter expressions
-    - For analysis: Summarize findings clearly
-    - Always include project_id when available
-    
-    Be helpful, accurate, and insightful in your analysis.
+    Tools:
+    - query_time_series: Get metrics.
+    - query_logs: Search logs.
+    - list_metrics: Discover metrics.
     """,
     tools=[query_time_series, query_logs, list_metrics]
 )
 
-# Configure BigQuery Analytics Plugin
 bq_config = BigQueryLoggerConfig(
     enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-    batch_size=1,
-    max_content_length=100 * 1024,
-    shutdown_timeout=10.0
 )
 
 bq_plugin = BigQueryAgentAnalyticsPlugin(
@@ -326,58 +366,38 @@ bq_plugin = BigQueryAgentAnalyticsPlugin(
     location="US"
 )
 
-# Ensure API Key is in environment for GenAI library
 if config.GOOGLE_API_KEY:
     os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
-# Create the App
 app = App(
     name="finopti_monitoring_agent",
     root_agent=monitoring_agent,
     plugins=[
-        ReflectAndRetryToolPlugin(
-            max_retries=int(os.getenv("REFLECT_RETRY_MAX_ATTEMPTS", "2")),
-            throw_exception_if_retry_exceeded=os.getenv("REFLECT_RETRY_THROW_ON_FAIL", "true").lower() == "true"
-        ),
+        ReflectAndRetryToolPlugin(),
         bq_plugin
     ]
 )
 
-
-from google.adk.runners import InMemoryRunner
-from google.genai import types
-
+# -------------------------------------------------------------------------
+# RUNNER
+# -------------------------------------------------------------------------
 async def send_message_async(prompt: str, user_email: str = None, project_id: str = None) -> str:
     """Send a message to the Monitoring agent"""
     try:
-        # Enhance prompt with project_id if provided
-        if project_id:
-            enhanced_prompt = f"[Project: {project_id}] {prompt}"
-        else:
-            enhanced_prompt = prompt
+        enhanced_prompt = f"[Project: {project_id}] {prompt}" if project_id else prompt
         
-        # Initialize MCP client if needed
-        await ensure_client()
+        # Don't ensure MCP client here globally if we only want logs
+        # But keeping it for backward compat if metrics are asked
         
-        # Use InMemoryRunner to execute the app
         async with InMemoryRunner(app=app) as runner:
             sid = "default"
             uid = "default"
-            await runner.session_service.create_session(
-                session_id=sid, 
-                user_id=uid,
-                app_name="finopti_monitoring_agent"
-            )
+            await runner.session_service.create_session(session_id=sid, user_id=uid, app_name="finopti_monitoring_agent")
             
             message = types.Content(parts=[types.Part(text=enhanced_prompt)])
             response_text = ""
-            async for event in runner.run_async(
-                user_id=uid,
-                session_id=sid,
-                new_message=message
-            ):
-                 # Accumulate text content from events
-                 if hasattr(event, 'content') and event.content and event.content.parts:
+            async for event in runner.run_async(user_id=uid, session_id=sid, new_message=message):
+                 if hasattr(event, 'content') and event.content:
                      for part in event.content.parts:
                          if part.text:
                              response_text += part.text
@@ -386,26 +406,12 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
 
     except Exception as e:
         return f"Error processing request: {str(e)}"
-    finally:
-        # Clean up MCP client
-        global _mcp_client
-        if _mcp_client:
-            await _mcp_client.close()
-            _mcp_client = None
-
 
 def send_message(prompt: str, user_email: str = None, project_id: str = None) -> str:
-    """Synchronous wrapper for send_message_async"""
     return asyncio.run(send_message_async(prompt, user_email, project_id))
-
 
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1:
         prompt = " ".join(sys.argv[1:])
-        print(f"Prompt: {prompt}")
-        print("=" * 50)
-        response = send_message(prompt, project_id=config.GCP_PROJECT_ID)
-        print(response)
-    else:
-        print("Usage: python agent.py <prompt>")
+        print(send_message(prompt, project_id=config.GCP_PROJECT_ID))

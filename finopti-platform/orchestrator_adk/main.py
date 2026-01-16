@@ -15,8 +15,8 @@ from agent import process_request_async
 from config import config
 
 # Import structured logging
+# Import structured logging
 try:
-    sys.path.insert(0, str(Path(__file__).parent.parent / 'orchestrator'))
     from structured_logging import (
         StructuredLogger,
         set_request_id,
@@ -100,6 +100,9 @@ def ask():
         prompt = data['prompt']
         project_id = data.get('project_id', config.GCP_PROJECT_ID)
         
+        # Extract Authorization header
+        auth_token = request.headers.get('Authorization')
+
         # Log incoming request
         if STRUCTURED_LOGGING_AVAILABLE:
             logger.info(
@@ -113,7 +116,7 @@ def ask():
         
         # Process request
         from agent import process_request
-        result = process_request(prompt, user_email, project_id)
+        result = process_request(prompt, user_email, project_id, auth_token)
         
         # Check if authorization failed
         if result.get('error') and '403' in result.get('message', ''):

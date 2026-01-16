@@ -19,6 +19,13 @@ flowchart TB
         APISIX -->|Route /agent/github| GHAgent["GitHub Agent"]
         APISIX -->|Route /agent/storage| SAgent["Storage Agent"]
         APISIX -->|Route /agent/db| DBAgent["DB Agent"]
+        APISIX -->|Route /agent/brave| Brave["Brave Agent"]
+        APISIX -->|Route /agent/filesystem| FS["Filesystem Agent"]
+        APISIX -->|Route /agent/analytics| Analytics["Analytics Agent"]
+        APISIX -->|Route /agent/puppeteer| Puppet["Puppeteer Agent"]
+        APISIX -->|Route /agent/sequential| Seq["Sequential Agent"]
+        APISIX -->|Route /agent/googlesearch| GSearch["Google Search Agent"]
+        APISIX -->|Route /agent/code| Code["Code Exec Agent"]
 
         Orch -->|Consult Policy| OPA["OPA Sidecar<br>(AuthZ Policy)"]
         Orch -.->|Delegation via Mesh| APISIX
@@ -74,6 +81,13 @@ flowchart TB
 | **GitHub MCP** | `finopti-github-mcp` | `finopti-github-mcp` | N/A | Stdio | Spawned on-demand by GitHub Agent |
 | **Storage MCP** | `finopti-storage-mcp` | `finopti-storage-mcp` | N/A | Stdio | Spawned on-demand by Storage Agent |
 | **DB Toolbox MCP**| `finopti-db-mcp-toolbox`| `us-central1-docker.pkg.dev/...`| 5000 | HTTP | Still accessed via HTTP (Toolbox pattern) |
+| **Brave Search Agent** | `finopti-brave-agent` | `build: sub_agents/brave_search_agent_adk/` | 5006 | HTTP | Wrapper for Brave Search MCP |
+| **Filesystem Agent** | `finopti-filesystem-agent` | `build: sub_agents/filesystem_agent_adk/` | 5007 | HTTP | Wrapper for Filesystem MCP |
+| **Analytics Agent** | `finopti-analytics-agent` | `build: sub_agents/analytics_agent_adk/` | 5008 | HTTP | Wrapper for Google Analytics MCP |
+| **Puppeteer Agent** | `finopti-puppeteer-agent` | `build: sub_agents/puppeteer_agent_adk/` | 5009 | HTTP | Wrapper for Browser Automation MCP |
+| **Sequential Agent** | `finopti-sequential-agent` | `build: sub_agents/sequential_thinking_agent_adk/` | 5010 | HTTP | Cognitive Reasoning Agent |
+| **Google Search Agent** | `finopti-googlesearch-agent` | `build: sub_agents/googlesearch_agent_adk/` | 5011 | HTTP | Native ADK Google Search Tool |
+| **Code Exec Agent** | `finopti-code-agent` | `build: sub_agents/code_execution_agent_adk/` | 5012 | HTTP | Native ADK Python Execution Tool |
 
 ---
 
@@ -269,7 +283,14 @@ finopti-platform/
 │   ├── monitoring_agent_adk/
 │   ├── github_agent_adk/   
 │   ├── storage_agent_adk/  
-│   └── db_agent_adk/       
+│   ├── db_agent_adk/       
+│   ├── brave_search_agent_adk/
+│   ├── filesystem_agent_adk/
+│   ├── analytics_agent_adk/
+│   ├── puppeteer_agent_adk/
+│   ├── sequential_thinking_agent_adk/
+│   ├── googlesearch_agent_adk/
+│   └── code_execution_agent_adk/
 ├── ui/                     # 🖥️ Streamlit Frontend
 ├── config/                 # ⚙️ Shared Config (Secret Manager)
 ├── apisix_conf/            # 🚦 Gateway Routes
@@ -299,6 +320,7 @@ For build instructions, see [docs/mcp_server_build_strategy.md](docs/mcp_server_
 
 | Version | Date       | Changes |
 |---------|------------|---------|
+| **2.1.0** | 2026-01-16 | **Expansion**: Added 7 new sub-agents for comprehensive capabilities: Brave Search, Filesystem, Google Analytics, Puppeteer, Sequential Thinking, Google Search (Native), and Code Execution (Native). Integrated Secret Manager for model configuration. |
 | **2.0.0** | 2026-01-05 | **Architecture Overhaul**: Removed APISIX requirement for MCP protocols. Implemented direct, asynchronous stdio integration via Docker spawning for GCloud, Monitoring, GitHub, and Storage agents. Fixed timeout issues by optimizing I/O. |
 | 1.1.0   | 2026-01-04 | MCP Refactoring - HTTP via APISIX (Deprecated in v2.0). |
 | 1.0.1   | 2026-01-02 | Added dynamic GitHub PAT injection and auth/credentials flow documentation. |

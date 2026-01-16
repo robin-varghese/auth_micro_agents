@@ -1,89 +1,129 @@
-// Configuration
-// In production, this should be configurable. Assuming localhost mapping or relative path if proxied.
-const API_URL = 'http://localhost:5007';
+const API_BASE = 'http://localhost:5007'; // Ensure this matches monkey_agent port
 
-const container = document.getElementById('scenarios-container');
-const logs = document.getElementById('console-logs');
-const statusMsg = document.getElementById('status-message');
+// State
+let scenarios = [];
+let activeScenarioId = null;
 
-function log(msg) {
-    const timestamp = new Date().toLocaleTimeString();
-    logs.innerText = `[${timestamp}] ${msg}\n` + logs.innerText;
-}
+// DOM Elements
+const scenarioListEl = document.getElementById('scenario-list');
+const scenarioCountEl = document.getElementById('scenario-count');
+const emptyStateEl = document.getElementById('empty-state');
+const scenarioDetailsEl = document.getElementById('scenario-details');
+const detailTitleEl = document.getElementById('detail-title');
+const detailDescEl = document.getElementById('detail-description');
+const detailExplanationEl = document.getElementById('detail-explanation');
+const detailStepsEl = document.getElementById('detail-steps');
+const orchestratorOutputEl = document.getElementById('orchestrator-output');
+const toastEl = document.getElementById('toast');
 
-function showStatus(msg, type = 'normal') {
-    statusMsg.innerText = msg;
-    statusMsg.className = `status-bar ${type}`;
-    setTimeout(() => {
-        if (type !== 'loading') statusMsg.classList.add('hidden');
-    }, 5000);
-}
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    fetchScenarios();
+});
 
+// Fetch Scenarios
 async function fetchScenarios() {
     try {
-        const response = await fetch(`${API_URL}/scenarios`);
-        if (!response.ok) throw new Error("Failed to fetch scenarios");
-        const scenarios = await response.json();
-        renderScenarios(scenarios);
-        log("Scenarios loaded successfully.");
-    } catch (e) {
-        container.innerHTML = `<div class="error">Failed to load scenarios. Ensure Backend is running at ${API_URL}</div>`;
-        log(`Error: ${e.message}`);
+        const response = await fetch(`${API_BASE}/scenarios`);
+        if (!response.ok) throw new Error('Failed to fetch scenarios');
+
+        scenarios = await response.json();
+        renderScenarioList();
+    } catch (error) {
+        console.error('Error:', error);
+        scenarioListEl.innerHTML = `<div class="error-msg">Failed to load scenarios.<br>${error.message}</div>`;
     }
 }
 
-async function executeAction(id, name, action) {
-    try {
-        showStatus(`Executing ${action.toUpperCase()} on ${name}...`, 'loading');
-        log(`>>> REQUEST: ${action.toUpperCase()} - ${name} (ID: ${id})`);
+// Render List
+function renderScenarioList() {
+    scenarioListEl.innerHTML = '';
+    scenarioCountEl.textContent = scenarios.length;
 
-        const response = await fetch(`${API_URL}/execute`, {
+    scenarios.forEach(scenario => {
+        const card = document.createElement('div');
+        card.className = `scenario-card ${activeScenarioId === scenario.id ? 'active' : ''}`;
+        card.onclick = () => selectScenario(scenario.id);
+
+        card.innerHTML = `
+            <div class="card-title">${scenario.id}. ${scenario.name}</div>
+            <div class="card-desc">${scenario.description}</div>
+        `;
+
+        scenarioListEl.appendChild(card);
+    });
+}
+
+// Select Scenario
+function selectScenario(id) {
+    activeScenarioId = id;
+    renderScenarioList(); // Re-render to update active class
+
+    const scenario = scenarios.find(s => s.id === id);
+    if (!scenario) return;
+
+    // Show details pane
+    emptyStateEl.style.display = 'none';
+    scenarioDetailsEl.classList.remove('hidden');
+
+    // Populate Data
+    detailTitleEl.textContent = `${scenario.id}. ${scenario.name}`;
+    detailDescEl.textContent = scenario.description;
+
+    // Populate Overview
+    detailExplanationEl.textContent = scenario.technical_explanation || "No explanation available.";
+
+    // Populate Steps
+    detailStepsEl.innerHTML = '';
+    if (scenario.steps && scenario.steps.length > 0) {
+        scenario.steps.forEach(step => {
+            const li = document.createElement('li');
+            li.textContent = step;
+            detailStepsEl.appendChild(li);
+        });
+    } else {
+        detailStepsEl.innerHTML = '<li>No steps defined.</li>';
+    }
+
+    orchestratorOutputEl.textContent = "Ready for execution...";
+}
+
+// Execute Action
+async function executeAction(action) {
+    if (!activeScenarioId) return;
+
+    showToast(`Initiating ${action.toUpperCase()}...`);
+    orchestratorOutputEl.textContent = `Sending ${action} request...`;
+
+    try {
+        const response = await fetch(`${API_BASE}/execute`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                id: id,
-                action: action,
-                user_email: "robin@cloudroaster.com"
-            })
+            body: JSON.stringify({ id: activeScenarioId, action: action })
         });
 
         const data = await response.json();
 
-        if (data.status === 'success') {
-            showStatus(`${action.toUpperCase()} Initiated!`, 'success');
-            log(`<<< SUCCESS: Orchestrator accepted the request.`);
-            log(`Response: ${JSON.stringify(data.orchestrator_response, null, 2)}`);
+        if (response.ok) {
+            orchestratorOutputEl.textContent = JSON.stringify(data.orchestrator_response, null, 2);
+            showToast(`${action.toUpperCase()} Completed!`);
         } else {
-            throw new Error(data.message || "Unknown error");
+            orchestratorOutputEl.textContent = `Error: ${data.message || 'Unknown error'}`;
+            showToast('Execution Failed', true);
         }
-
-    } catch (e) {
-        showStatus(`Failed: ${e.message}`, 'error');
-        log(`<<< ERROR: ${e.message}`);
+    } catch (error) {
+        console.error('Execution Error:', error);
+        orchestratorOutputEl.textContent = `Network Error: ${error.message}`;
+        showToast('Network Error', true);
     }
 }
 
-function renderScenarios(list) {
-    container.innerHTML = '';
-    // Sort by ID
-    list.sort((a, b) => parseInt(a.id) - parseInt(b.id));
-
-    list.forEach(item => {
-        const card = document.createElement('div');
-        card.className = 'card';
-        card.innerHTML = `
-            <div>
-                <h3>#${item.id} ${item.name}</h3>
-                <p>${item.description}</p>
-            </div>
-            <div class="actions">
-                <button class="btn-break" onclick="executeAction('${item.id}', '${item.name}', 'break')">🔥 Break</button>
-                <button class="btn-restore" onclick="executeAction('${item.id}', '${item.name}', 'restore')">🚑 Restore</button>
-            </div>
-        `;
-        container.appendChild(card);
-    });
+// Toast
+function showToast(msg, isError = false) {
+    toastEl.textContent = msg;
+    toastEl.style.backgroundColor = isError ? '#f85149' : '#58a6ff';
+    toastEl.classList.remove('hidden');
+    setTimeout(() => {
+        toastEl.classList.add('hidden');
+    }, 3000);
 }
-
-// Initialize
-fetchScenarios();

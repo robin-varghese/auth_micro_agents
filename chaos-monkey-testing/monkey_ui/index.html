@@ -4,29 +4,100 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chaos Monkey - FinOpti Platform</title>
+    <title>Chaos Monkey - FinOptiAgents</title>
     <link rel="stylesheet" href="style.css">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
 </head>
 
 <body>
-    <div class="container">
-        <header>
-            <h1>🐒 Chaos Monkey Dashboard</h1>
-            <p>Target: <strong>calculator-app (Cloud Run)</strong></p>
+    <div class="app-container">
+        <!-- HEADER -->
+        <header class="main-header">
+            <div class="logo">
+                <span class="logo-icon">🐒</span>
+                <h1>Chaos Monkey</h1>
+            </div>
+            <div class="status-indicator">
+                <span class="status-dot online"></span>
+                <span>System Online</span>
+            </div>
         </header>
 
-        <div id="status-message" class="status-bar hidden">Ready</div>
+        <!-- MAIN LAYOUT (Split Pane) -->
+        <main class="split-layout">
 
-        <div class="scenarios-grid" id="scenarios-container">
-            <!-- Scenarios will be injected here via JS -->
-            <div class="loading">Loading scenarios...</div>
-        </div>
+            <!-- LEFT PANE: Scenario List -->
+            <aside class="left-pane">
+                <div class="pane-header">
+                    <h2>Chaos Scenarios</h2>
+                    <span class="badge" id="scenario-count">0</span>
+                </div>
+                <div class="scenario-list" id="scenario-list">
+                    <!-- Scenario Cards will be injected here -->
+                    <div class="loading-spinner">Loading...</div>
+                </div>
+            </aside>
 
-        <div class="logs-panel">
-            <h3>📝 Operation Logs</h3>
-            <pre id="console-logs">Waiting for action...</pre>
-        </div>
+            <!-- RIGHT PANE: Details & Logs -->
+            <section class="right-pane">
+
+                <!-- If nothing selected -->
+                <div id="empty-state" class="empty-state">
+                    <div class="empty-icon">👈</div>
+                    <h3>Select a Scenario</h3>
+                    <p>Choose a chaos scenario from the left to view details and execute attacks.</p>
+                </div>
+
+                <!-- Scenario Details (Initially Hidden) -->
+                <div id="scenario-details" class="scenario-details hidden">
+
+                    <!-- Detail Header -->
+                    <div class="detail-header">
+                        <h2 id="detail-title">Scenario Name</h2>
+                        <div class="detail-actions">
+                            <button class="btn btn-restore" onclick="executeAction('restore')">
+                                <span class="icon">↺</span> Restore
+                            </button>
+                            <button class="btn btn-break" onclick="executeAction('break')">
+                                <span class="icon">⚡</span> Simulate Break
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Metadata -->
+                    <div class="detail-meta">
+                        <p id="detail-description">Description goes here...</p>
+                    </div>
+
+                    <!-- Overview Content (No Tabs) -->
+                    <div id="tab-overview" class="tab-content active" style="display: block; padding: 24px 32px;">
+                        <div class="info-card">
+                            <h3>Technical Explanation</h3>
+                            <p id="detail-explanation">Technical details...</p>
+                        </div>
+
+                        <div class="info-card">
+                            <h3>Execution Steps</h3>
+                            <ul id="detail-steps" class="steps-list">
+                                <!-- Steps list -->
+                            </ul>
+                        </div>
+
+                        <div class="info-card">
+                            <h3>Orchestrator Output</h3>
+                            <pre id="orchestrator-output" class="code-block placeholder">Ready for execution...</pre>
+                        </div>
+                    </div>
+
+                </div>
+            </section>
+        </main>
     </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast hidden">Action Initiated</div>
 
     <script src="script.js"></script>
 </body>

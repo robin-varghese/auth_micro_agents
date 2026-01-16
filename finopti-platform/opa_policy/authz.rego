@@ -63,5 +63,40 @@ allow if {
     input.target_agent == "cloud-run"
 }
 
+allow if {
+    user_role["gcloud_admin"]
+    input.target_agent == "brave"
+}
+
+allow if {
+    user_role["gcloud_admin"]
+    input.target_agent == "filesystem"
+}
+
+allow if {
+    user_role["gcloud_admin"]
+    input.target_agent == "analytics"
+}
+
+allow if {
+    user_role["gcloud_admin"]
+    input.target_agent == "puppeteer"
+}
+
+allow if {
+    user_role["gcloud_admin"]
+    input.target_agent == "sequential"
+}
+
+allow if {
+    user_role["gcloud_admin"]
+    input.target_agent == "googlesearch"
+}
+
+allow if {
+    user_role["gcloud_admin"]
+    input.target_agent == "code"
+}
+
 # Deny by default
 default allow = false

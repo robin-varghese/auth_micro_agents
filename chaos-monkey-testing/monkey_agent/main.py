@@ -22,13 +22,15 @@ def health():
 
 @app.route('/scenarios', methods=['GET'])
 def list_scenarios():
-    """Returns the list of available chaos scenarios."""
+    """Returns the list of available chaos scenarios with full details."""
     serialized = []
     for id, data in SCENARIOS.items():
         serialized.append({
             "id": id,
             "name": data["name"],
-            "description": data["description"]
+            "description": data["description"],
+            "technical_explanation": data.get("technical_explanation", ""),
+            "steps": data.get("steps", [])
         })
     return jsonify(serialized)
 
@@ -57,9 +59,6 @@ def execute_scenario():
 
     try:
         # Call FinOpti Orchestrator
-        # Assuming Orchestrator accepts POST /chat or /execute with {prompt, user_email}
-        # If accessing via APISIX route /orchestrator/
-        
         payload = {
             "prompt": prompt
         }
@@ -74,7 +73,7 @@ def execute_scenario():
             ORCHESTRATOR_URL, 
             json=payload, 
             headers=headers,
-            timeout=120
+            timeout=600
         )
         
         response.raise_for_status()

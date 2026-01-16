@@ -56,8 +56,8 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/2" \
       },
       "timeout": {
         "connect": 6,
-        "send": 120,
-        "read": 120
+        "send": 600,
+        "read": 600
       }
     },
     "plugins": {
@@ -336,8 +336,8 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/12" \
       },
       "timeout": {
         "connect": 6,
-        "send": 120,
-        "read": 120
+        "send": 600,
+        "read": 600
       }
     },
     "plugins": {
@@ -403,11 +403,207 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/14" \
   }'
 
 echo ""
+
+# Route 15: Brave Search Agent
+echo "Creating route: /agent/brave -> brave_agent_adk:5006"
+curl -i -X PUT "${APISIX_ADMIN}/routes/15" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "brave_agent_route",
+    "uri": "/agent/brave/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "brave_agent_adk:5006": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 600,
+        "read": 600
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/agent/brave/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
+
+# Route 16: Filesystem Agent
+echo "Creating route: /agent/filesystem -> filesystem_agent_adk:5007"
+curl -i -X PUT "${APISIX_ADMIN}/routes/16" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "filesystem_agent_route",
+    "uri": "/agent/filesystem/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "filesystem_agent_adk:5007": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 600,
+        "read": 600
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/agent/filesystem/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
+
+# Route 17: Analytics Agent
+echo "Creating route: /agent/analytics -> analytics_agent_adk:5008"
+curl -i -X PUT "${APISIX_ADMIN}/routes/17" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "analytics_agent_route",
+    "uri": "/agent/analytics/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "analytics_agent_adk:5008": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 600,
+        "read": 600
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/agent/analytics/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
+
+# Route 18: Puppeteer Agent
+echo "Creating route: /agent/puppeteer -> puppeteer_agent_adk:5009"
+curl -i -X PUT "${APISIX_ADMIN}/routes/18" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "puppeteer_agent_route",
+    "uri": "/agent/puppeteer/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "puppeteer_agent_adk:5009": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 600,
+        "read": 600
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/agent/puppeteer/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
+
+# Route 19: Sequential Thinking Agent
+echo "Creating route: /agent/sequential -> sequential_thinking_agent_adk:5010"
+curl -i -X PUT "${APISIX_ADMIN}/routes/19" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "sequential_agent_route",
+    "uri": "/agent/sequential/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "sequential_thinking_agent_adk:5010": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 600,
+        "read": 600
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/agent/sequential/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
+
+# Route 20: Google Search Agent
+echo "Creating route: /agent/googlesearch -> googlesearch_agent_adk:5011"
+curl -i -X PUT "${APISIX_ADMIN}/routes/20" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "googlesearch_agent_route",
+    "uri": "/agent/googlesearch/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "googlesearch_agent_adk:5011": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 600,
+        "read": 600
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/agent/googlesearch/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
+
+# Route 21: Code Execution Agent
+echo "Creating route: /agent/code -> code_execution_agent_adk:5012"
+curl -i -X PUT "${APISIX_ADMIN}/routes/21" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "code_agent_route",
+    "uri": "/agent/code/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "code_execution_agent_adk:5012": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 600,
+        "read": 600
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/agent/code/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
 echo "All routes initialized successfully!"
 
 # List all routes
 echo ""
-echo "Listing all configured routes:"
+echo "Listing all configured configured routes:"
 curl -s "${APISIX_ADMIN}/routes" -H "X-API-KEY: ${ADMIN_KEY}" | python3 -m json.tool || echo "Routes configured"
 
 echo ""

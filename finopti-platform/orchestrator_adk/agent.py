@@ -36,8 +36,8 @@ def detect_intent(prompt: str) -> str:
     Args:
         prompt: User's natural language prompt
         
-    Returns:
-        target_agent: 'gcloud', 'monitoring', 'github', 'storage', 'db', or 'cloud-run'
+        target_agent: One of ['gcloud', 'monitoring', 'github', 'storage', 'db', 
+                            'brave', 'filesystem', 'analytics', 'puppeteer', 'sequential', 'cloud-run', 'mats', 'googlesearch', 'code']
     """
     prompt_lower = prompt.lower()
     words = set(prompt_lower.split())
@@ -61,7 +61,7 @@ def detect_intent(prompt: str) -> str:
     # Storage keywords
     storage_keywords = ['bucket', 'object', 'blob', 'gcs', 'upload', 'download']
     # DB keywords
-    db_keywords = ['database', 'sql', 'query', 'table', 'postgres', 'postgresql', 'schema', 'select', 'insert']
+    db_keywords = ['database', 'sql', 'query', 'table', 'postgres', 'postgresql', 'schema', 'select', 'insert', 'bigquery', 'bq', 'history']
     # Monitoring keywords
     monitoring_keywords = ['cpu', 'memory', 'logs', 'metrics', 'monitor', 'alert', 'usage', 'check',
                            'performance', 'latency', 'error', 'log', 'trace', 'observability']
@@ -73,18 +73,71 @@ def detect_intent(prompt: str) -> str:
     # MATS keywords (Troubleshooting)
     mats_keywords = ['troubleshoot', 'fix', 'debug', 'check what went wrong', 'root cause', 'why is it failing', 'investigate', 'rca', 'diagnosis']
     
+    # Brave Search keywords
+    brave_keywords = ['search', 'find', 'lookup', 'web', 'internet', 'online', 'google']
+    # Filesystem keywords
+    filesystem_keywords = ['file', 'directory', 'folder', 'cat', 'ls', 'local file', 'read', 'write']
+    # Analytics keywords
+    analytics_keywords = ['analytics', 'traffic', 'users', 'sessions', 'pageviews', 'ga4', 'report', 'visitor']
+    # Puppeteer keywords
+    puppeteer_keywords = ['browser', 'screenshot', 'click', 'navigate', 'visit', 'scrape', 'form', 'webpage']
+    # Sequential keywords
+    sequential_keywords = ['think', 'reason', 'plan', 'solve', 'analyze', 'complex', 'step by step']
+    # Google Search keywords
+    googlesearch_keywords = ['search', 'google', 'find', 'lookup', 'web', 'internet', 'scraping']
+    # Code Execution keywords
+    code_keywords = ['code', 'execute', 'calculate', 'python', 'script', 'math', 'function', 'snippet']
+
     scores = {
         'github': count_matches(github_keywords),
         'storage': count_matches(storage_keywords),
         'db': count_matches(db_keywords),
         'monitoring': count_matches(monitoring_keywords),
-        'cloud-run': count_matches(cloud_run_keywords),
+        'cloud-run': count_matches(cloud_run_keywords) * 5,
         'gcloud': count_matches(gcloud_keywords),
-        'mats': count_matches(mats_keywords) * 10 # Strong bios for troubleshooting intent
+        'mats': count_matches(mats_keywords) * 10,
+        'brave': count_matches(brave_keywords),
+        'filesystem': count_matches(filesystem_keywords),
+        'analytics': count_matches(analytics_keywords),
+        'puppeteer': count_matches(puppeteer_keywords),
+        'sequential': count_matches(sequential_keywords),
+        'googlesearch': count_matches(googlesearch_keywords) * 2,
+        'code': count_matches(code_keywords)
     }
     
+    # Resolve Conflicts
+    # 'file' -> Filesystem vs Storage
+    if 'bucket' in prompt_lower or 'object' in prompt_lower:
+        scores['storage'] += 5
+        
+    # 'agent operations' -> DB (Analytics)
+    if 'agent' in prompt_lower and 'operations' in prompt_lower:
+        scores['db'] += 10
+        
+    # 'search' -> Brave vs DB vs Google Search
+    if 'sql' in prompt_lower or 'table' in prompt_lower:
+        scores['db'] += 5
+    elif 'google' in prompt_lower and 'search' in prompt_lower and not ('google cloud' in prompt_lower or 'gcp' in prompt_lower):
+        scores['googlesearch'] += 15
+    elif 'brave' in prompt_lower:
+        scores['brave'] += 10
+        
+    # 'code' -> GitHub vs Code Execution
+    if 'repo' in prompt_lower or 'push' in prompt_lower or 'pull' in prompt_lower:
+        scores['github'] += 5
+    elif 'execute' in prompt_lower or 'calculate' in prompt_lower: # Removed generic 'run' to avoid Cloud Run conflict
+        scores['code'] += 5
+        
+    # 'google cloud' -> GCloud (vs Google Search)
+    if 'google cloud' in prompt_lower or 'gcp' in prompt_lower:
+        scores['gcloud'] += 10
+        scores['googlesearch'] -= 5  # Penalize generic search if it's clearly cloud platform
+        
+    # 'mats' explicit trigger overrides others (for troubleshooting context)
+    if 'troubleshoot' in prompt_lower or 'debug' in prompt_lower or 'fix' in prompt_lower:
+        scores['mats'] += 15
+    
     # Find agent with highest score
-    # Use fallback to 'gcloud' if tie or all zero (but handle tie logic explicitly if needed)
     best_agent = max(scores, key=scores.get)
     
     if scores[best_agent] > 0:
@@ -129,7 +182,7 @@ def check_opa_authorization(user_email: str, target_agent: str) -> dict:
         }
 
 
-async def route_to_agent(target_agent: str, prompt: str, user_email: str, project_id: str = None) -> Dict[str, Any]:
+async def route_to_agent(target_agent: str, prompt: str, user_email: str, project_id: str = None, auth_token: str = None) -> Dict[str, Any]:
     """
     ADK tool: Route request to appropriate sub-agent
     
@@ -138,6 +191,7 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
         prompt: User's prompt
         user_email: User's email
         project_id: Optional GCP project ID
+        auth_token: Optional OAuth token for Auth-dependent agents (Analytics)
     
     Returns:
         Response from sub-agent
@@ -150,19 +204,24 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
             'github': f"{config.APISIX_URL}/agent/github/execute",
             'storage': f"{config.APISIX_URL}/agent/storage/execute",
             'db': f"{config.APISIX_URL}/agent/db/execute",
-            'cloud-run': f"{config.APISIX_URL}/agent/cloud-run",
-            'mats': "http://mats-orchestrator:8084/chat"  # Direct routing to MATS Orchestrator
+            'cloud-run': f"{config.APISIX_URL}/agent/cloud-run/execute",
+            'mats': "http://mats-orchestrator:8084/chat",
+            'brave': f"{config.APISIX_URL}/agent/brave/execute",
+            'filesystem': f"{config.APISIX_URL}/agent/filesystem/execute",
+            'analytics': f"{config.APISIX_URL}/agent/analytics/execute",
+            'puppeteer': f"{config.APISIX_URL}/agent/puppeteer/execute",
+            'sequential': f"{config.APISIX_URL}/agent/sequential/execute",
+            'googlesearch': f"{config.APISIX_URL}/agent/googlesearch/execute",
+            'code': f"{config.APISIX_URL}/agent/code/execute"
         }
         
-        # Adjust endpoint for cloud-run if following Flask pattern
-        if target_agent == 'cloud-run':
-             endpoint = f"{config.APISIX_URL}/agent/cloud-run/execute"
-        elif target_agent == 'mats':
+        # Adjust endpoint logic if needed (e.g. cloud-run special case is now standardized above)
+        if target_agent == 'mats':
              endpoint = agent_endpoints['mats']
         else:
-             endpoint = agent_endpoints[target_agent]
+             endpoint = agent_endpoints.get(target_agent)
         
-        if target_agent not in agent_endpoints and target_agent != 'cloud-run':
+        if not endpoint:
             return {
                 "success": False,
                 "error": f"Unknown agent: {target_agent}"
@@ -193,8 +252,13 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
         headers = {"Content-Type": "application/json"}
         headers = propagate_request_id(headers)
         
-        # Increase timeout for MATS agent which runs long chains
-        timeout = 600 if target_agent == 'mats' else 120
+        # --- Propagate Auth Token ---
+        if auth_token:
+            headers['Authorization'] = auth_token
+        # ----------------------------
+        
+        # Increase timeout for all agents to support long-running operations (e.g. Broken Deployment)
+        timeout = 600
         response = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
         
         try:
@@ -261,6 +325,13 @@ orchestrator_agent = Agent(
     - **storage**: Handles Google Cloud Storage buckets and objects.
     - **db**: Handles SQL database queries (PostgreSQL).
     - **cloud-run**: Handles Cloud Run services, jobs, and deployments.
+    - **brave**: Web search using Brave Search (privacy-focused).
+    - **filesystem**: Local file system operations (list, read, write).
+    - **analytics**: Google Analytics queries (traffic, users).
+    - **puppeteer**: Browser automation and screenshots.
+    - **sequential**: Deep reasoning for complex multi-step problems.
+    - **googlesearch**: Google Search (official) for internet queries.
+    - **code**: Execute Python code for calculations and data processing.
     
     Routing Logic Guidelines (CRITICAL - Follow Exactly):
     
@@ -292,6 +363,26 @@ orchestrator_agent = Agent(
     **Monitoring Agent**:
     - "CPU usage", "Error logs", "Latency metrics"
     - "Show logs from service X", "Memory consumption"
+
+    **Web Search Agents**:
+    - **brave**: "search brave for X", "find X online" (Privacy focus)
+    - **googlesearch**: "google X", "search internet for X" (General focus)
+    - Use these for external knowledge, current events, or documentation.
+
+    **Filesystem Agent**:
+    - "List files in directory", "Read file X", "Cat file Y"
+    
+    **Analytics Agent**:
+    - "Show website traffic", "User count for last week"
+    
+    **Puppeteer Agent**:
+    - "Take screenshot of google.com", "Browser automation"
+    
+    **Sequential Agent**:
+    - "Think step by step", "Plan a complex solution"
+    
+    **Code Execution Agent**:
+    - "Calculate fibonacci", "Run python script", "Solve math problem"
     
     **Key Rules:**
     1. "operations in GCP/cloud/project" → **gcloud** (NEVER github)
@@ -339,7 +430,8 @@ app = App(
 async def process_request_async(
     prompt: str,
     user_email: str,
-    project_id: Optional[str] = None
+    project_id: Optional[str] = None,
+    auth_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Process a user request through the orchestrator
@@ -348,6 +440,7 @@ async def process_request_async(
         prompt: User's natural language request
         user_email: User's email address
         project_id: Optional GCP project ID
+        auth_token: Optional OAuth token
     
     Returns:
         Dictionary with response and metadata
@@ -373,7 +466,8 @@ async def process_request_async(
             target_agent=target_agent,
             prompt=prompt,
             user_email=user_email,
-            project_id=project_id or config.GCP_PROJECT_ID
+            project_id=project_id or config.GCP_PROJECT_ID,
+            auth_token=auth_token
         )
         
         # Propagate error if present
@@ -404,7 +498,8 @@ async def process_request_async(
 def process_request(
     prompt: str,
     user_email: str,
-    project_id: Optional[str] = None
+    project_id: Optional[str] = None,
+    auth_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Synchronous wrapper for process_request_async
@@ -413,11 +508,12 @@ def process_request(
         prompt: User's natural language request
         user_email: User's email address
         project_id: Optional GCP project ID
+        auth_token: Optional OAuth token
     
     Returns:
         Dictionary with response and metadata
     """
-    return asyncio.run(process_request_async(prompt, user_email, project_id))
+    return asyncio.run(process_request_async(prompt, user_email, project_id, auth_token))
 
 
 if __name__ == "__main__":

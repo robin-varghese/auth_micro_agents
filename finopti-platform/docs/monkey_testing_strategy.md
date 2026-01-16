@@ -20,9 +20,9 @@ The solution is fully integrated into the `finopti-platform` ecosystem.
 *   **Location**: `auth_micro_agents/chaos-monkey-testing/monkey_ui/`
 *   **Functionality**:
     *   Dashboard displaying 10 scenarios.
-    *   **Simulate �**: Triggers the `break_prompt`.
+    *   **Simulate 🔴**: Triggers the `break_prompt`.
     *   **Restore 🟢**: Triggers the `restore_prompt`.
-    *   **Live Logs**: Displays the natural language response from the Orchestrator.
+    *   **Live Logs 📜** (New): Dedicated tab to stream Cloud Run logs.
 
 #### 🧠 Monkey Agent (Backend)
 *   **Tech Stack**: Python (Flask).
@@ -31,24 +31,31 @@ The solution is fully integrated into the `finopti-platform` ecosystem.
 *   **Endpoints**:
     *   `GET /scenarios`: Returns list of available chaos scenarios.
     *   `POST /execute`: Accepts `{id, action}` and forwards the prompt to the Orchestrator.
-*   **Integration**: Calls `http://apisix:9080/orchestrator/ask` to trigger agentic workflows.
+    *   `GET /logs`: Proxies request to Orchestrator -> Monitoring Agent to fetch recent logs.
 
 #### 🌩️ Cloud Run Agent (The Executor)
-*   **Tech Stack**: Python (Google ADK).
+*   **Tech Stack**: Python (Google ADK) + `gcloud` subprocess.
 *   **Location**: `auth_micro_agents/finopti-platform/sub_agents/cloud_run_agent_adk/`
-*   **Execution Model**: 
-    *   Originally designed to use an MCP Server.
-    *   **Current Implementation**: Uses direct `subprocess` calls to the `gcloud` CLI installed in the container for maximum reliability and feature coverage.
-    *   **Filesystem Workaround**: Copies read-only mounted gcloud configuration to `/tmp/gcloud_config` at runtime to allow write operations (lock files, logs).
+*   **Execution Model**: Direct `gcloud` execution for reliability.
 
-### 2. Communication Flow
+#### 🔍 Monitoring Agent (The Observer)
+*   **Tech Stack**: Python (Google ADK) + `gcloud` subprocess.
+*   **Location**: `auth_micro_agents/finopti-platform/sub_agents/monitoring_agent_adk/`
+*   **Responsibility**: Fetching metrics and logs. 
+*   **Refactor Needed**: Switch from `MonitoringMCPClient` to direct `gcloud logging read` to ensure stability for the Live Logs feature.
+
+### 2. Communication Flow (Chaos)
 1.  **User** clicks "Simulate" on Monkey UI.
-2.  **Monkey UI** sends `POST /execute` to Monkey Agent.
-3.  **Monkey Agent** looks up the `break_prompt` for the scenario.
-4.  **Monkey Agent** sends the prompt to **FinOpti Orchestrator** via APISIX.
-5.  **Orchestrator** routes the request to **Cloud Run Agent**.
-6.  **Cloud Run Agent** translates the prompt into a `gcloud run` command and executes it locally.
-7.  **Result** is returned up the chain to the User.
+2.  **Monkey Agent** sends prompt to **Orchestrator**.
+3.  **Orchestrator** routes to **Cloud Run Agent**.
+4.  **Cloud Run Agent** executes `gcloud run` command.
+
+### 3. Communication Flow (Live Logs)
+1.  **Monkey UI** polls `GET /logs?service=calculator-app` every 5 seconds.
+2.  **Monkey Agent** sends prompt to **Orchestrator**: *"Fetch last 20 lines of logs for Cloud Run service 'calculator-app' in desc order."*
+3.  **Orchestrator** routes to **Monitoring Agent**.
+4.  **Monitoring Agent** executes `gcloud logging read ...` via subprocess.
+5.  **Result** (JSON logs) returned to UI.
 
 ---
 
@@ -58,76 +65,47 @@ The following 10 scenarios are defined in `monkey_agent/scenarios.py` and active
 
 ### 1. Service Blackout (Total Destruction)
 *   **Action**: `gcloud run services delete calculator-app ...`
-*   **Impact**: 404 Not Found. Service completely removed.
 *   **Restore**: Redeploys the service using the Artifact Registry image.
 
 ### 2. Auth Lockdown (Permission Denied)
 *   **Action**: Removes `roles/run.invoker` from `allUsers`.
-*   **Impact**: 403 Forbidden for public users.
 *   **Restore**: Re-grants `roles/run.invoker` to `allUsers`.
 
 ### 3. Broken Deployment (CrashLoopBackOff)
-*   **Action**: Deploys `gcr.io/google-containers/pause:1.0` (simulating a bad image).
-*   **Impact**: 503 Service Unavailable / Deployment Failure.
+*   **Action**: Deploys `gcr.io/google-containers/pause:1.0`.
 *   **Restore**: Redeploys the correct `calculator-app` image.
 
 ### 4. Traffic Void (Misrouting)
-*   **Action**: Sets traffic to 0% (or routes to non-existent revision).
-*   **Impact**: 404 or 503 depending on implementation.
+*   **Action**: Sets traffic to 0%.
 *   **Restore**: Routes 100% traffic to `LATEST`.
 
 ### 5. Resource Starvation (OOM Kill)
 *   **Action**: Sets memory limit to `64Mi`.
-*   **Impact**: Container crashes with "Memory limit exceeded" under load.
 *   **Restore**: Sets memory limit back to `512Mi`.
 
 ### 6. Concurrency Freeze (Latency Spike)
 *   **Action**: Sets `concurrency=1` and `max-instances=1`.
-*   **Impact**: Massive request queuing and high latency (504s).
 *   **Restore**: Resets concurrency to default (80).
 
 ### 7. Bad Environment (Config Failure)
 *   **Action**: Injects `DB_CONNECTION_STRING=invalid_host:5432`.
-*   **Impact**: Application logic fails (500 Internal Server Error) when trying to connect.
 *   **Restore**: Removes the invalid environment variable.
 
 ### 8. Network Isolation (Ingress Restriction)
 *   **Action**: Sets ingress to `internal`.
-*   **Impact**: 403 Forbidden (or 404) for external traffic.
 *   **Restore**: Sets ingress to `all`.
 
 ### 9. Cold Start Freeze (Scale to Zero)
 *   **Action**: Sets `min-instances=0` and `max-instances=0`.
-*   **Impact**: Service is effectively suspended; will not scale up for requests.
-*   **Restore**: Sets `min-instances=1` (warm) and removes max limit.
+*   **Restore**: Sets `min-instances=1`.
 
 ### 10. Region Failover (Disaster Recovery)
 *   **Action**: Deletes from `us-central1` AND deploys to `us-west1`.
-*   **Impact**: Service available but with higher latency/different URL (if not using global LB).
 *   **Restore**: Deletes from `us-west1` and redeploys to `us-central1`.
 
 ---
 
 ## 🔧 Technical Implementation Details
-
-### Docker Configuration
-Managed via the main `docker-compose.yml` in `finopti-platform`:
-
-```yaml
-  monkey_agent:
-    build: ../chaos-monkey-testing/monkey_agent
-    environment:
-      - ORCHESTRATOR_URL=http://apisix:9080/orchestrator/ask
-    networks:
-      - finopti-net
-
-  monkey_ui:
-    build: ../chaos-monkey-testing/monkey_ui
-    ports:
-      - "8080:80"
-    networks:
-      - finopti-net
-```
 
 ### Cloud Run Agent "Subprocess" Fix
 To bypass limitations of the MCP server protocol for complex gcloud commands, the agent uses Python's `subprocess`:
@@ -143,8 +121,11 @@ subprocess.run(
 )
 ```
 
+### New: Live Logs Implementation Plan
+1.  **Frontend**: Add "Live Logs" tab to `index.html` with polling JS.
+2.  **Backend**: Add `GET /logs` endpoint to `monkey_agent/main.py`.
+3.  **Monitoring Agent**: Refactor to use `subprocess` for `gcloud logging read` (Port fix from SRE Agent).
+4.  **Orchestrator**: Ensure routing prompt handles "fetch logs" correctly.
+
 ## 🧪 Verification
-The setup has been verified by running the **Service Blackout** scenario:
-1.  **Break**: UI clicked -> Service deleted on GCP.
-2.  **Troubleshoot**: MATS agents detected the 404 and identified the deletion.
-3.  **Restore**: UI clicked -> Service successfully redeployed and accessible.
+The setup has been verified by running the **Service Blackout** scenario and verifying the **SRE Agent's** ability to query logs via subprocess.
