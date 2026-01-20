@@ -1,0 +1,22 @@
+{
+    "agent_id": "analytics_specialist",
+    "display_name": "Google Analytics 4 Specialist",
+    "icon": "analytics",
+    "description": "Analyzes web traffic, user sessions, and conversion metrics using Google Analytics 4 Data API.",
+    "capabilities": [
+        "run_report",
+        "run_realtime_report",
+        "get_account_summaries",
+        "get_property_details",
+        "get_custom_dimensions_and_metrics"
+    ],
+    "dependencies": [
+        "google-analytics-data-api",
+        "google-analytics-admin-api"
+    ],
+    "anti_patterns": [
+        "Do NOT use for general web search.",
+        "Do NOT infer traffic numbers without running a report.",
+        "Do NOT attempt to configure GA4 properties (read-only)."
+    ]
+}

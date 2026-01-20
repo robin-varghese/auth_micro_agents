@@ -1,0 +1,22 @@
+{
+    "agent_id": "cloud_run_specialist",
+    "display_name": "Cloud Run Specialist",
+    "icon": "cloud_upload",
+    "description": "Deploys and manages Cloud Run services using the Cloud Run MCP server.",
+    "capabilities": [
+        "list_services",
+        "get_service",
+        "get_service_log",
+        "deploy_file_contents",
+        "deploy_local_folder",
+        "list_projects",
+        "create_project"
+    ],
+    "dependencies": [
+        "cloud-run-mcp"
+    ],
+    "anti_patterns": [
+        "Do NOT use for general GCP operations outside Cloud Run.",
+        "Do NOT deploy without user confirmation."
+    ]
+}

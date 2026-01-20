@@ -1,28 +1,134 @@
+sources:
+  local_postgres:
+    kind: postgres
+    host: db
+    port: 5432
+    user: postgres
+    password: postgres
+    database: postgres
+
 tools:
-  - name: execute_query
-    description: Execute a SQL query (SELECT only by default)
-    type: postgres
-    connection:
-      host: db
-      port: 5432
-      user: postgres
-      password: postgres
-      database: postgres
-  - name: list_tables
+  # Basic database inspection tools
+  list_tables:
+    kind: postgres-sql
     description: List all tables in the database
-    type: postgres
-    connection:
-      host: db
-      port: 5432
-      user: postgres
-      password: postgres
-      database: postgres
-  - name: get_table_schema
-    description: Get schema for a specific table
-    type: postgres
-    connection:
-      host: db
-      port: 5432
-      user: postgres
-      password: postgres
-      database: postgres
+    source: local_postgres
+    statement: SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';
+  
+  # Generic query tool
+  query_database:
+    kind: postgres-sql
+    description: Run a read-only SQL query on the database
+    source: local_postgres
+    parameters:
+      - name: query
+        type: string
+        description: The SQL query to run
+    statement: "{{ .query }}"
+  
+  # Student-specific tools for AI agents
+  get_all_students:
+    kind: postgres-sql
+    description: Get all students with their marks in all subjects
+    source: local_postgres
+    statement: |
+      SELECT student_name, mathematics, physics, chemistry, biology, english, enrollment_year
+      FROM students 
+      ORDER BY student_name;
+  
+  get_top_performers:
+    kind: postgres-sql
+    description: Get top performing students based on average marks
+    source: local_postgres
+    parameters:
+      - name: limit_count
+        type: integer
+        description: Number of top students to return
+    statement: |
+      SELECT 
+        student_name,
+        ROUND((mathematics + physics + chemistry + biology + english) / 5.0, 2) as average_mark,
+        mathematics, physics, chemistry, biology, english
+      FROM students
+      ORDER BY average_mark DESC
+      LIMIT $1;
+  
+  search_student_by_name:
+    kind: postgres-sql
+    description: Search for a student by name (case-insensitive partial match)
+    source: local_postgres
+    parameters:
+      - name: name_search
+        type: string
+        description: Student name or partial name to search for
+    statement: |
+      SELECT student_name, mathematics, physics, chemistry, biology, english, enrollment_year
+      FROM students
+      WHERE student_name ILIKE '%' || $1 || '%';
+  
+  get_subject_statistics:
+    kind: postgres-sql
+    description: Get statistics (average, min, max) for mathematics subject
+    source: local_postgres
+    statement: |
+      SELECT 
+        'mathematics' as subject,
+        ROUND(AVG(mathematics), 2) as average_mark,
+        MIN(mathematics) as lowest_mark,
+        MAX(mathematics) as highest_mark,
+        COUNT(*) as total_students
+      FROM students;
+  
+  get_physics_statistics:
+    kind: postgres-sql
+    description: Get statistics (average, min, max) for physics subject
+    source: local_postgres
+    statement: |
+      SELECT 
+        'physics' as subject,
+        ROUND(AVG(physics), 2) as average_mark,
+        MIN(physics) as lowest_mark,
+        MAX(physics) as highest_mark,
+        COUNT(*) as total_students
+      FROM students;
+  
+  get_students_math_above_threshold:
+    kind: postgres-sql
+    description: Get students who scored above a threshold in mathematics
+    source: local_postgres
+    parameters:
+      - name: min_score
+        type: integer
+        description: Minimum mathematics score threshold
+    statement: |
+      SELECT student_name, mathematics as mark
+      FROM students
+      WHERE mathematics >= $1
+      ORDER BY mathematics DESC;
+  
+  get_students_physics_above_threshold:
+    kind: postgres-sql
+    description: Get students who scored above a threshold in physics
+    source: local_postgres
+    parameters:
+      - name: min_score
+        type: integer
+        description: Minimum physics score threshold
+    statement: |
+      SELECT student_name, physics as mark
+      FROM students
+      WHERE physics >= $1
+      ORDER BY physics DESC;
+  
+  get_enrollment_year_stats:
+    kind: postgres-sql
+    description: Get statistics grouped by enrollment year
+    source: local_postgres
+    statement: |
+      SELECT 
+        enrollment_year,
+        COUNT(*) as student_count,
+        ROUND(AVG((mathematics + physics + chemistry + biology + english) / 5.0), 2) as avg_overall_mark
+      FROM students
+      GROUP BY enrollment_year
+      ORDER BY enrollment_year DESC;

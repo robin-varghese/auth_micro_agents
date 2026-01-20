@@ -2,53 +2,115 @@
 GitHub ADK Agent - Repository and Code Specialist
 
 This agent uses Google ADK to handle GitHub interactions.
-It integrates with the GitHub MCP server for executing git operations.
+It integrates with the official GitHub MCP server.
 """
 
 import os
 import sys
+import asyncio
+import json
+import logging
 from pathlib import Path
+from typing import Dict, Any, List
 
-# Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from google.adk.agents import Agent
 from google.adk.apps import App
+from google.adk.runners import InMemoryRunner
 from google.adk.plugins import ReflectAndRetryToolPlugin
 from google.adk.plugins.bigquery_agent_analytics_plugin import (
     BigQueryAgentAnalyticsPlugin,
     BigQueryLoggerConfig
 )
-from typing import Dict, Any, List
-import asyncio
-import json
-import requests  # For HTTP MCP client
-import logging
-
+from google.genai import types
 from config import config
 
 # Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
-# MCP Client for GitHub via Docker Stdio
 class GitHubMCPClient:
     """Client for connecting to GitHub MCP server via Docker Stdio"""
     
     def __init__(self, token: str = None):
-        self.image = os.getenv('GITHUB_MCP_DOCKER_IMAGE', 'finopti-github-mcp')
-        
-        # Priority: Dynamic Token -> Env Var -> Config
-        self.github_token = token
-        if not self.github_token:
-             self.github_token = os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN", "")
-        if not self.github_token:
-             self.github_token = getattr(config, "GITHUB_PERSONAL_ACCESS_TOKEN", "")
-             
+        self.image = os.getenv('GITHUB_MCP_DOCKER_IMAGE', 'ghcr.io/github/github-mcp-server:latest')
+        self.github_token = token or os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN") or getattr(config, "GITHUB_PERSONAL_ACCESS_TOKEN", "")
         self.process = None
         self.request_id = 0
+
+    async def connect(self):
+        if not self.github_token:
+            logger.warning("No GITHUB_PERSONAL_ACCESS_TOKEN. Tools may fail.")
+
+        cmd = [
+            "docker", "run", "-i", "--rm", 
+            "-e", f"GITHUB_PERSONAL_ACCESS_TOKEN={self.github_token}",
+            "-e", "GITHUB_TOOLSETS=all",  # Enable ALL toolsets
+            self.image
+        ]
         
-        logger.info(f"GitHub MCP Client initialized for image: {self.image}")
+        logger.info(f"Starting GitHub MCP: {' '.join(cmd)}")
+        self.process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await self._handshake()
+
+    async def _handshake(self):
+        await self._send_json({
+            "jsonrpc": "2.0", "method": "initialize", "id": 0,
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "github-agent", "version": "1.0"}}
+        })
+        while True:
+            line = await self.process.stdout.readline()
+            if not line: break
+            msg = json.loads(line)
+            if msg.get("id") == 0: break
+        await self._send_json({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+
+    async def _send_json(self, payload):
+        self.process.stdin.write((json.dumps(payload) + "\n").encode())
+        await self.process.stdin.drain()
+
+    async def call_tool(self, tool_name: str, arguments: dict) -> Any:
+        if not self.github_token:
+             raise ValueError("GITHUB_PERSONAL_ACCESS_TOKEN is required. Please ask the user for their GitHub PAT.")
+
+        self.request_id += 1
+        payload = {
+            "jsonrpc": "2.0", "method": "tools/call",
+            "params": {"name": tool_name, "arguments": arguments},
+            "id": self.request_id
+        }
+        await self._send_json(payload)
+        
+        while True:
+            line = await self.process.stdout.readline()
+            if not line: raise RuntimeError("MCP closed")
+            msg = json.loads(line)
+            if msg.get("id") == self.request_id:
+                if "error" in msg: return {"error": msg["error"]}
+                result = msg.get("result", {})
+                content = result.get("content", [])
+                output_text = ""
+                for c in content:
+                    if c["type"] == "text": output_text += c["text"]
+                
+                try: 
+                    return json.loads(output_text)
+                except:
+                    # Return text directly if not JSON
+                    return output_text
+
+    async def close(self):
+        if self.process:
+            try:
+                self.process.terminate()
+                await self.process.wait()
+            except: pass
 
     async def __aenter__(self):
         await self.connect()
@@ -56,298 +118,139 @@ class GitHubMCPClient:
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
-    
-    async def connect(self):
-        """Start the MCP server container and perform handshake"""
-        
-        if not self.github_token:
-             logger.warning("No GITHUB_PERSONAL_ACCESS_TOKEN provided. Basic auth might fail.")
 
-        # Check if running in a container with access to docker socket
-        # Use asyncio.create_subprocess_exec for non-blocking I/O
-        cmd = [
-            "docker", "run", 
-            "-i", "--rm", 
-            "-e", f"GITHUB_PERSONAL_ACCESS_TOKEN={self.github_token}",
-            self.image
-        ]
-        
-        logger.info(f"Starting MCP server with command: docker run ... {self.image}")
-        
-        try:
-            self.process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            # --- MCP Initialization Handshake ---
-            # 1. Send 'initialize' request
-            init_payload = {
-                "jsonrpc": "2.0",
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "finopti-github-agent", "version": "1.0"}
-                },
-                "id": 0
-            }
-            
-            logger.info("Sending MCP initialize request...")
-            self.process.stdin.write((json.dumps(init_payload) + "\n").encode())
-            await self.process.stdin.drain()
-            
-            # 2. Wait for initialize response
-            while True:
-                line = await self.process.stdout.readline()
-                if not line:
-                     stderr = await self.process.stderr.read()
-                     raise RuntimeError(f"MCP server closed during initialization. Stderr: {stderr.decode()}")
-                
-                try:
-                    msg = json.loads(line.decode())
-                    if msg.get("id") == 0:
-                        if "error" in msg:
-                             raise RuntimeError(f"MCP initialization error: {msg['error']}")
-                        logger.info("MCP Initialized successfully.")
-                        break
-                except json.JSONDecodeError:
-                    logger.warning(f"Invalid JSON during init: {line}")
-            
-            # 3. Send 'notifications/initialized'
-            notify_payload = {
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized",
-                "params": {}
-            }
-            self.process.stdin.write((json.dumps(notify_payload) + "\n").encode())
-            await self.process.stdin.drain()
-            
-        except Exception as e:
-            logger.error(f"Failed to start or initialize MCP server: {e}")
-            if self.process:
-                try:
-                    self.process.terminate()
-                except ProcessLookupError:
-                    pass
-            raise
+# --- Tool Wrappers ---
 
-    async def close(self):
-        """Stop the MCP server"""
-        if self.process:
-            try:
-                self.process.terminate()
-                await self.process.wait()
-            except ProcessLookupError:
-                pass
-            self.process = None
-
-    
-    async def call_tool(self, tool_name: str, arguments: dict) -> str:
-        """Call GitHub MCP tool via Stdio"""
-        if not self.process:
-            raise RuntimeError("MCP client not connected")
-            
-        if not self.github_token:
-            raise ValueError("GITHUB_PERSONAL_ACCESS_TOKEN is required. Please ask the user for their GitHub PAT.")
-        
-        self.request_id += 1
-        payload = {
-            "jsonrpc": "2.0",
-            "method": "tools/call",
-            "params": {
-                "name": tool_name,
-                "arguments": arguments
-            },
-            "id": self.request_id
-        }
-        
-        json_str = json.dumps(payload) + "\n"
-        
-        try:
-            logger.info(f"Calling GitHub MCP tool via Stdio: {tool_name}")
-            
-            # Write request
-            self.process.stdin.write(json_str.encode())
-            await self.process.stdin.drain()
-            
-            # Read response
-            while True:
-                line = await self.process.stdout.readline()
-                if not line:
-                    # EOF
-                    stderr = await self.process.stderr.read()
-                    raise RuntimeError(f"MCP server closed connection. Stderr: {stderr.decode()}")
-                
-                try:
-                    msg = json.loads(line.decode())
-                    if msg.get("id") == self.request_id:
-                        if "error" in msg:
-                            raise RuntimeError(f"MCP tool error: {msg['error']}")
-                        
-                        result = msg.get("result", {})
-                        logger.info(f"GitHub MCP call successful: {tool_name}")
-                        
-                        if "content" in result:
-                            output_text = ""
-                            for content in result["content"]:
-                                if content.get("type") == "text":
-                                    output_text += content["text"]
-                            return output_text
-                        
-                        return str(result.get("result", result))
-                except json.JSONDecodeError:
-                     logger.warning(f"Invalid JSON from MCP server: {line}")
-            
-        except Exception as e:
-            logger.error(f"GitHub MCP error: {e}")
-            raise RuntimeError(f"GitHub MCP call failed: {e}") from e
-
-
-# --- TOOLS ---
+async def _call_gh_tool(tool_name: str, args: dict, pat: str = None) -> Dict[str, Any]:
+    try:
+        async with GitHubMCPClient(token=pat) as client:
+            return await client.call_tool(tool_name, args)
+    except ValueError as ve:
+        return {"success": False, "error": str(ve), "action_needed": "ask_user_for_pat"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 async def search_repositories(query: str, github_pat: str = None) -> Dict[str, Any]:
-    """
-    Search GitHub repositories.
-    
-    Args:
-        query: The search query (e.g., 'mcp-server language:python').
-        github_pat: (Optional) The user's GitHub Personal Access Token. 
-                    If not provided, the agent will use the system default if available.
-    """
-    try:
-        async with GitHubMCPClient(token=github_pat) as client:
-            output = await client.call_tool("search_repositories", {"query": query})
-            return {"success": True, "output": output}
-    except ValueError as ve:
-         # Token missing
-         return {"success": False, "error": str(ve), "action_needed": "ask_user_for_pat"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    return await _call_gh_tool("search_repositories", {"query": query}, github_pat)
 
-async def read_file(owner: str, repo: str, path: str, github_pat: str = None) -> Dict[str, Any]:
-    """
-    Read file content from GitHub.
-    
-    Args:
-        owner: Repository owner/organization.
-        repo: Repository name.
-        path: Path to the file.
-        github_pat: (Optional) The user's GitHub Personal Access Token.
-    """
-    try:
-        async with GitHubMCPClient(token=github_pat) as client:
-            output = await client.call_tool("read_file", {"owner": owner, "repo": repo, "path": path})
-            return {"success": True, "output": output}
-    except ValueError as ve:
-         return {"success": False, "error": str(ve), "action_needed": "ask_user_for_pat"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+async def list_repositories(github_pat: str = None) -> Dict[str, Any]:
+    return await _call_gh_tool("list_repositories", {}, github_pat)
 
-# Create ADK Agent
-# Ensure GOOGLE_API_KEY is set for the ADK/GenAI library
-if not os.environ.get("GOOGLE_API_KEY"):
-    os.environ["GOOGLE_API_KEY"] = getattr(config, "GOOGLE_API_KEY", "")
+async def get_file_contents(owner: str, repo: str, path: str, branch: str = None, github_pat: str = None) -> Dict[str, Any]:
+    args = {"owner": owner, "repo": repo, "path": path}
+    if branch: args["branch"] = branch
+    return await _call_gh_tool("get_file_contents", args, github_pat)
 
-# Helper: Dynamic Model Loading
-def get_gemini_model(default_model: str = "gemini-1.5-flash-001") -> str:
-    """
-    Fetch Gemini model name from Env Var -> Secret -> Default.
-    """
-    model = os.getenv("FINOPTIAGENTS_LLM")
-    if model:
-        return model
-    
-    # Try Secret Manager via config if available
-    try:
-        model = getattr(config, "FINOPTIAGENTS_LLM", None)
-        if model:
-            return model
-    except Exception:
-        pass
-        
-    return default_model
+async def create_or_update_file(owner: str, repo: str, path: str, content: str, message: str, branch: str = None, sha: str = None, github_pat: str = None) -> Dict[str, Any]:
+    args = {"owner": owner, "repo": repo, "path": path, "content": content, "message": message}
+    if branch: args["branch"] = branch
+    if sha: args["sha"] = sha
+    return await _call_gh_tool("create_or_update_file", args, github_pat)
 
-github_agent = Agent(
-    name="github_specialist",
-    model=get_gemini_model(),
-    description="GitHub repository and code specialist. Can search repos and read code.",
-    instruction="""
-    You are a GitHub specialist agent.
-    
-    ## Authentication Policy
-    To interact with GitHub, you need a **Personal Access Token (PAT)**.
-    1.  **Try first**: Attempt to call tools *without* successfully asking for a PAT (the system might have a default one).
-    2.  **On Auth Error**: If a tool returns an error mentioning "GITHUB_PERSONAL_ACCESS_TOKEN is required" or "ask_user_for_pat", you MUST ask the user:
-        "I need your GitHub Personal Access Token (PAT) to proceed. Please provide it."
-    3.  **Using PAT**: Once the user provides the PAT, you MUST pass it as the `github_pat` argument to ALL subsequent tool calls in the session.
-    
-    ## Repo URL Handling
-    If the user provides a GitHub Repository URL (e.g., `https://github.com/owner/repo`):
-    1.  Extract the `owner` and `repo` names from the URL.
-    2.  Use these extracted values for tools like `read_file`.
-    
-    ## Capabilities
-    1.  **Search**: Use `search_repositories` to find code or projects.
-    2.  **Read**: Use `read_file` to examine code content.
-    
-    Always summarize the results clearly for the user.
-    """,
-    tools=[search_repositories, read_file]
-)
+async def push_files(owner: str, repo: str, branch: str, files: List[Dict[str, str]], message: str, github_pat: str = None) -> Dict[str, Any]:
+    return await _call_gh_tool("push_files", {"owner": owner, "repo": repo, "branch": branch, "files": files, "message": message}, github_pat)
 
-# Configure BigQuery Plugin
-bq_config = BigQueryLoggerConfig(
-    enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-    batch_size=1,
-    max_content_length=100 * 1024,
-    shutdown_timeout=10.0
-)
+async def create_issue(owner: str, repo: str, title: str, body: str = None, github_pat: str = None) -> Dict[str, Any]:
+    args = {"owner": owner, "repo": repo, "title": title}
+    if body: args["body"] = body
+    return await _call_gh_tool("create_issue", args, github_pat)
 
-bq_plugin = BigQueryAgentAnalyticsPlugin(
-    project_id=config.GCP_PROJECT_ID,
-    dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-    table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
-    config=bq_config,
-    location="US"
-)
+async def list_issues(owner: str, repo: str, state: str = "open", github_pat: str = None) -> Dict[str, Any]:
+    return await _call_gh_tool("list_issues", {"owner": owner, "repo": repo, "state": state}, github_pat)
 
-# Create App
-app = App(
-    name="finopti_github_agent",
-    root_agent=github_agent,
-    plugins=[
-        ReflectAndRetryToolPlugin(max_retries=3),
-        bq_plugin
+async def update_issue(owner: str, repo: str, issue_number: int, title: str = None, body: str = None, state: str = None, github_pat: str = None) -> Dict[str, Any]:
+    args = {"owner": owner, "repo": repo, "issue_number": issue_number}
+    if title: args["title"] = title
+    if body: args["body"] = body
+    if state: args["state"] = state
+    return await _call_gh_tool("update_issue", args, github_pat)
+
+async def add_issue_comment(owner: str, repo: str, issue_number: int, body: str, github_pat: str = None) -> Dict[str, Any]:
+    return await _call_gh_tool("add_issue_comment", {"owner": owner, "repo": repo, "issue_number": issue_number, "body": body}, github_pat)
+
+async def create_pull_request(owner: str, repo: str, title: str, head: str, base: str, body: str = None, github_pat: str = None) -> Dict[str, Any]:
+    args = {"owner": owner, "repo": repo, "title": title, "head": head, "base": base}
+    if body: args["body"] = body
+    return await _call_gh_tool("create_pull_request", args, github_pat)
+
+async def list_pull_requests(owner: str, repo: str, state: str = "open", github_pat: str = None) -> Dict[str, Any]:
+    return await _call_gh_tool("list_pull_requests", {"owner": owner, "repo": repo, "state": state}, github_pat)
+
+async def merge_pull_request(owner: str, repo: str, pull_number: int, merge_method: str = "merge", github_pat: str = None) -> Dict[str, Any]:
+    return await _call_gh_tool("merge_pull_request", {"owner": owner, "repo": repo, "pull_number": pull_number, "merge_method": merge_method}, github_pat)
+
+async def get_pull_request(owner: str, repo: str, pull_number: int, github_pat: str = None) -> Dict[str, Any]:
+    return await _call_gh_tool("get_pull_request", {"owner": owner, "repo": repo, "pull_number": pull_number}, github_pat)
+
+async def create_branch(owner: str, repo: str, branch: str, from_branch: str = "main", github_pat: str = None) -> Dict[str, Any]:
+    return await _call_gh_tool("create_branch", {"owner": owner, "repo": repo, "branch": branch, "from_branch": from_branch}, github_pat)
+
+async def list_branches(owner: str, repo: str, github_pat: str = None) -> Dict[str, Any]:
+    return await _call_gh_tool("list_branches", {"owner": owner, "repo": repo}, github_pat)
+
+async def get_commit(owner: str, repo: str, ref: str, github_pat: str = None) -> Dict[str, Any]:
+    return await _call_gh_tool("get_commit", {"owner": owner, "repo": repo, "ref": ref}, github_pat)
+
+async def search_code(q: str, github_pat: str = None) -> Dict[str, Any]:
+    return await _call_gh_tool("search_code", {"q": q}, github_pat)
+
+async def search_issues(q: str, github_pat: str = None) -> Dict[str, Any]:
+    return await _call_gh_tool("search_issues", {"q": q}, github_pat)
+
+# Load Manifest
+manifest_path = Path(__file__).parent / "manifest.json"
+manifest = {}
+if manifest_path.exists():
+    with open(manifest_path, "r") as f:
+        manifest = json.load(f)
+
+# Load Instructions
+instructions_path = Path(__file__).parent / "instructions.json"
+if instructions_path.exists():
+    with open(instructions_path, "r") as f:
+        data = json.load(f)
+        instruction_str = data.get("instruction", "You are a GitHub Specialist.")
+else:
+    instruction_str = "You are a GitHub Specialist."
+
+agent = Agent(
+    name=manifest.get("agent_id", "github_specialist"),
+    model=config.FINOPTIAGENTS_LLM,
+    description=manifest.get("description", "GitHub Specialist."),
+    instruction=instruction_str,
+    tools=[
+        search_repositories, list_repositories, get_file_contents, create_or_update_file,
+        push_files, create_issue, list_issues, update_issue, add_issue_comment,
+        create_pull_request, list_pull_requests, merge_pull_request, get_pull_request,
+        create_branch, list_branches, get_commit, search_code, search_issues
     ]
 )
 
-from google.adk.runners import InMemoryRunner
-from google.genai import types
+app = App(
+    name="finopti_github_agent",
+    root_agent=agent,
+    plugins=[
+        ReflectAndRetryToolPlugin(max_retries=3),
+        BigQueryAgentAnalyticsPlugin(
+            project_id=config.GCP_PROJECT_ID,
+            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+            table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
+            config=BigQueryLoggerConfig(enabled=True)
+        )
+    ]
+)
 
 async def send_message_async(prompt: str, user_email: str = None) -> str:
     try:
-        # Note: We create a fresh runner for each request (stateless logic per request),
-        # but the AGENT's conversation history (session) management depends on the session_id passed to run_async
-        # or managed by the caller. The `InMemoryRunner` here is ephemeral. 
-        # For true conversation history across turns, we rely on the `session_id="default"` being kept?
-        # Actually, InMemoryRunner state is memory-only. If this function returns, the runner is destroyed.
-        # So conversational state persistence depends on how `app` handles sessions or if `runner` persists.
-        # In this simple implementation, context might be lost between HTTP requests.
-        # However, for the purpose of this task (updating tool logic), this is sufficient.
-        
         async with InMemoryRunner(app=app) as runner:
             await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_github_agent")
             message = types.Content(parts=[types.Part(text=prompt)])
             response_text = ""
-            async for event in runner.run_async(user_id="default", session_id="default", new_message=message):
-                 if hasattr(event, 'content') and event.content and event.content.parts:
+            async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
+                 if hasattr(event, 'content') and event.content:
                      for part in event.content.parts:
-                         if part.text:
-                             response_text += part.text
-            return response_text if response_text else "No response."
+                         if part.text: response_text += part.text
+            return response_text
     except Exception as e:
         return f"Error: {str(e)}"
 

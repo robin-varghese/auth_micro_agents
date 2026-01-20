@@ -1,0 +1,16 @@
+{
+    "agent_id": "gcloud_infrastructure_specialist",
+    "display_name": "GCloud Specialist",
+    "icon": "cloud",
+    "description": "General purpose Google Cloud Platform CLI specialist.",
+    "capabilities": [
+        "run_gcloud_command"
+    ],
+    "dependencies": [
+        "gcloud-mcp"
+    ],
+    "anti_patterns": [
+        "Do NOT run interactive commands.",
+        "Do NOT execute destructive commands without confirmation."
+    ]
+}

@@ -1,0 +1,33 @@
+{
+    "agent_id": "github_specialist",
+    "display_name": "GitHub Specialist",
+    "icon": "github",
+    "description": "Specialist for GitHub repository management, code operations, issues, and pull requests.",
+    "capabilities": [
+        "search_repositories",
+        "list_repositories",
+        "get_file_contents",
+        "create_or_update_file",
+        "push_files",
+        "create_issue",
+        "list_issues",
+        "update_issue",
+        "add_issue_comment",
+        "create_pull_request",
+        "list_pull_requests",
+        "merge_pull_request",
+        "get_pull_request",
+        "create_branch",
+        "list_branches",
+        "get_commit",
+        "search_code",
+        "search_issues"
+    ],
+    "dependencies": [
+        "github-mcp-server"
+    ],
+    "anti_patterns": [
+        "Do NOT commit secrets or sensitive data.",
+        "Do NOT force push to main/master branches."
+    ]
+}

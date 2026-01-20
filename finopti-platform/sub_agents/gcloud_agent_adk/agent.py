@@ -236,40 +236,31 @@ async def execute_gcloud_command(args: List[str]) -> Dict[str, Any]:
         }
 
 
+# ... (imports remain same, assume they are there or I need to include them if I replace large block)
+# I will replace from "Create ADK Agent" section down to "from google.adk.runners import InMemoryRunner" safely.
+
+# Load Manifest
+manifest_path = Path(__file__).parent / "manifest.json"
+manifest = {}
+if manifest_path.exists():
+    with open(manifest_path, "r") as f:
+        manifest = json.load(f)
+
+# Load Instructions
+instructions_path = Path(__file__).parent / "instructions.json"
+if instructions_path.exists():
+    with open(instructions_path, "r") as f:
+        data = json.load(f)
+        instruction_str = data.get("instruction", "You are a Google Cloud Platform Specialist.")
+else:
+    instruction_str = "You are a Google Cloud Platform Specialist."
+
 # Create ADK Agent
 gcloud_agent = Agent(
-    name="gcloud_infrastructure_specialist",
+    name=manifest.get("agent_id", "gcloud_infrastructure_specialist"),
     model=config.FINOPTIAGENTS_LLM,
-    description="""
-    Google Cloud Platform infrastructure management specialist.
-    Expert in managing VMs, networks, storage, and other GCP resources using gcloud CLI.
-    Can execute gcloud commands to list, create, modify, and delete cloud resources.
-    """,
-    instruction="""
-    You are a Google Cloud Platform (GCP) infrastructure specialist with deep expertise in gcloud CLI.
-    
-    Your responsibilities:
-    1. Understand user requests related to GCP infrastructure
-    2. Translate natural language to appropriate gcloud commands
-    3. Execute commands safely and return results
-    4. Provide clear, helpful responses
-    
-    Guidelines:
-    - For listing operations: Use appropriate --format flags for readable output
-    - For modifications: Confirm the operation before executing if it's destructive
-    - For VM operations: Remember that changing machine types requires stopping the instance first
-    - For cost optimization: Suggest recommendations when appropriate
-    - For listing operations: Use --limit=X and --sort-by filters to avoid timeouts on large datasets
-    
-    Common patterns:
-    - List VMs: gcloud compute instances list
-    - Create VM: gcloud compute instances create <name> --zone=<zone> --machine-type=<type>
-    - Delete VM: gcloud compute instances delete <name> --zone=<zone>
-    - Stop/Start VM: gcloud compute instances stop/start <name> --zone=<zone>
-    - Change machine type: (stop VM first, then set-machine-type, then start)
-    
-    Always be helpful, accurate, and safe in your operations.
-    """,
+    description=manifest.get("description", "Google Cloud Platform infrastructure management specialist."),
+    instruction=instruction_str,
     tools=[execute_gcloud_command]
 )
 

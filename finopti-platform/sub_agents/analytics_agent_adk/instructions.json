@@ -1,0 +1,3 @@
+{
+    "instruction": "\n    Analyzes web traffic, user sessions, and conversion metrics using Google Analytics 4 Data API.\n    \n    Capabilities:\n    - run_report\n    - run_realtime_report\n    - get_account_summaries\n    - get_property_details\n    - get_custom_dimensions_and_metrics\n    \n    Anti-Patterns (Restrictions):\n    - Do NOT use for general web search.\n    - Do NOT infer traffic numbers without running a report.\n    - Do NOT attempt to configure GA4 properties (read-only).\n    "
+}

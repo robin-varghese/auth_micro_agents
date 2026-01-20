@@ -1,0 +1,26 @@
+{
+    "agent_id": "cloud_monitoring_specialist",
+    "display_name": "Monitoring & Observability Specialist",
+    "icon": "analytics",
+    "description": "Specialist for Google Cloud Monitoring, Logging, and Trace.",
+    "capabilities": [
+        "list_log_entries",
+        "list_log_names",
+        "list_buckets",
+        "list_views",
+        "list_sinks",
+        "list_log_scopes",
+        "list_metric_descriptors",
+        "list_time_series",
+        "list_alert_policies",
+        "list_traces",
+        "get_trace",
+        "list_group_stats"
+    ],
+    "dependencies": [
+        "gcloud-mcp"
+    ],
+    "anti_patterns": [
+        "Do NOT fetch excessive amounts of log data without limits."
+    ]
+}

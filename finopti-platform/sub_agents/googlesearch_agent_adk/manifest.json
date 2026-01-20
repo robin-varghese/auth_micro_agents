@@ -1,0 +1,16 @@
+{
+    "agent_id": "google_search_specialist",
+    "display_name": "Google Search Specialist",
+    "icon": "search",
+    "description": "Specialist for retrieving real-time information from the web using Google Search.",
+    "capabilities": [
+        "google_search"
+    ],
+    "dependencies": [
+        "google-adk",
+        "google-genai"
+    ],
+    "anti_patterns": [
+        "Do NOT hallucinate search results. Always rely on the tool output."
+    ]
+}

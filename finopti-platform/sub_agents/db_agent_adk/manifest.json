@@ -1,0 +1,22 @@
+{
+    "agent_id": "database_specialist",
+    "display_name": "Database Specialist",
+    "icon": "database",
+    "description": "Specialist for executing SQL queries, managing PostgreSQL schemas, and analyzing agent operations via BigQuery.",
+    "capabilities": [
+        "postgres_execute_sql",
+        "postgres_list_tables",
+        "postgres_list_indexes",
+        "postgres_database_overview",
+        "postgres_list_active_queries",
+        "query_agent_analytics"
+    ],
+    "dependencies": [
+        "db-mcp-toolbox",
+        "google-cloud-bigquery"
+    ],
+    "anti_patterns": [
+        "Do NOT drop tables without explicit user confirmation.",
+        "Do NOT execute unrestricted DELETE/UPDATE queries without WHERE clauses."
+    ]
+}

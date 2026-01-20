@@ -28,7 +28,7 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 )
 from google.cloud import bigquery, secretmanager
 from google.genai import types
-from google.adk. runners import InMemoryRunner
+from google.adk.runners import InMemoryRunner
 
 # MCP Imports
 from mcp import ClientSession
@@ -93,8 +93,6 @@ class DBMCPClient:
         except Exception as e:
             await self.close()
             logger.error(f"Failed to connect to DB MCP Toolbox: {e}")
-            # Do not raise here to allow Native tools to function even if MCP fails
-            # raise RuntimeError(f"Failed to connect to DB MCP Toolbox at {sse_url}: {e}")
     
     async def close(self):
         if self.exit_stack:
@@ -106,7 +104,18 @@ class DBMCPClient:
         if not self.session:
             raise RuntimeError("MCP not connected (Postgres tools unavailable)")
         
-        result = await self.session.call_tool(tool_name, arguments=arguments)
+        toolbox_tool_name = tool_name
+        
+        # Fallback mappings if needed
+        if toolbox_tool_name == "postgres_execute_sql":
+             toolbox_tool_name = "query_database"
+             if "sql" in arguments:
+                 arguments["query"] = arguments.pop("sql")
+        elif toolbox_tool_name == "postgres_list_tables":
+             toolbox_tool_name = "list_tables"
+
+        logger.info(f"Calling MCP Tool: {toolbox_tool_name}")
+        result = await self.session.call_tool(toolbox_tool_name, arguments=arguments)
         
         output = []
         for content in result.content:
@@ -115,6 +124,13 @@ class DBMCPClient:
         return "\n".join(output)
 
 _mcp_client = None
+
+async def ensure_mcp():
+    global _mcp_client
+    if not _mcp_client:
+        _mcp_client = DBMCPClient()
+        await _mcp_client.connect()
+    return _mcp_client
 
 # --------------------------------------------------------------------------------
 # NATIVE TOOLS (BigQuery)
@@ -132,7 +148,7 @@ async def query_agent_analytics(limit: int = 10, days_back: int = 7) -> Dict[str
         full_table_id = f"{config.GCP_PROJECT_ID}.{dataset_id}.{table_id}"
         
         query = f"""
-            SELECT timestamp, event_type, agent_name, prompt, model
+            SELECT timestamp, event_type, agent, prompt, model
             FROM `{full_table_id}`
             WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days_back} DAY)
             ORDER BY timestamp DESC
@@ -153,22 +169,49 @@ async def query_agent_analytics(limit: int = 10, days_back: int = 7) -> Dict[str
 # MCP TOOLS (PostgreSQL)
 # --------------------------------------------------------------------------------
 
-async def execute_postgres_query(query: str) -> Dict[str, Any]:
-    """ADK Tool: Execute SQL query on PostgreSQL (via MCP)"""
-    global _mcp_client
+async def postgres_execute_sql(sql: str) -> Dict[str, Any]:
+    """Execute SQL query on PostgreSQL."""
+    client = await ensure_mcp()
     try:
-        if not _mcp_client: _mcp_client = DBMCPClient(); await _mcp_client.connect()
-        output = await _mcp_client.call_tool("query_database", {"query": query}) # Mapped to generic 'query_database'
+        output = await client.call_tool("postgres_execute_sql", {"sql": sql})
         return {"success": True, "output": output}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-async def list_postgres_tables() -> Dict[str, Any]:
-    """ADK Tool: List all PostgreSQL tables"""
-    global _mcp_client
+async def postgres_list_tables() -> Dict[str, Any]:
+    """List all PostgreSQL tables available."""
+    client = await ensure_mcp()
     try:
-        if not _mcp_client: _mcp_client = DBMCPClient(); await _mcp_client.connect()
-        output = await _mcp_client.call_tool("list_tables", {})
+        # Note: 'postgres-list-tables' might be 'list-tables' in some setups, but we try specific first
+        output = await client.call_tool("postgres_list_tables", {})
+        return {"success": True, "output": output}
+    except Exception as e:
+         # Fallback to generic if specific fails? No, keep it specific as per manifest.
+        return {"success": False, "error": str(e)}
+
+async def postgres_list_indexes() -> Dict[str, Any]:
+    """List PostgreSQL indexes."""
+    client = await ensure_mcp()
+    try:
+        output = await client.call_tool("postgres_list_indexes", {})
+        return {"success": True, "output": output}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+async def postgres_database_overview() -> Dict[str, Any]:
+    """Get high-level overview of the PostgreSQL database."""
+    client = await ensure_mcp()
+    try:
+        output = await client.call_tool("postgres_database_overview", {})
+        return {"success": True, "output": output}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+async def postgres_list_active_queries() -> Dict[str, Any]:
+    """List currently active queries in PostgreSQL."""
+    client = await ensure_mcp()
+    try:
+        output = await client.call_tool("postgres_list_active_queries", {})
         return {"success": True, "output": output}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -181,22 +224,35 @@ async def list_postgres_tables() -> Dict[str, Any]:
 if not os.environ.get("GOOGLE_API_KEY"):
     os.environ["GOOGLE_API_KEY"] = getattr(config, "GOOGLE_API_KEY", "")
 
+# Load Manifest
+manifest_path = Path(__file__).parent / "manifest.json"
+manifest = {}
+if manifest_path.exists():
+    with open(manifest_path, "r") as f:
+        manifest = json.load(f)
+
+# Load Instructions
+instructions_path = Path(__file__).parent / "instructions.json"
+if instructions_path.exists():
+    with open(instructions_path, "r") as f:
+        data = json.load(f)
+        instruction_str = data.get("instruction", "You are a Database Specialist.")
+else:
+    instruction_str = "You are a Database Specialist."
+
 db_agent = Agent(
-    name="database_specialist",
+    name=manifest.get("agent_id", "database_specialist"),
     model=get_gemini_model(config.GCP_PROJECT_ID),
-    description="Database specialist for PostgreSQL and Agent Analytics (BigQuery).",
-    instruction="""
-    You are a Database Specialist.
-    
-    1. For "operations", "history", "logs", or "agent analytics":
-       - Use `query_agent_analytics`.
-       - This queries BigQuery for recent agent activity.
-       
-    2. For PostgreSQL database tasks (tables, schemas, generic SQL):
-       - Use `list_postgres_tables` or `execute_postgres_query`.
-       - Always inspect tables first if unsure.
-    """,
-    tools=[list_postgres_tables, execute_postgres_query, query_agent_analytics]
+    description=manifest.get("description", "Database specialist."),
+    instruction=instruction_str,
+    tools=[
+        postgres_execute_sql,
+        postgres_list_tables,
+        postgres_list_indexes,
+        postgres_database_overview,
+        postgres_list_active_queries,
+        query_agent_analytics
+    ]
 )
 
 # Configure BigQuery Plugin
@@ -224,7 +280,7 @@ app = App(
 # MSG HANDLING
 # --------------------------------------------------------------------------------
 
-async def send_message_async(prompt: str, user_email: str = None) -> str:
+async def send_message_async(prompt: str, user_email: str = None, project_id: str = None) -> str:
     try:
         global _mcp_client
         # Lazy init MCP
@@ -232,11 +288,16 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
             _mcp_client = DBMCPClient()
             await _mcp_client.connect()
         
+        # Prepend project context if provided
+        if project_id:
+            prompt = f"Project ID: {project_id}\n{prompt}"
+            
         async with InMemoryRunner(app=app) as runner:
-            await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_db_agent")
+            session_uid = user_email if user_email else "default"
+            await runner.session_service.create_session(session_id="default", user_id=session_uid, app_name=app.name)
             message = types.Content(parts=[types.Part(text=prompt)])
             response_text = ""
-            async for event in runner.run_async(user_id="default", session_id="default", new_message=message):
+            async for event in runner.run_async(session_id="default", user_id=session_uid, new_message=message):
                  if hasattr(event, 'content') and event.content and event.content.parts:
                      for part in event.content.parts:
                          if part.text:
@@ -247,9 +308,10 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
         return f"Error: {str(e)}"
     finally:
         # Don't close MCP here if we want reuse, but current architecture is stateless-ish per request
-        if _mcp_client:
-            await _mcp_client.close()
-            _mcp_client = None
+        pass
+        # if _mcp_client:
+        #    await _mcp_client.close()
+        #    _mcp_client = None
 
-def send_message(prompt: str, user_email: str = None) -> str:
-    return asyncio.run(send_message_async(prompt, user_email))
+def send_message(prompt: str, user_email: str = None, project_id: str = None) -> str:
+    return asyncio.run(send_message_async(prompt, user_email, project_id))

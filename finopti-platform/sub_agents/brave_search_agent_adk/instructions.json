@@ -1,0 +1,3 @@
+{
+    "instruction": "\n    Performs web, local, news, image, and video searches using Brave Search API.\n    \n    Capabilities:\n    - brave_web_search\n    - brave_local_search\n    - brave_news_search\n    - brave_video_search\n    - brave_image_search\n    \n    Anti-Patterns (Restrictions):\n    - Do NOT use for internal codebase search.\n    - Do NOT use for specific database queries.\n    "
+}

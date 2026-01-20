@@ -1,121 +1,127 @@
+"""
+Google Search ADK Agent
+
+This agent uses Google GenAI's Google Search capabilities.
+"""
+
 import os
+import sys
 import asyncio
+import json
 import logging
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 from google.adk.agents import Agent
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
-from google.adk.tools import google_search
-from google.genai import types
-from google.cloud import secretmanager
-# Plugins
+from google.adk.apps import App
+from google.adk.runners import InMemoryRunner
+from google.adk.plugins import ReflectAndRetryToolPlugin
 from google.adk.plugins.bigquery_agent_analytics_plugin import (
     BigQueryAgentAnalyticsPlugin,
     BigQueryLoggerConfig
 )
+from google.genai import types
+from config import config
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Agent Configuration
-APP_NAME = "google_search_agent"
-USER_ID = "finopti_user"
-SESSION_ID = "session_001" 
+def setup_auth():
+    """Ensure GOOGLE_API_KEY is set."""
+    if os.getenv("GOOGLE_API_KEY"):
+        return
 
-def get_gemini_model():
-    """
-    Fetch Gemini Model name from Environment or Secret Manager.
-    """
-    # 1. Try Environment Variable
-    model = os.getenv("FINOPTIAGENTS_LLM")
-    if model:
-        logger.info(f"Using Gemini Model from Env: {model}")
-        return model
-    
-    # 2. Try Secret Manager
     project_id = os.getenv("GCP_PROJECT_ID")
     if project_id:
         try:
+            from google.cloud import secretmanager
             client = secretmanager.SecretManagerServiceClient()
-            secret_name = "finoptiagents-llm"
+            secret_name = "google-api-key"
             name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
             response = client.access_secret_version(request={"name": name})
-            model = response.payload.data.decode("UTF-8")
-            logger.info(f"Using Gemini Model from Secret Manager: {model}")
-            return model
+            api_key = response.payload.data.decode("UTF-8")
+            os.environ["GOOGLE_API_KEY"] = api_key
+            logger.info("Loaded GOOGLE_API_KEY from Secret Manager")
         except Exception as e:
-            logger.warning(f"Failed to fetch model from Secret Manager: {e}")
-    else:
-        logger.warning("GCP_PROJECT_ID not set, skipping Secret Manager check.")
+            logger.warning(f"Failed to fetch google-api-key from Secret Manager: {e}")
 
-    # 3. Default
-    default_model = "gemini-2.0-flash"
-    logger.info(f"Using Default Gemini Model: {default_model}")
-    return default_model
+# Setup Auth
+setup_auth()
 
-# Initialize BigQuery Plugin
-bq_config = BigQueryLoggerConfig(
-    enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-    dataset_id=os.getenv("BIGQUERY_DATASET_ID", "finoptiagents"),
-    table_id=os.getenv("BIGQUERYAGENTANALYTICSPLUGIN_TABLE_ID", "agent_analytics_log")
+# Load Manifest
+manifest_path = Path(__file__).parent / "manifest.json"
+manifest = {}
+if manifest_path.exists():
+    with open(manifest_path, "r") as f:
+        manifest = json.load(f)
+
+# Load Instructions
+instructions_path = Path(__file__).parent / "instructions.json"
+if instructions_path.exists():
+    with open(instructions_path, "r") as f:
+        data = json.load(f)
+        instruction_str = data.get("instruction", "You are a Google Search Specialist.")
+else:
+    instruction_str = "You are a Google Search Specialist."
+
+# Agent Definition
+# Uses exact Tool definition from google-genai
+search_tool = types.Tool(google_search=types.GoogleSearch())
+
+agent = Agent(
+    name=manifest.get("agent_id", "google_search_specialist"),
+    model=config.FINOPTIAGENTS_LLM,
+    description=manifest.get("description", "Google Search Specialist."),
+    instruction=instruction_str,
+    # tools=[search_tool]
 )
-bq_plugin = BigQueryAgentAnalyticsPlugin(config=bq_config)
 
-# Initialize Model
-GEMINI_MODEL = get_gemini_model()
-
-# Define the Agent
-search_agent = Agent(
-    name="google_search_agent",
-    model=GEMINI_MODEL,
-    description="Agent that can search the internet using Google Search.",
-    instruction="""
-    You are a helpful assistant with access to Google Search.
-    When asked a question that requires current information or external knowledge, use the google_search tool.
-    Always summarize the search results to answer the user's question directly.
-    """,
-    tools=[google_search],
-    plugins=[bq_plugin]
+# App Definition
+app = App(
+    name="finopti_googlesearch_agent",
+    root_agent=agent,
+    plugins=[
+        ReflectAndRetryToolPlugin(max_retries=3),
+        BigQueryAgentAnalyticsPlugin(
+            project_id=config.GCP_PROJECT_ID,
+            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+            table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v3"),
+            config=BigQueryLoggerConfig(enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true")
+        )
+    ]
 )
 
-async def run_agent(prompt: str) -> str:
-    """Run the agent with the given prompt."""
+async def send_message_async(prompt: str, user_email: str = None, project_id: str = None) -> str:
     try:
-        session_service = InMemorySessionService()
-        session = await session_service.create_session(
-            app_name=APP_NAME,
-            user_id=USER_ID,
-            session_id=SESSION_ID
-        )
-        
-        runner = Runner(
-            agent=search_agent,
-            app_name=APP_NAME,
-            session_service=session_service
-        )
-        
-        content = types.Content(role='user', parts=[types.Part(text=prompt)])
-        
-        final_response_text = ""
-        
-        events = runner.run_async(
-            user_id=USER_ID,
-            session_id=SESSION_ID,
-            new_message=content
-        )
-        
-        async for event in events:
-            if event.is_final_response():
-                # Extract text from the final response
-                if event.content and event.content.parts:
-                    final_response_text = event.content.parts[0].text
-        
-        return final_response_text if final_response_text else "No response generated by agent."
-        
+        # Prepend project context if provided
+        if project_id:
+            prompt = f"Project ID: {project_id}\n{prompt}"
+            
+        async with InMemoryRunner(app=app) as runner:
+            # Use dynamic user_id if provided
+            session_uid = user_email if user_email else "default"
+            await runner.session_service.create_session(session_id="default", user_id=session_uid, app_name=app.name)
+            message = types.Content(parts=[types.Part(text=prompt)])
+            response_text = ""
+            async for event in runner.run_async(session_id="default", user_id=session_uid, new_message=message):
+                 if hasattr(event, 'content') and event.content:
+                     for part in event.content.parts:
+                         if part.text: response_text += part.text
+            return response_text
     except Exception as e:
-        logger.error(f"Error running agent: {str(e)}", exc_info=True)
-        return f"Error running agent: {str(e)}"
+        return f"Error: {str(e)}"
+
+def send_message(prompt: str, user_email: str = None, project_id: str = None) -> str:
+    # return asyncio.run(send_message_async(prompt, user_email, project_id))
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(send_message_async(prompt, user_email, project_id))
+    finally:
+        loop.close()
 
 def process_request(prompt: str) -> str:
-    """Synchronous wrapper for run_agent."""
-    return asyncio.run(run_agent(prompt))
+    """Synchronous wrapper for main.py."""
+    return send_message(prompt)

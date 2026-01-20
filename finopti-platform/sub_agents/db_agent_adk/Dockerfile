@@ -19,11 +19,11 @@ COPY sub_agents/db_agent_adk/*.py .
 COPY config /app/config
 
 # Structured logging
-COPY orchestrator_adk/structured_logging.py /app/orchestrator/
+COPY orchestrator_adk/structured_logging.py /app/orchestrator_adk/
 
 EXPOSE 5005
 
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
   CMD curl -f http://localhost:5005/health || exit 1
 
-CMD ["gunicorn", "--bind", "0.0.0.0:5005", "--workers", "2", "--timeout", "120", "main:app"]
+CMD ["python", "main.py"]

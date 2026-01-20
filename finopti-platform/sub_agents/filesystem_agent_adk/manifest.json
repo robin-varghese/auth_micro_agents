@@ -1,0 +1,29 @@
+{
+    "agent_id": "filesystem_specialist",
+    "display_name": "Filesystem Specialist",
+    "icon": "folder_open",
+    "description": "Manages local files and directories within the allowed sandbox using the full MCP Filesystem suite.",
+    "capabilities": [
+        "read_text_file",
+        "read_media_file",
+        "read_multiple_files",
+        "write_file",
+        "edit_file",
+        "create_directory",
+        "list_directory",
+        "list_directory_with_sizes",
+        "move_file",
+        "search_files",
+        "directory_tree",
+        "get_file_info",
+        "list_allowed_directories"
+    ],
+    "dependencies": [
+        "filesystem-mcp"
+    ],
+    "anti_patterns": [
+        "Do NOT access files outside the allowed directories.",
+        "Do NOT overwrite critical configuration files without backup.",
+        "Use `dryRun` first when using `edit_file`."
+    ]
+}

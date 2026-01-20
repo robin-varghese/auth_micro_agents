@@ -218,12 +218,12 @@ services:
   # ====================
   # GCloud MCP Server
   # ====================
-  # GCloud MCP Server
-  # ====================
-  # GCloud MCP Server
-  # ====================
+
   gcloud_mcp:
     image: finopti-gcloud-mcp
+    build:
+      context: temp_mcp_repo/gcloud-mcpserver/remote-mcp-server/gcloud-mcp-server
+      dockerfile: Dockerfile
     container_name: finopti-gcloud-mcp
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:rw 
@@ -245,6 +245,9 @@ services:
   # ====================
   monitoring_mcp:
     image: finopti-monitoring-mcp
+    build:
+      context: temp_mcp_repo/gcloud-mcpserver/remote-mcp-server/gcloud-monitoring-mcp
+      dockerfile: Dockerfile
     container_name: finopti-monitoring-mcp
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:rw
@@ -383,6 +386,9 @@ services:
   # GitHub MCP (Optional build service, agents spawn it, but good to have definition)
   github_mcp:
     image: finopti-github-mcp
+    build:
+      context: temp_mcp_repo/github-mcp-server
+      dockerfile: Dockerfile
     container_name: finopti-github-mcp
     networks:
       - finopti-net
@@ -419,6 +425,9 @@ services:
   # Storage MCP (Optional build service)
   storage_mcp:
     image: finopti-storage-mcp
+    build:
+      context: temp_mcp_repo/gcloud-mcpserver/remote-mcp-server/google-storage-mcp
+      dockerfile: Dockerfile
     container_name: finopti-storage-mcp
     networks:
       - finopti-net
@@ -431,6 +440,21 @@ services:
       context: .
       dockerfile: sub_agents/db_agent_adk/Dockerfile
     container_name: finopti-db-agent
+    networks:
+      - finopti-net
+    depends_on:
+      - apisix
+      - db_mcp_toolbox
+    environment:
+      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID}"
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+      APISIX_URL: "http://apisix:9080"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
+      DB_MCP_TOOLBOX_URL: "http://db_mcp_toolbox:5000/mcp"
+    volumes:
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5005/health"]
       interval: 10s
@@ -543,6 +567,7 @@ services:
       - APISIX_URL=http://apisix:9080
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
+      - FILESYSTEM_MCP_IMAGE=finopti-filesystem-mcp
       - FILESYSTEM_ROOT=/tmp/agent_filesystem
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -554,6 +579,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Filesystem MCP Server
+  filesystem_mcp:
+    image: finopti-filesystem-mcp
+    build:
+      context: temp_mcp_repo/filesystem
+      dockerfile: Dockerfile
+    container_name: finopti-filesystem-mcp
+    networks:
+      - finopti-net
+    ports:
+      - "6007:6007" # Debug port
 
   # --- Analytics Agent ---
   analytics_agent_adk:
@@ -605,6 +642,21 @@ services:
       timeout: 5s
       retries: 5
 
+  # Puppeteer MCP Server
+  puppeteer_mcp:
+    image: finopti-puppeteer
+    build:
+      context: temp_mcp_repo/puppeteer
+      dockerfile: Dockerfile
+    container_name: finopti-puppeteer
+    networks:
+      - finopti-net
+    # No ports needed as it's stdio-based usually, but expose for consistency/healthcheck if it had http
+    # But stdio server doesn't expose http healthcheck
+    # We can rely on container running
+    command: [] 
+
+
   # --- Sequential Thinking Agent ---
   sequential_thinking_agent_adk:
     build:
@@ -645,6 +697,8 @@ services:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
       - APISIX_URL=http://apisix:9080
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
+      - BQ_ANALYTICS_TABLE=${BQ_ANALYTICS_TABLE}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
@@ -683,7 +737,7 @@ services:
   cloud_run_mcp:
     image: finopti-cloud-run-mcp
     build:
-      context: ./temp_mcp_repo/gcloud-mcpserver/remote-mcp-server/google-cloud-run-mcp
+      context: temp_mcp_repo/gcloud-mcpserver/remote-mcp-server/google-cloud-run-mcp
       dockerfile: Dockerfile
     container_name: finopti-cloud-run-mcp
     networks:

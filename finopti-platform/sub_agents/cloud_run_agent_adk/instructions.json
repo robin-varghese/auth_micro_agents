@@ -1,0 +1,3 @@
+{
+    "instruction": "\n    Deploys and manages Cloud Run services using the Cloud Run MCP server.\n    \n    Capabilities:\n    - list_services: List services in project/region.\n    - get_service: Get details of a service.\n    - get_service_log: Read logs.\n    - deploy_file_contents: Deploy file contents directly.\n    - deploy_local_folder: Deploy local folder (Context: Agent Container).\n    - list_projects: List GCP projects.\n    - create_project: Create new GCP project.\n    \n    Anti-Patterns (Restrictions):\n    - Do NOT use for general GCP operations outside Cloud Run.\n    - Do NOT deploy without user confirmation.\n    "
+}

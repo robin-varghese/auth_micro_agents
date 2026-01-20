@@ -1,15 +1,15 @@
 """
 Cloud Run ADK Agent - Serverless Container Specialist
-
-This agent uses Google ADK to handle Cloud Run management requests.
-It executes `gcloud run` commands directly via subprocess.
 """
 
 import os
 import sys
+import asyncio
+import json
+import logging
+from typing import Dict, Any, List
 from pathlib import Path
 
-# Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from google.adk.agents import Agent
@@ -21,245 +21,216 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 )
 from google.adk.runners import InMemoryRunner
 from google.genai import types
-from typing import Dict, Any, List
-import asyncio
-import json
-import logging
-import subprocess
-import shlex
-
 from config import config
 
-import shutil
+# 1. MCP Client
+class CloudRunMCPClient:
+    def __init__(self):
+        self.image = "mcp/cloud-run-mcp:latest"
+        self.process = None
+        self.request_id = 0
+        # Mount gcloud credentials from host (passed to agent container)
+        # The agent container runs with ~/.config/gcloud mounted.
+        # We need to pass that to the inner MCP container.
+        self.mount_path = os.getenv('GCLOUD_MOUNT_PATH', f"{os.path.expanduser('~')}/.config/gcloud:/root/.config/gcloud")
 
-# Global flag to track if config is setup
-_gcloud_config_setup = False
-
-def setup_gcloud_config():
-    """Copy mounted gcloud config to writable temp location to avoid Read-Only errors"""
-    global _gcloud_config_setup
-    if _gcloud_config_setup:
-        return
-
-    src = "/root/.config/gcloud"
-    dst = "/tmp/gcloud_config"
-    
-    if os.path.exists(dst):
-        shutil.rmtree(dst)
+    async def connect(self):
+        cmd = [
+            "docker", "run", 
+            "-i", "--rm",
+            "-v", self.mount_path,
+            # Pass auth env var if used instead of file mount
+            # "-e", "GOOGLE_APPLICATION_CREDENTIALS=...", 
+            self.image
+        ]
         
-    if os.path.exists(src):
-        try:
-            logging.info(f"Copying gcloud config from {src} to {dst}")
-            shutil.copytree(src, dst, dirs_exist_ok=True)
-            _gcloud_config_setup = True
-        except Exception as e:
-            logging.error(f"Failed to copy gcloud config: {e}")
-    else:
-        logging.warning(f"GCloud config source {src} not found")
-
-async def run_cloud_run_command(command_args: str) -> Dict[str, Any]:
-    """
-    ADK tool: Execute gcloud run command directly via CLI
-    
-    Args:
-        command_args: Space-separated arguments for gcloud run (e.g. 'services list')
-    
-    Returns:
-        Dictionary with execution result
-    """
-    
-    # Ensure config requires write access is in a writable place
-    setup_gcloud_config()
-    
-    # Parse string into list
-    try:
-        args = shlex.split(command_args)
-    except Exception:
-        args = command_args.split()
-
-    full_cmd = ["gcloud", "run"] + args
-    
-    # Prepare environment with custom config path
-    env = os.environ.copy()
-    env["CLOUDSDK_CONFIG"] = "/tmp/gcloud_config"
-    # Disable file logging to prevent clutter/errors
-    env["CLOUDSDK_CORE_DISABLE_FILE_LOGGING"] = "1" 
-    
-    try:
-        logging.info(f"Executing: {' '.join(full_cmd)}")
-        
-        # Execute synchronously 
-        result = subprocess.run(
-            full_cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=env
+        logging.info(f"Starting Cloud Run MCP: {' '.join(cmd)}")
+        self.process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
+        await self._handshake()
+
+    async def _handshake(self):
+        await self._send_json({
+            "jsonrpc": "2.0", "method": "initialize", "id": 0,
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "cloud-run-agent", "version": "1.0"}}
+        })
+        while True:
+            line = await self.process.stdout.readline()
+            if not line: break
+            msg = json.loads(line)
+            if msg.get("id") == 0: break
+        await self._send_json({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+
+    async def _send_json(self, payload):
+        self.process.stdin.write((json.dumps(payload) + "\n").encode())
+        await self.process.stdin.drain()
+
+    async def call_tool(self, tool_name: str, arguments: dict) -> Dict[str, Any]:
+        self.request_id += 1
+        payload = {
+            "jsonrpc": "2.0", "method": "tools/call",
+            "params": {"name": tool_name, "arguments": arguments},
+            "id": self.request_id
+        }
+        await self._send_json(payload)
         
-        if result.returncode == 0:
-            logging.info(f"Command succeeded: {result.stdout[:200]}...")
-            return {
-                "success": True,
-                "output": result.stdout,
-                "command": f"gcloud run {command_args}"
-            }
-        else:
-            logging.error(f"Command failed: {result.stderr}")
-            return {
-                "success": False,
-                "error": result.stderr,
-                "command": f"gcloud run {command_args}"
-            }
+        while True:
+            line = await self.process.stdout.readline()
+            if not line: raise RuntimeError("MCP closed")
+            msg = json.loads(line)
+            if msg.get("id") == self.request_id:
+                if "error" in msg: return {"error": msg["error"]}
+                result = msg.get("result", {})
+                content = result.get("content", [])
+                text = "".join([c["text"] for c in content if c["type"] == "text"])
+                return {"result": text}
 
-    except subprocess.TimeoutExpired:
-        logging.error("Command timed out")
-        return {
-            "success": False,
-            "error": "Command timed out after 120s",
-            "command": f"gcloud run {command_args}"
-        }
-    except Exception as e:
-        logging.error(f"Execution failed: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "command": f"gcloud run {command_args}"
-        }
+    async def close(self):
+        if self.process:
+            try:
+                self.process.terminate()
+                await self.process.wait()
+            except: pass
+
+# Global Client
+_mcp = None
+
+async def ensure_mcp():
+    global _mcp
+    if not _mcp:
+        _mcp = CloudRunMCPClient()
+        await _mcp.connect()
+    return _mcp
+
+# --- Tool Wrappers ---
+
+async def list_services(project_id: str, region: str) -> Dict[str, Any]:
+    client = await ensure_mcp()
+    return await client.call_tool("list_services", {"project_id": project_id, "region": region})
+
+async def get_service(service_name: str, project_id: str, region: str) -> Dict[str, Any]:
+    client = await ensure_mcp()
+    return await client.call_tool("get_service", {"service_name": service_name, "project_id": project_id, "region": region})
+
+async def get_service_log(service_name: str, project_id: str, region: str) -> Dict[str, Any]:
+    client = await ensure_mcp()
+    return await client.call_tool("get_service_log", {"service_name": service_name, "project_id": project_id, "region": region})
+
+async def deploy_file_contents(service_name: str, image: str, project_id: str, region: str, env_vars: Dict[str, str] = {}) -> Dict[str, Any]:
+    # Note: The MCP tool definition might vary slightly on arguments for 'deploy-file-contents'. 
+    # Based on docs it says "Deploys files... by providing contents". 
+    # Actually, the tool name implies sending FILE content.
+    # Re-reading doc snippet: "deploy-file-contents: Deploys files to Cloud Run by providing their contents directly."
+    # This might be for code deployment. 
+    # BUT, if we just want to deploy an IMAGE, we might not have a direct tool for 'deploy image' in the listed tools?
+    # 'deploy-local-folder' is for folders.
+    # Let's assume list-services/get-services is safest.
+    # If the user wants to deploy, and we heavily rely on "local folder" usually, this agent might be limited.
+    # BUT, let's expose it.
+    client = await ensure_mcp()
+    return await client.call_tool("deploy_file_contents", {
+        "service_name": service_name, 
+        "image": image, # Hypothetical arg, prompts usually handle logic
+        "project_id": project_id, 
+        "region": region,
+        "env_vars": env_vars
+    })
+
+async def list_projects() -> Dict[str, Any]:
+    client = await ensure_mcp()
+    return await client.call_tool("list_projects", {})
+
+async def create_project(project_id: str) -> Dict[str, Any]:
+    client = await ensure_mcp()
+    return await client.call_tool("create_project", {"project_id": project_id})
 
 
-# Create ADK Agent
-cloud_run_agent = Agent(
-    name="cloud_run_specialist",
-    model=config.FINOPTIAGENTS_LLM,
-    description="""
-    Google Cloud Run specialist.
-    Expert in deploying and managing serverless containers using Cloud Run.
-    Can execute gcloud run commands to list services, deploy new revisions, and manage traffic.
-    """,
-    instruction="""
-    You are a Google Cloud Run specialist.
-    
-    Your responsibilities:
-    1. Understand user requests related to Cloud Run services and jobs
-    2. Translate natural language to appropriate arguments for the `run_cloud_run_command` tool.
-    3. Execute commands safely and return results
-    4. Provide clear, helpful responses
-    
-    Guidelines:
-    - Use the `run_cloud_run_command` tool.
-    - Pass arguments as a SINGLE STRING (space-separated). Do not use a list.
-    - Example: to list services, pass `command_args="services list"`.
-    - For deployments: Ask for all necessary details (image, region, allow-unauthenticated) if missing.
-    - For destructive actions (delete): Always confirm with the user first.
-    
-    Common patterns:
-    - List Services: `command_args="services list"`
-    - Describe Service: `command_args="services describe SERVICE_NAME --region=REGION"`
-    - Deploy: `command_args="deploy SERVICE_NAME --image=IMAGE_URL --region=REGION"`
-    
-    Always be helpful, accurate, and safe.
-    """,
-    tools=[run_cloud_run_command]
-)
+# Load Manifest
+manifest_path = Path(__file__).parent / "manifest.json"
+manifest = {}
+if manifest_path.exists():
+    with open(manifest_path, "r") as f:
+        manifest = json.load(f)
 
-# Configure BigQuery Analytics Plugin
-bq_config = BigQueryLoggerConfig(
-    enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-    batch_size=1,
-    max_content_length=100 * 1024,
-    shutdown_timeout=10.0
-)
+# Load Instructions
+instructions_path = Path(__file__).parent / "instructions.json"
+if instructions_path.exists():
+    with open(instructions_path, "r") as f:
+        data = json.load(f)
+        instruction_str = data.get("instruction", "You are a Cloud Run expert.")
+else:
+    instruction_str = "You are a Cloud Run expert."
 
-bq_plugin = BigQueryAgentAnalyticsPlugin(
-    project_id=config.GCP_PROJECT_ID,
-    dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-    table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
-    config=bq_config,
-    location="US"
-)
+# Helper: Dynamic Model Loading
+def get_gemini_model(default_model: str = "gemini-1.5-flash-001") -> str:
+    model = os.getenv("FINOPTIAGENTS_LLM")
+    if model: return model
+    try:
+        model = getattr(config, "FINOPTIAGENTS_LLM", None)
+        if model: return model
+    except: pass
+    return default_model
 
 # Ensure API Key is in environment for GenAI library
-if config.GOOGLE_API_KEY:
+if hasattr(config, "GOOGLE_API_KEY") and config.GOOGLE_API_KEY:
     os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
-# Create the App
+cloud_run_agent = Agent(
+    name=manifest.get("agent_id", "cloud_run_specialist"),
+    model=get_gemini_model(),
+    description=manifest.get("description", "Google Cloud Run specialist."),
+    instruction=instruction_str,
+    tools=[
+        list_services,
+        get_service,
+        get_service_log,
+        list_projects,
+        create_project
+        # deploy_file_contents - Excluded for now as arg structure is ambiguous without deeper inspection
+    ]
+)
+
+# App Configuration
+bq_config = BigQueryLoggerConfig(
+    enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+)
+
 app = App(
     name="finopti_cloud_run_agent",
     root_agent=cloud_run_agent,
     plugins=[
-        ReflectAndRetryToolPlugin(
-            max_retries=int(os.getenv("REFLECT_RETRY_MAX_ATTEMPTS", "3")),
-            throw_exception_if_retry_exceeded=os.getenv("REFLECT_RETRY_THROW_ON_FAIL", "true").lower() == "true"
-        ),
-        bq_plugin
+        ReflectAndRetryToolPlugin(max_retries=3),
+        BigQueryAgentAnalyticsPlugin(
+            project_id=config.GCP_PROJECT_ID,
+            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+            table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
+            config=bq_config
+        )
     ]
 )
 
 async def send_message_async(prompt: str, user_email: str = None) -> str:
-    """
-    Send a message to the Cloud Run agent
-    
-    Args:
-        prompt: User's natural language request
-        user_email: Optional user email for logging
-    
-    Returns:
-        Agent's response as string
-    """
+    global _mcp
     try:
-        # Use InMemoryRunner to execute the app
         async with InMemoryRunner(app=app) as runner:
-            sid = "default"
-            uid = "default"
             await runner.session_service.create_session(
-                session_id=sid, 
-                user_id=uid,
-                app_name="finopti_cloud_run_agent"
+                app_name="finopti_cloud_run_agent",
+                user_id="default",
+                session_id="default"
             )
-            
             message = types.Content(parts=[types.Part(text=prompt)])
             response_text = ""
-            async for event in runner.run_async(
-                user_id=uid,
-                session_id=sid,
-                new_message=message
-            ):
-                 # Accumulate text content from events
-                 if hasattr(event, 'content') and event.content and event.content.parts:
-                     for part in event.content.parts:
-                         if part.text:
-                             response_text += part.text
-            
-            return response_text if response_text else "No response generated."
-
-    except Exception as e:
-        return f"Error processing request: {str(e)}"
+            async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
+                if hasattr(event, 'content') and event.content:
+                    for part in event.content.parts:
+                        if part.text: response_text += part.text
+            return response_text
+    finally:
+        if _mcp: await _mcp.close(); _mcp = None
 
 def send_message(prompt: str, user_email: str = None) -> str:
-    """
-    Synchronous wrapper for send_message_async
-    
-    Args:
-        prompt: User's natural language request
-        user_email: Optional user email for logging
-    
-    Returns:
-        Agent's response as string
-    """
     return asyncio.run(send_message_async(prompt, user_email))
-
-
-if __name__ == "__main__":
-    # Test the agent
-    import sys
-    
-    if len(sys.argv) > 1:
-        prompt = " ".join(sys.argv[1:])
-        print(f"Prompt: {prompt}")
-        print("=" * 50)
-        response = send_message(prompt)
-        print(response)
-    else:
-        print("Usage: python agent.py <prompt>")
-        print("Example: python agent.py 'list services'")

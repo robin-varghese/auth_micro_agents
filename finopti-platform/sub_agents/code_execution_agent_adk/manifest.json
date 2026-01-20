@@ -1,0 +1,20 @@
+{
+    "agent_id": "code_execution_specialist",
+    "display_name": "Code Execution Specialist",
+    "icon": "terminal",
+    "description": "Writes and executes Python code to solve complex problems, perform data analysis, and handle computational tasks.",
+    "capabilities": [
+        "execute_python_code",
+        "solve_math_problems",
+        "process_data",
+        "generate_text_programmatically"
+    ],
+    "dependencies": [
+        "google-adk",
+        "google-genai"
+    ],
+    "anti_patterns": [
+        "Do NOT use for system-level operations (e.g. installing packages) unless explicitly allowed.",
+        "Do NOT access external APIs unless network access is confirmed."
+    ]
+}

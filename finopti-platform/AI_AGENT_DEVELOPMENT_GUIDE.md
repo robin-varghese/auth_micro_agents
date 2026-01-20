@@ -176,17 +176,20 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
     BigQueryLoggerConfig
 )
 
-# Configure logging behavior
-bq_config = BigQueryLoggerConfig(
-    # DISABLE if causing shutdown hangs (e.g. storage/github agents)
-    enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-    batch_size=1,  # Flush after each event (real-time tracking)
-    max_content_length=100 * 1024,  # Max 100KB per event
-    shutdown_timeout=10.0  # Wait 10s for pending writes on shutdown
+# Initialize Plugin
+bq_plugin = BigQueryAgentAnalyticsPlugin(
+    # Project/Dataset/Table passed to Constructor
+    project_id=os.getenv("GCP_PROJECT_ID"),
+    dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+    table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
+    # Config object for behavior
+    config=BigQueryLoggerConfig(
+        enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+        batch_size=1,
+        max_content_length=100 * 1024
+    )
 )
 ```
-
-[... rest of BQ plugin config same as before ...]
 
 ### Plugin 2: Reflect and Retry Tool Plugin
 
@@ -198,146 +201,141 @@ bq_config = BigQueryLoggerConfig(
 
 ```
 sub_agents/{agent_name}_adk/
-├── agent.py           # ADK agent + Async MCP client + logs
-├── main.py            # Flask HTTP wrapper + structured logging
-├── requirements.txt   # Dependencies
-├── Dockerfile         # Container build + log config
-└── README.md          # Agent documentation
+├── agent.py           # Core Logic: Agent + App + Plugins + Auth
+├── main.py            # Entrypoint: Flask HTTP wrapper
+├── requirements.txt   # Dependencies (google-adk, google-cloud-secret-manager)
+├── Dockerfile         # Container build definition
+├── manifest.json      # Agent Metadata (ID, Description, Tools)
+├── instructions.json  # System Instructions / Persona
+└── verify_agent.py    # Self-Verification Script (MANDATORY)
 ```
 
 ### Required Components in Each File
 
-#### 1. `agent.py` Structure (Async MCP Client Pattern)
+#### 1. `agent.py` Structure (Standard ADK Pattern)
+
+All agents must use the `App` wrapper to support plugins and `InMemoryRunner` for execution.
+
 ```python
 import os
 import sys
 import asyncio
 import json
 import logging
+from pathlib import Path
 from google.adk.agents import Agent
 from google.adk.apps import App
+from google.adk.runners import InMemoryRunner
+from google.adk.plugins import ReflectAndRetryToolPlugin
+from google.adk.plugins.bigquery_agent_analytics_plugin import (
+    BigQueryAgentAnalyticsPlugin,
+    BigQueryLoggerConfig
+)
+from google.genai import types
 from google.cloud import secretmanager
 
-# Import structured logging
-from orchestrator.structured_logging import propagate_request_id
-
 # Configure structured logging
-logging.basicConfig(level=logging.INFO, format='%(message)s')
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def get_gemini_model(project_id: str) -> str:
-    """
-    Fetch the Gemini model name dynamically.
-    Priority:
-    1. FINOPTIAGENTS_LLM Environment Variable
-    2. Google Secret Manager: 'finoptiagents-llm'
-    3. Default: 'gemini-2.0-flash-exp'
-    """
-    # 1. Check Env Var
-    env_model = os.getenv("FINOPTIAGENTS_LLM")
-    if env_model:
-        return env_model
-        
-    # 2. Check Secret Manager
-    try:
-        client = secretmanager.SecretManagerServiceClient()
-        name = f"projects/{project_id}/secrets/finoptiagents-llm/versions/latest"
-        response = client.access_secret_version(request={"name": name})
-        return response.payload.data.decode("UTF-8").strip()
-    except Exception as e:
-        logger.warning(f"Could not fetch LLM model from Secret Manager: {e}")
-        
-    # 3. Default
-    return "gemini-2.0-flash-exp"
+# --- AUTHENTICATION ---
+def setup_auth():
+    """Ensure GOOGLE_API_KEY is set (Check Env -> Secret Manager)."""
+    if os.getenv("GOOGLE_API_KEY"):
+        return
 
-# ═══════════════════════════════════════════════════════════
-# MCP CLIENT - ASYNCIO STDIO
-# ═══════════════════════════════════════════════════════════
-class ServiceMCPClient:
-    """Async client for connecting to MCP server via Docker Stdio"""
-    
-    def __init__(self, token: str = None):
-        self.image = os.getenv('MCP_DOCKER_IMAGE', 'docker-image-name')
-        self.token = token
-        self.process = None
-        self.request_id = 0
-
-    async def __aenter__(self):
+    project_id = os.getenv("GCP_PROJECT_ID")
+    if project_id:
         try:
-            await self.connect()
-            return self
+            client = secretmanager.SecretManagerServiceClient()
+            secret_name = "google-api-key"
+            name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
+            response = client.access_secret_version(request={"name": name})
+            api_key = response.payload.data.decode("UTF-8")
+            os.environ["GOOGLE_API_KEY"] = api_key
+            logger.info("Loaded GOOGLE_API_KEY from Secret Manager")
         except Exception as e:
-            logger.error(f"Failed to connect to MCP: {e}", exc_info=True)
-            raise
+            logger.warning(f"Failed to fetch google-api-key from Secret Manager: {e}")
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
-    
-    async def connect(self):
-        """Start container and perform handshake"""
-        logger.info(f"Starting MCP container: {self.image}")
-        cmd = ["docker", "run", "-i", "--rm", 
-               "-e", f"TOKEN={self.token}", 
-               self.image]
-        
-        try:
-            # Async subprocess creation
-            self.process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+setup_auth()
+
+# --- CONFIGURATION ---
+def get_gemini_model():
+    # ... (Same logic: Env -> Secret Manager -> Default) ...
+    return os.getenv("FINOPTIAGENTS_LLM", "gemini-2.0-flash")
+
+# Load Manifest & Instructions
+manifest = {}
+manifest_path = Path(__file__).parent / "manifest.json"
+if manifest_path.exists():
+    with open(manifest_path, "r") as f:
+        manifest = json.load(f)
+
+instruction_str = "You are a helpful agent."
+instructions_path = Path(__file__).parent / "instructions.json"
+if instructions_path.exists():
+    with open(instructions_path, "r") as f:
+        instruction_str = json.load(f).get("instruction", instruction_str)
+
+# --- AGENT & APP DEFINITION ---
+agent = Agent(
+    name=manifest.get("agent_id", "my_agent"),
+    model=get_gemini_model(),
+    description=manifest.get("description", "My Agent"),
+    instruction=instruction_str,
+    # tools=[...] # Add Tools Here
+)
+
+app = App(
+    name=f"finopti_{manifest.get('agent_id', 'agent')}",
+    root_agent=agent,
+    plugins=[
+        ReflectAndRetryToolPlugin(max_retries=3),
+        BigQueryAgentAnalyticsPlugin(
+            project_id=os.getenv("GCP_PROJECT_ID"),
+            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+            table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
+            config=BigQueryLoggerConfig(
+                enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true"
+            )
+        )
+    ]
+)
+
+# --- EXECUTION LOGIC ---
+async def send_message_async(prompt: str, user_email: str = None, project_id: str = None) -> str:
+    try:
+        if project_id:
+            prompt = f"Project ID: {project_id}\n{prompt}"
+            
+        async with InMemoryRunner(app=app) as runner:
+            session_uid = user_email if user_email else "default"
+            # Create session with app_name
+            await runner.session_service.create_session(
+                session_id="default", 
+                user_id=session_uid, 
+                app_name=app.name
             )
             
-            # MCP Handshake
-            await self._send_handshake()
-            logger.info("MCP Handshake successful")
+            message = types.Content(parts=[types.Part(text=prompt)])
+            response_text = ""
             
-        except Exception as e:
-            logger.error(f"MCP Connection failed: {e}")
-            await self.close()
-            raise
+            async for event in runner.run_async(
+                session_id="default", 
+                user_id=session_uid, 
+                new_message=message
+            ):
+                 if hasattr(event, 'content') and event.content:
+                     for part in event.content.parts:
+                         if part.text: response_text += part.text
+            return response_text
+    except Exception as e:
+        logger.error(f"Error: {e}", exc_info=True)
+        return f"Error: {str(e)}"
 
-    async def _send_handshake(self):
-        # 1. Initialize
-        await self._send_request("initialize", {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "agent", "version": "1.0"}
-        })
-        # Wait for response (simplified)
-        await self.process.stdout.readline()
-        
-        # 2. Initialized
-        await self._send_notification("notifications/initialized", {})
-
-    async def _send_notification(self, method, params):
-        if not self.process:
-             raise RuntimeError("Process not running")
-        payload = {"jsonrpc": "2.0", "method": method, "params": params}
-        self.process.stdin.write((json.dumps(payload) + "\n").encode())
-        await self.process.stdin.drain()
-
-    async def call_tool(self, tool_name: str, arguments: dict) -> str:
-        # Implementation using await self.process.stdout.readline()
-        # Ensure comprehensive try/catch around JSON parsing
-        try:
-            # ... implementation ...
-            pass
-        except json.JSONDecodeError as e:
-             logger.error(f"Failed to decode MCP response: {e}")
-             raise
-        except Exception as e:
-             logger.error(f"Tool execution failed: {e}")
-             raise
-
-    async def close(self):
-        if self.process:
-            try:
-                self.process.terminate()
-                await self.process.wait()
-            except ProcessLookupError:
-                pass
+def process_request(prompt: str) -> str:
+    """Synchronous Entrypoint for main.py"""
+    return asyncio.run(send_message_async(prompt))
 ```
 
 #### 2. `main.py` Structure
@@ -352,8 +350,55 @@ gunicorn>=22.0.0
 # ...
 ```
 
-#### 4. `Dockerfile`
-[... same as before ...]
+#### 4. `manifest.json` (Metadata)
+```json
+{
+  "agent_id": "my_agent_name",
+  "description": "Short description of what this agent does.",
+  "type": "adk-model-powered",
+  "tools": ["tool_name_1"]
+}
+```
+
+#### 5. `instructions.json` (Persona)
+```json
+{
+  "instruction": "You are a specialized agent for X. Your goal is Y."
+}
+```
+
+#### 6. `verify_agent.py` (Self-Verification)
+Every agent MUST include a verification script to test its core functionality via the HTTP endpoint.
+
+```python
+import requests
+import os
+import sys
+
+APISIX_URL = os.getenv("APISIX_URL", "http://localhost:9080")
+AGENT_ROUTE = "/agent/my_agent_name/execute"
+PROMPT = "Test prompt here"
+
+def verify():
+    url = f"{APISIX_URL}{AGENT_ROUTE}"
+    print(f"Sending prompt to {url}...")
+    try:
+        response = requests.post(url, json={"prompt": PROMPT}, timeout=60)
+        print(f"Status: {response.status_code}")
+        print(f"Response: {response.text}")
+        if response.status_code == 200 and "\"success\":true" in response.text:
+            return True
+        return False
+    except Exception as e:
+        print(f"Error: {e}")
+        return False
+
+if __name__ == "__main__":
+    if verify():
+        sys.exit(0)
+    else:
+        sys.exit(1)
+```
 
 ---
 
@@ -361,21 +406,20 @@ gunicorn>=22.0.0
 
 Before considering an agent "complete", verify:
 
-**Code Quality:**
-- [ ] Agent uses Google ADK (`google.adk.agents.Agent`)
-- [ ] MCP client uses **Asyncio Stdio** (NOT HTTP)
-- [ ] MCP Handshake (`initialize`) is implemented
-- [ ] Extensive logging in all functions
-- [ ] BQ Analytics configured (or disabled if necessary)
+**Code & Config:**
+- [ ] `agent.py` uses `App` wrapper and `InMemoryRunner`.
+- [ ] `manifest.json` and `instructions.json` are present and loaded.
+- [ ] Authentication uses Secret Manager fallback.
+- [ ] Plugins (`ReflectAndRetry`, `BigQueryAnalytics`) are configured correctly.
 
 **Infrastructure:**
-- [ ] Docker Compose has agent service
-- [ ] Environment variables (Images, Credentials) are set
-- [ ] Volume mounts are correct (e.g. `~/.config/gcloud`)
+- [ ] Docker Compose has agent service with all ENV vars (`GCP_PROJECT_ID`, `GOOGLE_API_KEY`).
+- [ ] Health check pass: `curl /health`.
 
 **Testing:**
-- [ ] Health check passes: `curl /agent/{service}/health`
-- [ ] Agent executes prompt correctly: `curl -X POST ...`
+- [ ] **MANDATORY**: `verify_agent.py` passes successfully against the running container/APISIX.
+- [ ] **Full Suite**: Run `python3 tests/run_suite.py` to verify against other agents.
+
 
 
 ---

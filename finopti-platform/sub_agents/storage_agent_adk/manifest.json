@@ -1,0 +1,36 @@
+{
+    "agent_id": "storage_specialist",
+    "display_name": "Google Cloud Storage Specialist",
+    "icon": "storage",
+    "description": "Specialist for Google Cloud Storage management and operations.",
+    "capabilities": [
+        "list_objects",
+        "read_object_metadata",
+        "read_object_content",
+        "delete_object",
+        "write_object",
+        "update_object_metadata",
+        "copy_object",
+        "move_object",
+        "upload_object",
+        "download_object",
+        "list_buckets",
+        "create_bucket",
+        "delete_bucket",
+        "get_bucket_metadata",
+        "update_bucket_labels",
+        "get_bucket_location",
+        "view_iam_policy",
+        "check_iam_permissions",
+        "get_metadata_table_schema",
+        "execute_insights_query",
+        "list_insights_configs"
+    ],
+    "dependencies": [
+        "gcloud-mcp"
+    ],
+    "anti_patterns": [
+        "Do NOT download large objects without confirmation.",
+        "Do NOT delete buckets regardless if they are empty without explicit user consent."
+    ]
+}

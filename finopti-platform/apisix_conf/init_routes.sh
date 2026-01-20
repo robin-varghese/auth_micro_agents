@@ -8,7 +8,7 @@ set -e
 echo "Waiting for APISIX to be ready..."
 sleep 10
 
-APISIX_ADMIN="http://apisix:9180/apisix/admin"
+APISIX_ADMIN=${APISIX_ADMIN:-"http://apisix:9180/apisix/admin"}
 ADMIN_KEY="finopti-admin-key"
 
 echo "Initializing APISIX routes..."

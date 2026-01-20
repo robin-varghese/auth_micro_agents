@@ -132,13 +132,63 @@ async def brave_local_search(query: str, count: int = 5) -> Dict[str, Any]:
         await _mcp.connect()
     return await _mcp.call_tool("brave_local_search", {"query": query, "count": count})
 
+async def brave_video_search(query: str, count: int = 10) -> Dict[str, Any]:
+    """Perform a video search using Brave."""
+    global _mcp
+    if not _mcp:
+        _mcp = BraveMCPClient()
+        await _mcp.connect()
+    return await _mcp.call_tool("brave_video_search", {"query": query, "count": count})
+
+async def brave_image_search(query: str, count: int = 10) -> Dict[str, Any]:
+    """Perform an image search using Brave."""
+    global _mcp
+    if not _mcp:
+        _mcp = BraveMCPClient()
+        await _mcp.connect()
+    return await _mcp.call_tool("brave_image_search", {"query": query, "count": count})
+
+async def brave_news_search(query: str, count: int = 10) -> Dict[str, Any]:
+    """Perform a news search using Brave."""
+    global _mcp
+    if not _mcp:
+        _mcp = BraveMCPClient()
+        await _mcp.connect()
+    return await _mcp.call_tool("brave_news_search", {"query": query, "count": count})
+
+# Load Manifest
+manifest_path = Path(__file__).parent / "manifest.json"
+manifest = {}
+if manifest_path.exists():
+    with open(manifest_path, "r") as f:
+        manifest = json.load(f)
+
+# Load Instructions
+instructions_path = Path(__file__).parent / "instructions.json"
+if instructions_path.exists():
+    with open(instructions_path, "r") as f:
+        data = json.load(f)
+        instruction_str = data.get("instruction", "You are a search expert.")
+else:
+    instruction_str = "You are a search expert."
+
+# Ensure API Key is in environment for GenAI library
+if config.GOOGLE_API_KEY:
+    os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+
 # 2. ADK Agent
 brave_agent = Agent(
-    name="brave_search_specialist",
+    name=manifest.get("agent_id", "brave_search_specialist"),
     model=config.FINOPTIAGENTS_LLM,
-    description="Web and Local Search Specialist using Brave Search.",
-    instruction="You are a search expert. Use brave_web_search for general queries and brave_local_search for places.",
-    tools=[brave_web_search, brave_local_search]
+    description=manifest.get("description", "Web and Local Search Specialist using Brave Search."),
+    instruction=instruction_str,
+    tools=[
+        brave_web_search, 
+        brave_local_search,
+        brave_news_search,
+        brave_video_search,
+        brave_image_search
+    ]
 )
 
 # 3. App with Plugins
@@ -156,14 +206,18 @@ app = App(
     ]
 )
 
-async def send_message_async(prompt: str, user_email: str = None) -> str:
+async def send_message_async(prompt: str, user_email: str = None, project_id: str = None) -> str:
     global _mcp
     try:
+        # Prepend project context if provided
+        if project_id:
+            prompt = f"Project ID: {project_id}\n{prompt}"
+            
         async with InMemoryRunner(app=app) as runner:
-            await runner.session_service.create_session("default", "default", "brave_app")
+            await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_brave_agent")
             message = types.Content(parts=[types.Part(text=prompt)])
             response_text = ""
-            async for event in runner.run_async("default", "default", new_message=message):
+            async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
                 if hasattr(event, 'content') and event.content:
                     for part in event.content.parts:
                         if part.text: response_text += part.text
@@ -173,5 +227,5 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
             await _mcp.close()
             _mcp = None
 
-def send_message(prompt: str, user_email: str = None) -> str:
-    return asyncio.run(send_message_async(prompt, user_email))
+def send_message(prompt: str, user_email: str = None, project_id: str = None) -> str:
+    return asyncio.run(send_message_async(prompt, user_email, project_id))

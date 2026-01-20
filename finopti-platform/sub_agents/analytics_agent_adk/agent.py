@@ -100,12 +100,60 @@ async def run_report(property_id: str, dimensions: List[str] = [], metrics: List
         "metrics": metrics
     })
 
+async def run_realtime_report(property_id: str, dimensions: List[str] = [], metrics: List[str] = []) -> Dict[str, Any]:
+    global _mcp
+    if not _mcp: raise RuntimeError("MCP not initialized with token")
+    return await _mcp.call_tool("run_realtime_report", {
+        "property_id": property_id,
+        "dimensions": dimensions,
+        "metrics": metrics
+    })
+
+async def get_account_summaries() -> Dict[str, Any]:
+    global _mcp
+    if not _mcp: raise RuntimeError("MCP not initialized with token")
+    return await _mcp.call_tool("get_account_summaries", {})
+
+async def get_property_details(property_id: str) -> Dict[str, Any]:
+    global _mcp
+    if not _mcp: raise RuntimeError("MCP not initialized with token")
+    return await _mcp.call_tool("get_property_details", {"property_id": property_id})
+
+async def get_custom_dimensions_and_metrics(property_id: str) -> Dict[str, Any]:
+    global _mcp
+    if not _mcp: raise RuntimeError("MCP not initialized with token")
+    return await _mcp.call_tool("get_custom_dimensions_and_metrics", {"property_id": property_id})
+
+# Load Manifest
+# Load Manifest (for basic metadata like name/desc)
+manifest_path = Path(__file__).parent / "manifest.json"
+manifest = {}
+if manifest_path.exists():
+    with open(manifest_path, "r") as f:
+        manifest = json.load(f)
+
+# Load Instructions (Pre-compiled)
+instructions_path = Path(__file__).parent / "instructions.json"
+if instructions_path.exists():
+    with open(instructions_path, "r") as f:
+        data = json.load(f)
+        instruction_str = data.get("instruction", "Analyze web traffic using available tools.")
+else:
+    # Fallback if instruction file missing
+    instruction_str = "Analyze web traffic using available tools."
+
 ga_agent = Agent(
-    name="analytics_specialist",
+    name=manifest.get("agent_id", "analytics_specialist"),
     model=config.FINOPTIAGENTS_LLM,
-    description="Google Analytics 4 Specialist.",
-    instruction="Analyze web traffic using run_report.",
-    tools=[run_report]
+    description=manifest.get("description", "Google Analytics 4 Specialist."),
+    instruction=instruction_str,
+    tools=[
+        run_report, 
+        run_realtime_report, 
+        get_account_summaries, 
+        get_property_details, 
+        get_custom_dimensions_and_metrics
+    ]
 )
 
 app = App(
@@ -140,7 +188,7 @@ async def send_message_async(prompt: str, user_email: str = None, token: str = N
             await runner.session_service.create_session("default", "default", "ga_app")
             message = types.Content(parts=[types.Part(text=prompt)])
             response_text = ""
-            async for event in runner.run_async("default", "default", new_message=message):
+            async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
                 if hasattr(event, 'content') and event.content:
                     for part in event.content.parts:
                         if part.text: response_text += part.text

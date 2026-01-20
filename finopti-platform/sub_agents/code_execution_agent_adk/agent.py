@@ -1,8 +1,12 @@
 import os
 import asyncio
 import logging
+import json
+from pathlib import Path
+
 from google.adk.agents import LlmAgent
-from google.adk.runners import Runner
+from google.adk.apps import App
+from google.adk.runners import InMemoryRunner
 from google.adk.sessions import InMemorySessionService
 from google.adk.code_executors import BuiltInCodeExecutor
 from google.genai import types
@@ -53,72 +57,104 @@ def get_gemini_model():
     logger.info(f"Using Default Gemini Model: {default_model}")
     return default_model
 
+def setup_auth():
+    """Ensure GOOGLE_API_KEY is set."""
+    if os.getenv("GOOGLE_API_KEY"):
+        return
+
+    project_id = os.getenv("GCP_PROJECT_ID")
+    if project_id:
+        try:
+            client = secretmanager.SecretManagerServiceClient()
+            secret_name = "google-api-key"
+            name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
+            response = client.access_secret_version(request={"name": name})
+            api_key = response.payload.data.decode("UTF-8")
+            os.environ["GOOGLE_API_KEY"] = api_key
+            logger.info("Loaded GOOGLE_API_KEY from Secret Manager")
+        except Exception as e:
+            logger.warning(f"Failed to fetch google-api-key from Secret Manager: {e}")
+
+# Setup Auth
+setup_auth()
+
 # Initialize BigQuery Plugin
 bq_config = BigQueryLoggerConfig(
     enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+)
+bq_plugin = BigQueryAgentAnalyticsPlugin(
+    config=bq_config,
+    project_id=os.getenv("GCP_PROJECT_ID"),
     dataset_id=os.getenv("BIGQUERY_DATASET_ID", "finoptiagents"),
     table_id=os.getenv("BIGQUERYAGENTANALYTICSPLUGIN_TABLE_ID", "agent_analytics_log")
 )
-bq_plugin = BigQueryAgentAnalyticsPlugin(config=bq_config)
 
 # Initialize Model
 GEMINI_MODEL = get_gemini_model()
 
+# Load Manifest
+manifest_path = Path(__file__).parent / "manifest.json"
+manifest = {}
+if manifest_path.exists():
+    with open(manifest_path, "r") as f:
+        manifest = json.load(f)
+
+# Load Instructions
+instructions_path = Path(__file__).parent / "instructions.json"
+if instructions_path.exists():
+    with open(instructions_path, "r") as f:
+        data = json.load(f)
+        instruction_str = data.get("instruction", "You are a code execution agent.")
+else:
+    instruction_str = "You are a code execution agent."
+
 code_agent = LlmAgent(
-    name="code_execution_agent",
+    name=manifest.get("agent_id", "code_execution_agent"),
     model=GEMINI_MODEL,
     code_executor=BuiltInCodeExecutor(),
-    instruction="""
-    You are a code execution agent.
-    When given a request, write and execute Python code to solve it.
-    Return the final result clearly.
-    """,
-    description="Executes Python code to perform calculations or data processing.",
+    instruction=instruction_str,
+    description=manifest.get("description", "Executes Python code to perform calculations or data processing.")
+)
+
+app = App(
+    name=APP_NAME,
+    root_agent=code_agent,
     plugins=[bq_plugin]
 )
 
 async def run_agent(prompt: str) -> str:
     """Run the agent with the given prompt."""
     try:
-        session_service = InMemorySessionService()
-        session = await session_service.create_session(
-            app_name=APP_NAME,
-            user_id=USER_ID,
-            session_id=SESSION_ID
-        )
-        
-        runner = Runner(
-            agent=code_agent,
-            app_name=APP_NAME,
-            session_service=session_service
-        )
-        
-        content = types.Content(role='user', parts=[types.Part(text=prompt)])
-        
-        final_response_text = ""
-        
-        events = runner.run_async(
-            user_id=USER_ID,
-            session_id=SESSION_ID,
-            new_message=content
-        )
-        
-        async for event in events:
-            # Check for executable code parts for logging
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if part.executable_code:
-                        logger.info(f"Agent generated code:\n{part.executable_code.code}")
-                    elif part.code_execution_result:
-                        logger.info(f"Code output: {part.code_execution_result.output}")
-
-            if event.is_final_response():
-                # Extract text from the final response
+        async with InMemoryRunner(app=app) as runner:
+             await runner.session_service.create_session(
+                app_name=APP_NAME,
+                user_id=USER_ID,
+                session_id=SESSION_ID
+            )
+             
+             content = types.Content(role='user', parts=[types.Part(text=prompt)])
+             final_response_text = ""
+             
+             # Run the agent
+             async for event in runner.run_async(
+                user_id=USER_ID,
+                session_id=SESSION_ID,
+                new_message=content
+             ):
+                # Check for executable code parts for logging
                 if event.content and event.content.parts:
-                     # Usually the final text part contains the summary
-                     for part in event.content.parts:
-                         if part.text:
-                             final_response_text = part.text
+                    for part in event.content.parts:
+                        if part.executable_code:
+                            logger.info(f"Agent generated code:\n{part.executable_code.code}")
+                        elif part.code_execution_result:
+                            logger.info(f"Code output: {part.code_execution_result.output}")
+
+                if event.is_final_response():
+                    # Extract text from the final response
+                    if event.content and event.content.parts:
+                         for part in event.content.parts:
+                             if part.text:
+                                 final_response_text = part.text
         
         return final_response_text if final_response_text else "No response generated by agent."
         
