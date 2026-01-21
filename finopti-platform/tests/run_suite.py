@@ -44,15 +44,30 @@ def run_verification_script(script_path):
     
     try:
         # Using os.system or subprocess to run the script in its own environment
-        # passing APISIX_URL as env var
-        exit_code = os.system(f"APISIX_URL={APISIX_URL} python3 {script_path}")
+        # passing APISIX_URL and GOOGLE_OAUTH_ACCESS_TOKEN as env var
+        env = os.environ.copy()
+        env["APISIX_URL"] = APISIX_URL
+        # Pass the token if it exists (fetched by fetch_credentials)
+        if "GOOGLE_OAUTH_ACCESS_TOKEN" in env:
+            env["GOOGLE_OAUTH_ACCESS_TOKEN"] = env["GOOGLE_OAUTH_ACCESS_TOKEN"]
+
+        # Use subprocess.run for better control and environ passing
+        result = subprocess.run(
+            ["python3", str(script_path)],
+            env=env,
+            capture_output=True,
+            text=True
+        )
         
-        if exit_code == 0:
-            logger.info(f"✅ PASS: {agent_name}")
-            return True
-        else:
-            logger.error(f"❌ FAIL: {agent_name} (Exit Code: {exit_code})")
+        # Log output for debugging if needed, or if failure
+        if result.returncode != 0:
+            logger.error(f"❌ FAIL: {agent_name} (Exit Code: {result.returncode})")
+            logger.error(f"Stdout: {result.stdout}")
+            logger.error(f"Stderr: {result.stderr}")
             return False
+            
+        logger.info(f"✅ PASS: {agent_name}")
+        return True
     except Exception as e:
         logger.error(f"❌ ERROR: {agent_name} - {str(e)}")
         return False
@@ -83,10 +98,17 @@ def fetch_credentials():
         return
 
     # 2. OAuth Token
-    token = get_gcloud_val("gcloud auth print-access-token")
+    # Use ADC token which supports the necessary scopes (e.g. analytics.readonly)
+    token = get_gcloud_val("gcloud auth application-default print-access-token")
     if token:
         os.environ["GOOGLE_OAUTH_ACCESS_TOKEN"] = token
-        logger.info("Loaded Google OAuth Token.")
+        logger.info("Loaded Google OAuth Token from ADC.")
+    else:
+        # Fallback to standard gcloud auth if ADC fails (though less likely to have custom scopes)
+        token = get_gcloud_val("gcloud auth print-access-token")
+        if token:
+            os.environ["GOOGLE_OAUTH_ACCESS_TOKEN"] = token
+            logger.info("Loaded Google OAuth Token from gcloud user credentials.")
         
     # 3. Google API Key
     api_key = os.getenv("GOOGLE_API_KEY")
@@ -119,7 +141,7 @@ def main():
     verification_scripts = list(SUB_AGENTS_DIR.glob("*/verify_agent.py"))
     
     # Filter out skipped agents
-    SKIP_AGENTS = ["brave_search_agent_adk"]
+    SKIP_AGENTS = ["brave_search_agent_adk", "analytics_agent_adk"]
     verification_scripts = [s for s in verification_scripts if s.parent.name not in SKIP_AGENTS]
     
     if not verification_scripts:

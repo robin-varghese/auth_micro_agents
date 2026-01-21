@@ -9,8 +9,14 @@ PROMPT = "Hello"
 def verify():
     url = f"{APISIX_URL}{AGENT_ROUTE}"
     print(f"Sending prompt to {url}: {PROMPT}")
+    headers = {}
+    token = os.getenv("GOOGLE_OAUTH_ACCESS_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        print("Using OAuth Token in request.")
+
     try:
-        response = requests.post(url, json={"prompt": PROMPT}, timeout=120.0) # Sequential thinking can be long
+        response = requests.post(url, json={"prompt": PROMPT}, headers=headers, timeout=120.0) # Sequential thinking can be long
         print(f"Status Code: {response.status_code}")
         print(f"Response: {response.text}")
         

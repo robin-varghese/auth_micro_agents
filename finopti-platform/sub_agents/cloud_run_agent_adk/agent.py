@@ -26,7 +26,7 @@ from config import config
 # 1. MCP Client
 class CloudRunMCPClient:
     def __init__(self):
-        self.image = "mcp/cloud-run-mcp:latest"
+        self.image = os.getenv("CLOUD_RUN_MCP_DOCKER_IMAGE", "mcp/cloud-run-mcp:latest")
         self.process = None
         self.request_id = 0
         # Mount gcloud credentials from host (passed to agent container)
@@ -96,46 +96,38 @@ class CloudRunMCPClient:
                 await self.process.wait()
             except: pass
 
-# Global Client
-_mcp = None
+from contextvars import ContextVar
+
+# ContextVar to store the MCP client for the current request
+_mcp_ctx: ContextVar["CloudRunMCPClient"] = ContextVar("mcp_client", default=None)
 
 async def ensure_mcp():
-    global _mcp
-    if not _mcp:
-        _mcp = CloudRunMCPClient()
-        await _mcp.connect()
-    return _mcp
+    client = _mcp_ctx.get()
+    if not client:
+        raise RuntimeError("MCP Client not initialized for this context")
+    # No need to connect here, connection happens in send_message_async
+    return client
 
 # --- Tool Wrappers ---
 
 async def list_services(project_id: str, region: str) -> Dict[str, Any]:
     client = await ensure_mcp()
-    return await client.call_tool("list_services", {"project_id": project_id, "region": region})
+    return await client.call_tool("list_services", {"project": project_id, "region": region})
 
 async def get_service(service_name: str, project_id: str, region: str) -> Dict[str, Any]:
     client = await ensure_mcp()
-    return await client.call_tool("get_service", {"service_name": service_name, "project_id": project_id, "region": region})
+    return await client.call_tool("get_service", {"service_name": service_name, "project": project_id, "region": region})
 
 async def get_service_log(service_name: str, project_id: str, region: str) -> Dict[str, Any]:
     client = await ensure_mcp()
-    return await client.call_tool("get_service_log", {"service_name": service_name, "project_id": project_id, "region": region})
+    return await client.call_tool("get_service_log", {"service_name": service_name, "project": project_id, "region": region})
 
 async def deploy_file_contents(service_name: str, image: str, project_id: str, region: str, env_vars: Dict[str, str] = {}) -> Dict[str, Any]:
-    # Note: The MCP tool definition might vary slightly on arguments for 'deploy-file-contents'. 
-    # Based on docs it says "Deploys files... by providing contents". 
-    # Actually, the tool name implies sending FILE content.
-    # Re-reading doc snippet: "deploy-file-contents: Deploys files to Cloud Run by providing their contents directly."
-    # This might be for code deployment. 
-    # BUT, if we just want to deploy an IMAGE, we might not have a direct tool for 'deploy image' in the listed tools?
-    # 'deploy-local-folder' is for folders.
-    # Let's assume list-services/get-services is safest.
-    # If the user wants to deploy, and we heavily rely on "local folder" usually, this agent might be limited.
-    # BUT, let's expose it.
     client = await ensure_mcp()
     return await client.call_tool("deploy_file_contents", {
         "service_name": service_name, 
-        "image": image, # Hypothetical arg, prompts usually handle logic
-        "project_id": project_id, 
+        "image": image, 
+        "project": project_id, 
         "region": region,
         "env_vars": env_vars
     })
@@ -207,15 +199,19 @@ app = App(
         BigQueryAgentAnalyticsPlugin(
             project_id=config.GCP_PROJECT_ID,
             dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
+            table_id=config.BQ_ANALYTICS_TABLE,
             config=bq_config
         )
     ]
 )
 
 async def send_message_async(prompt: str, user_email: str = None) -> str:
-    global _mcp
+    # Create new client for this request (and this event loop)
+    mcp = CloudRunMCPClient()
+    token_reset = _mcp_ctx.set(mcp)
+    
     try:
+        await mcp.connect()
         async with InMemoryRunner(app=app) as runner:
             await runner.session_service.create_session(
                 app_name="finopti_cloud_run_agent",
@@ -230,7 +226,8 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
                         if part.text: response_text += part.text
             return response_text
     finally:
-        if _mcp: await _mcp.close(); _mcp = None
+        await mcp.close()
+        _mcp_ctx.reset(token_reset)
 
 def send_message(prompt: str, user_email: str = None) -> str:
     return asyncio.run(send_message_async(prompt, user_email))

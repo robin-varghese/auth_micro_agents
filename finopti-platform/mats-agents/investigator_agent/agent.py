@@ -214,7 +214,7 @@ investigator_agent = Agent(
 bq_plugin = BigQueryAgentAnalyticsPlugin(
     project_id=os.getenv("GCP_PROJECT_ID"),
     dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-    table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
+    table_id=config.BQ_ANALYTICS_TABLE,
     config=BigQueryLoggerConfig(
         enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
     )

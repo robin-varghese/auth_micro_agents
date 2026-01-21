@@ -169,7 +169,7 @@ services:
       GCLOUD_MCP_DOCKER_IMAGE: "finopti-gcloud-mcp"
       GCLOUD_MOUNT_PATH: "${HOME}/.config/gcloud:/root/.config/gcloud"
       APISIX_URL: "http://apisix:9080"
-      BQ_ANALYTICS_ENABLED: "false"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
       BQ_ANALYTICS_DATASET: "${BQ_ANALYTICS_DATASET}"
       BQ_ANALYTICS_TABLE: "${BQ_ANALYTICS_TABLE}"
       REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS}"
@@ -371,7 +371,7 @@ services:
       GITHUB_MCP_DOCKER_IMAGE: "finopti-github-mcp"
       GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
       APISIX_URL: "http://apisix:9080"
-      BQ_ANALYTICS_ENABLED: "false"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
       REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
     volumes:
@@ -411,7 +411,7 @@ services:
       STORAGE_MCP_DOCKER_IMAGE: "finopti-storage-mcp"
       GCLOUD_MOUNT_PATH: "${HOME}/.config/gcloud:/root/.config/gcloud"
       APISIX_URL: "http://apisix:9080"
-      BQ_ANALYTICS_ENABLED: "false"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro
@@ -514,7 +514,7 @@ services:
       CLOUD_RUN_MCP_DOCKER_IMAGE: "finopti-cloud-run-mcp"
       GCLOUD_MOUNT_PATH: "${HOME}/.config/gcloud:/root/.config/gcloud"
       APISIX_URL: "http://apisix:9080"
-      BQ_ANALYTICS_ENABLED: "false"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro

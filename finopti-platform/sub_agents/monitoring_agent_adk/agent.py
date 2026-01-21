@@ -34,8 +34,8 @@ class MonitoringMCPClient:
     """Client for connecting to Monitoring MCP server via Docker Stdio"""
     
     def __init__(self):
-        # Use gcloud-mcp image as it contains observability tools
-        self.image = os.getenv('GCLOUD_MCP_DOCKER_IMAGE', 'finopti-gcloud-mcp')
+        # Use monitoring-mcp image
+        self.image = os.getenv('MONITORING_MCP_DOCKER_IMAGE', 'finopti-monitoring-mcp')
         self.mount_path = os.getenv('GCLOUD_MOUNT_PATH', f"{os.path.expanduser('~')}/.config/gcloud:/root/.config/gcloud")
         self.process = None
         self.request_id = 0
@@ -54,6 +54,10 @@ class MonitoringMCPClient:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
+        # Increase buffer limit to 10MB to avoid LimitOverrunError on large JSON responses
+        if self.process.stdout:
+            self.process.stdout._limit = 10 * 1024 * 1024 
+        
         await self._handshake()
 
     async def _handshake(self):
@@ -79,14 +83,18 @@ class MonitoringMCPClient:
             "params": {"name": tool_name, "arguments": arguments},
             "id": self.request_id
         }
+        logger.info(f"[DEBUG] Calling Tool: {tool_name} with args: {arguments}")
         await self._send_json(payload)
         while True:
             line = await self.process.stdout.readline()
             if not line: raise RuntimeError("MCP closed")
             msg = json.loads(line)
             if msg.get("id") == self.request_id:
-                if "error" in msg: return {"error": msg["error"]}
+                if "error" in msg: 
+                    logger.error(f"[DEBUG] Tool Error: {msg['error']}")
+                    return {"error": msg["error"]}
                 result = msg.get("result", {})
+                logger.info(f"[DEBUG] Tool Result: {str(result)[:200]}...") # Truncate for sanity
                 content = result.get("content", [])
                 output_text = ""
                 for c in content:
@@ -101,66 +109,65 @@ class MonitoringMCPClient:
         if self.process:
             try:
                 self.process.terminate()
-                await self.process.wait()
-            except: pass
+                # Wait for process to exit, with a short timeout
+                try:
+                    await asyncio.wait_for(self.process.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    logging.warning("MCP process did not exit gracefully, force killing...")
+                    try:
+                        self.process.kill()
+                        await self.process.wait()
+                    except: pass
+            except Exception as e:
+                logging.warning(f"Error closing MCP process: {e}")
 
-_mcp = None
+from contextvars import ContextVar
+
+# ContextVar to store the MCP client for the current request
+_mcp_ctx: ContextVar["MonitoringMCPClient"] = ContextVar("mcp_client", default=None)
+
 async def ensure_mcp():
-    global _mcp
-    if not _mcp:
-        _mcp = MonitoringMCPClient()
-        await _mcp.connect()
-    return _mcp
+    """Retrieve the client for the CURRENT context."""
+    client = _mcp_ctx.get()
+    if not client:
+        raise RuntimeError("MCP Client not initialized for this context")
+    return client
 
 # --- Tool Wrappers ---
 
-async def list_log_entries(project: str, filter: str = "", limit: int = 10) -> Dict[str, Any]:
+async def query_logs(project_id: str, filter: str = "", limit: int = 10, minutes_ago: int = 2) -> Dict[str, Any]:
+    # HARD CAP: Force max 24 hours (1440m) to allow finding older errors while preventing 30-day queries.
+    # Buffer fix (10MB) handles the volume.
+    if minutes_ago > 1440:
+        logger.warning(f"Capping minutes_ago from {minutes_ago} to 1440 to prevent timeout.")
+        minutes_ago = 1440
+        
     client = await ensure_mcp()
-    return await client.call_tool("list_log_entries", {"project": project, "filter": filter, "limit": limit})
+    # Tool name in MCP is 'query_logs'
+    return await client.call_tool("query_logs", {
+        "project_id": project_id, 
+        "filter": filter, 
+        "limit": limit,
+        "minutes_ago": minutes_ago
+    })
 
-async def list_log_names(project: str) -> Dict[str, Any]:
+async def list_metrics(project_id: str, filter: str = "") -> Dict[str, Any]:
     client = await ensure_mcp()
-    return await client.call_tool("list_log_names", {"project": project})
+    return await client.call_tool("list_metrics", {"project_id": project_id, "filter": filter})
 
-async def list_buckets(project: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("list_buckets", {"project": project})
+async def query_time_series(project_id: str, metric_type: str, resource_filter: str = "", minutes_ago: int = 60) -> Dict[str, Any]:
+    # HARD CAP: Force max 60 minutes
+    if minutes_ago > 60:
+         logger.warning(f"Capping minutes_ago from {minutes_ago} to 60.")
+         minutes_ago = 60
 
-async def list_views(project: str) -> Dict[str, Any]:
     client = await ensure_mcp()
-    return await client.call_tool("list_views", {"project": project})
-
-async def list_sinks(project: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("list_sinks", {"project": project})
-
-async def list_log_scopes(project: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("list_log_scopes", {"project": project})
-
-async def list_metric_descriptors(name: str, filter: str = "") -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("list_metric_descriptors", {"name": name, "filter": filter})
-
-async def list_time_series(name: str, filter: str, interval: dict, view: str = "FULL") -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("list_time_series", {"name": name, "filter": filter, "interval": interval, "view": view})
-
-async def list_alert_policies(name: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("list_alert_policies", {"name": name})
-
-async def list_traces(project_id: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("list_traces", {"project_id": project_id})
-
-async def get_trace(project_id: str, trace_id: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("get_trace", {"project_id": project_id, "trace_id": trace_id})
-
-async def list_group_stats(project_id: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("list_group_stats", {"project_id": project_id})
+    return await client.call_tool("query_time_series", {
+        "project_id": project_id, 
+        "metric_type": metric_type,
+        "resource_filter": resource_filter,
+        "minutes_ago": minutes_ago
+    })
 
 # Load Manifest
 manifest_path = Path(__file__).parent / "manifest.json"
@@ -188,9 +195,7 @@ agent = Agent(
     description=manifest.get("description", "Monitoring Specialist."),
     instruction=instruction_str,
     tools=[
-        list_log_entries, list_log_names, list_buckets, list_views, list_sinks, 
-        list_log_scopes, list_metric_descriptors, list_time_series, 
-        list_alert_policies, list_traces, get_trace, list_group_stats
+        query_logs, list_metrics, query_time_series
     ]
 )
 
@@ -202,15 +207,20 @@ app = App(
         BigQueryAgentAnalyticsPlugin(
             project_id=config.GCP_PROJECT_ID,
             dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
+            table_id=config.BQ_ANALYTICS_TABLE,
             config=BigQueryLoggerConfig(enabled=True)
         )
     ]
 )
 
 async def send_message_async(prompt: str, user_email: str = None, project_id: str = None) -> str:
-    global _mcp
+    # Create new client for this request (and this event loop)
+    mcp = MonitoringMCPClient()
+    token_reset = _mcp_ctx.set(mcp)
+    
     try:
+        await mcp.connect()
+
         # Prepend project context if provided
         if project_id:
             prompt = f"Project ID: {project_id}\n{prompt}"
@@ -225,7 +235,8 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
                         if part.text: response_text += part.text
             return response_text
     finally:
-        if _mcp: await _mcp.close(); _mcp = None
+        await mcp.close()
+        _mcp_ctx.reset(token_reset)
 
 def send_message(prompt: str, user_email: str = None, project_id: str = None) -> str:
     return asyncio.run(send_message_async(prompt, user_email, project_id))

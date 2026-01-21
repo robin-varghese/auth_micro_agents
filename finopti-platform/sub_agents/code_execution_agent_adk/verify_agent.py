@@ -9,8 +9,14 @@ PROMPT = "Calculate the factorial of 5 using python code"
 def verify():
     url = f"{APISIX_URL}{AGENT_ROUTE}"
     print(f"Sending prompt to {url}: {PROMPT}")
+    headers = {}
+    token = os.getenv("GOOGLE_OAUTH_ACCESS_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        print("Using OAuth Token in request.")
+
     try:
-        response = requests.post(url, json={"prompt": PROMPT}, timeout=60)
+        response = requests.post(url, json={"prompt": PROMPT}, headers=headers, timeout=60)
         print(f"Status Code: {response.status_code}")
         print(f"Response: {response.text}")
         

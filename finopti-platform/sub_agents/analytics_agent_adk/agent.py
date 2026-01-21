@@ -9,6 +9,7 @@ import json
 import logging
 from typing import Dict, Any, List
 from pathlib import Path
+from contextvars import ContextVar
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -86,60 +87,67 @@ class AnalyticsMCPClient:
                 await self.process.wait()
             except: pass
 
-_mcp = None
-_token_cache = None
+# ContextVar for isolation
+_mcp_ctx: ContextVar["AnalyticsMCPClient"] = ContextVar("mcp_client", default=None)
 
-# Wrapper to receive token indirectly via global state or context
-# ADK Tool handling is stateless, so we rely on the _mcp client being initialized per request
+async def ensure_mcp(token: str = None):
+    client = _mcp_ctx.get()
+    if not client:
+        client = AnalyticsMCPClient()
+        _mcp_ctx.set(client)
+    
+    if not client.process and token:
+        await client.connect(token)
+    return client
+
+# Wrapper to use context instead of global
 async def run_report(property_id: str, dimensions: List[str] = [], metrics: List[str] = []) -> Dict[str, Any]:
-    global _mcp
-    if not _mcp: raise RuntimeError("MCP not initialized with token")
-    return await _mcp.call_tool("run_report", {
+    client = _mcp_ctx.get()
+    if not client: raise RuntimeError("MCP not initialized for this context")
+    return await client.call_tool("run_report", {
         "property_id": property_id,
         "dimensions": dimensions,
         "metrics": metrics
     })
 
 async def run_realtime_report(property_id: str, dimensions: List[str] = [], metrics: List[str] = []) -> Dict[str, Any]:
-    global _mcp
-    if not _mcp: raise RuntimeError("MCP not initialized with token")
-    return await _mcp.call_tool("run_realtime_report", {
+    client = _mcp_ctx.get()
+    if not client: raise RuntimeError("MCP not initialized for this context")
+    return await client.call_tool("run_realtime_report", {
         "property_id": property_id,
         "dimensions": dimensions,
         "metrics": metrics
     })
 
 async def get_account_summaries() -> Dict[str, Any]:
-    global _mcp
-    if not _mcp: raise RuntimeError("MCP not initialized with token")
-    return await _mcp.call_tool("get_account_summaries", {})
+    client = _mcp_ctx.get()
+    if not client: raise RuntimeError("MCP not initialized for this context")
+    return await client.call_tool("get_account_summaries", {})
 
 async def get_property_details(property_id: str) -> Dict[str, Any]:
-    global _mcp
-    if not _mcp: raise RuntimeError("MCP not initialized with token")
-    return await _mcp.call_tool("get_property_details", {"property_id": property_id})
+    client = _mcp_ctx.get()
+    if not client: raise RuntimeError("MCP not initialized for this context")
+    return await client.call_tool("get_property_details", {"property_id": property_id})
 
 async def get_custom_dimensions_and_metrics(property_id: str) -> Dict[str, Any]:
-    global _mcp
-    if not _mcp: raise RuntimeError("MCP not initialized with token")
-    return await _mcp.call_tool("get_custom_dimensions_and_metrics", {"property_id": property_id})
+    client = _mcp_ctx.get()
+    if not client: raise RuntimeError("MCP not initialized for this context")
+    return await client.call_tool("get_custom_dimensions_and_metrics", {"property_id": property_id})
 
 # Load Manifest
-# Load Manifest (for basic metadata like name/desc)
 manifest_path = Path(__file__).parent / "manifest.json"
 manifest = {}
 if manifest_path.exists():
     with open(manifest_path, "r") as f:
         manifest = json.load(f)
 
-# Load Instructions (Pre-compiled)
+# Load Instructions
 instructions_path = Path(__file__).parent / "instructions.json"
 if instructions_path.exists():
     with open(instructions_path, "r") as f:
         data = json.load(f)
         instruction_str = data.get("instruction", "Analyze web traffic using available tools.")
 else:
-    # Fallback if instruction file missing
     instruction_str = "Analyze web traffic using available tools."
 
 ga_agent = Agent(
@@ -164,23 +172,20 @@ app = App(
         BigQueryAgentAnalyticsPlugin(
             project_id=config.GCP_PROJECT_ID,
             dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
+            table_id=config.BQ_ANALYTICS_TABLE,
             config=BigQueryLoggerConfig(enabled=True)
         )
     ]
 )
 
 async def send_message_async(prompt: str, user_email: str = None, token: str = None) -> str:
-    global _mcp, _token_cache
-    _token_cache = token
-    # Re-init client per request to be safe with different tokens?
-    # For now, yes.
-    if _mcp: await _mcp.close()
-    _mcp = AnalyticsMCPClient()
+    # Initialize client locally for this request
+    mcp = AnalyticsMCPClient()
+    token_reset = _mcp_ctx.set(mcp)
     
     try:
         if token:
-            await _mcp.connect(token)
+            await mcp.connect(token)
         else:
             return "Error: No OAuth Token provided."
             
@@ -194,7 +199,8 @@ async def send_message_async(prompt: str, user_email: str = None, token: str = N
                         if part.text: response_text += part.text
             return response_text
     finally:
-        if _mcp: await _mcp.close(); _mcp = None
+        await mcp.close()
+        _mcp_ctx.reset(token_reset)
 
 def send_message(prompt: str, user_email: str = None, token: str = None) -> str:
     return asyncio.run(send_message_async(prompt, user_email, token))

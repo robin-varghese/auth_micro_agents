@@ -125,7 +125,23 @@ app = App(
 async def run_agent(prompt: str) -> str:
     """Run the agent with the given prompt."""
     try:
-        async with InMemoryRunner(app=app) as runner:
+        # Re-initialize Agent/App per request to ensure fresh event loop binding
+        # This prevents "Future attached to a different loop" errors
+        local_code_agent = LlmAgent(
+            name=manifest.get("agent_id", "code_execution_agent"),
+            model=GEMINI_MODEL,
+            code_executor=BuiltInCodeExecutor(),
+            instruction=instruction_str,
+            description=manifest.get("description", "Executes Python code.")
+        )
+        
+        local_app = App(
+            name=APP_NAME,
+            root_agent=local_code_agent,
+            plugins=[bq_plugin]  # reuse plugins if safe, or recreate
+        )
+
+        async with InMemoryRunner(app=local_app) as runner:
              await runner.session_service.create_session(
                 app_name=APP_NAME,
                 user_id=USER_ID,

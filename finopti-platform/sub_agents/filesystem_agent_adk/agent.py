@@ -122,14 +122,17 @@ class FilesystemMCPClient:
         self.session = None
         self.exit_stack = None
 
-_mcp = None
+from contextvars import ContextVar
+
+# ContextVar to store the MCP client for the current request
+_mcp_ctx: ContextVar["FilesystemMCPClient"] = ContextVar("mcp_client", default=None)
 
 async def ensure_mcp():
-    global _mcp
-    if not _mcp:
-        _mcp = FilesystemMCPClient()
-        await _mcp.connect()
-    return _mcp
+    """Retrieve the client for the CURRENT context."""
+    client = _mcp_ctx.get()
+    if not client:
+        raise RuntimeError("MCP Client not initialized for this context")
+    return client
 
 # --- Tool Wrappers ---
 
@@ -235,15 +238,20 @@ app = App(
         BigQueryAgentAnalyticsPlugin(
             project_id=config.GCP_PROJECT_ID,
             dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
+            table_id=config.BQ_ANALYTICS_TABLE,
             config=BigQueryLoggerConfig(enabled=True)
         )
     ]
 )
 
 async def send_message_async(prompt: str, user_email: str = None, project_id: str = None) -> str:
-    global _mcp
+    # Create new client for this request (and this event loop)
+    mcp = FilesystemMCPClient()
+    token_reset = _mcp_ctx.set(mcp)
+    
     try:
+        await mcp.connect()
+
         # Prepend project context if provided
         if project_id:
             prompt = f"Project ID: {project_id}\n{prompt}"
@@ -258,8 +266,8 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
                         if part.text: response_text += part.text
             return response_text
     finally:
-        # Keep connection open for now
-        pass
+        await mcp.close()
+        _mcp_ctx.reset(token_reset)
 
 def send_message(prompt: str, user_email: str = None, project_id: str = None) -> str:
     return asyncio.run(send_message_async(prompt, user_email, project_id))

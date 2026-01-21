@@ -1,199 +1,31 @@
 # FinOptiAgents Platform - AI Agent Development Instructions
 
-**Version:** 2.0
-**Last Updated:** 2026-01-05
-**Purpose:** Mandatory guidelines for AI assistants implementing new agents
+**Version:** 3.0 (STABLE)
+**Last Updated:** 2026-01-21
+**Purpose:** Mandatory guidelines for AI assistants implementing new agents.
+**Status:** GOLD STANDARD - Adherence is required to prevent concurrency crashes.
 
 ---
 
 ## ⚠️ CRITICAL ARCHITECTURE RULES
 
-### Rule 1: Agent Traffic Routes Through APISIX
+### Rule 1: Use `ContextVar` for MCP Clients (NO GLOBAL VARIABLES)
+**CRITICAL:** Every HTTP request runs in a new `asyncio` event loop. You **cannot** reuse an MCP client connection across requests or loops. Doing so causes `RuntimeError: active loop mismatch` and hangs.
+**Requirement:** Use `contextvars.ContextVar` to store the client for the current request context.
+
+### Rule 2: Robust Configuration (Env Vars + Secrets)
+**CRITICAL:** Never hardcode Docker image names or secret keys.
+**Requirement:** 
+1. Use `os.getenv("SERVICE_MCP_DOCKER_IMAGE", "default-image")` to support local/prod overrides.
+2. Use the `config` module to fetch `BQ_ANALYTICS_TABLE` and other secrets.
+
+### Rule 3: Agent Traffic Routes Through APISIX
 ```
 ✅ CORRECT:   User → APISIX → Agent
 ```
 
-### Rule 2: MCP Communication MUST Use Direct Stdio (Asyncio)
-Agents MUST communicate with MCP servers by spawning them directly (e.g., via `docker run`) and communicating over standard input/output (Stdio).
-**Do NOT use HTTP/APISIX for MCP calls.**
-```python
-# ✅ CORRECT (Asyncio Subprocess)
-process = await asyncio.create_subprocess_exec("docker", "run", ...)
-# Communicate via process.stdin / process.stdout
-
-# ❌ INCORRECT
-requests.post(f"{APISIX_URL}/mcp/service_name/", json=payload)
-```
-
-### Rule 3: Use Google ADK for Agent Intelligence
-All agents MUST use `google.adk.agents.Agent` for LLM orchestration.
-
 ### Rule 4: ALL Logs MUST Go to Grafana/Loki
-All stdout/stderr from containers is automatically collected by Promtail and sent to Loki.
-Use structured logging for query-ability.
-
----
-
-## Platform Architecture Overview
-
-### Service Mesh Pattern
-```
-┌──────────────┐
-│  Streamlit   │ (Port 8501) ← User authenticates via Google OAuth
-│      UI      │                Gets GCP credentials
-└──────┬───────┘
-       │ HTTP + OAuth Token
-       ▼
-┌──────────────┐
-│   APISIX     │ (Port 9080) ← Traffic Gateway
-│   Gateway    │               Logs to Loki via Promtail
-└──────┬───────┘
-       │
-   ┌───┴────────────────┐
-   ▼                    ▼
-┌───────────┐      ┌──────────┐
-│Orchestr.  │      │   OPA    │
-│  Agent    │◄─────│  Policy  │ (Validates OAuth + permissions)
-└─────┬─────┘      └──────────┘
-      │ Uses Gemini API Key
-      ▼ HTTP via APISIX
-┌──────────────────────────────┐
-│    Sub-Agents (ADK-based)    │ Each uses:
-│ • gcloud_agent_adk:5001      │ • User's GCP credentials
-│ • monitoring_agent_adk:5002  │ • Gemini API Key
-│ • github_agent_adk:5003      │ • Service-specific creds (e.g. GitHub PAT)
-│ • storage_agent_adk:5004     │
-│ • db_agent_adk:5005          │
-│ • brave_search_agent_adk:5006│
-│ • filesystem_agent_adk:5007  │
-│ • analytics_agent_adk:5008   │
-│ • puppeteer_agent_adk:5009   │
-│ • sequential_thinking_agent_adk:5010 │
-│ • googlesearch_agent_adk:5011│
-│ • code_execution_agent_adk:5012 │
-│                              │
-│ ┌──────────────────────────┐ │
-│ │ MCP Protocol (Stdio)     │ │
-│ │ ▼ Direct Spawn (Docker)  │ │
-│ │ ┌──────────────────────┐ │ │
-│ │ │ MCP Server Container │ │ │
-│ │ └──────────────────────┘ │ │
-│ └──────────────────────────┘ │
-└────┬─────────────────────────┘
-     │ Logs to stdout → Promtail → Loki
-     ▼
-┌──────────────────────────────┐
-│  Observability Stack         │
-│ Grafana:3000 (UI)            │
-│ Loki:3100 (Log aggregation)  │
-│ Promtail (Log collector)     │
-└──────────────────────────────┘
-```
-
-### Authentication & Credentials Flow
-
-**1. User Authentication (Google OAuth)**
-- User logs into Streamlit via Google OAuth
-- OAuth provides: user email, access token
-- User must have GCP credentials configured locally
-
-**2. Agent Credentials**
-```python
-# Each agent receives and uses:
-{
-    "user_email": "user@example.com",      # From OAuth
-    "google_api_key": os.getenv("GOOGLE_API_KEY"),  # For Gemini
-    "gcp_credentials": "~/.config/gcloud",  # Mounted volume
-    "service_specific": {...}  # e.g. GITHUB_PERSONAL_ACCESS_TOKEN
-}
-```
-
-**3. GitHub MCP Specific Requirements**
-```python
-# GitHub MCP needs:
-{
-    "github_pat": os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN"),  # From Secret Manager or env
-    "repo_url": "https://github.com/user/repo",  # From user or config
-    "user_info": {...}  # From OAuth if available
-}
-```
-
-### Three Communication Layers
-
-1. **Layer 1: User → Agent** (HTTP via APISIX)
-   - Route: `/agent/{service_name}/*`
-   - Always through APISIX
-   - Carries OAuth token
-
-2. **Layer 2: Agent Logic** (Google ADK)
-   - LLM reasoning with Gemini (uses `GOOGLE_API_KEY`)
-   - Tool orchestration
-   - Retry/reflection
-   - Uses user's GCP credentials
-
-3. **Layer 3: Agent → MCP** (Direct Stdio via Asyncio)
-   - **MUST use Asyncio Subprocess**
-   - **MUST perform MCP Handshake** (initialize -> initialized)
-   - Passes credentials via Environment Variables to spawned container
-
----
-
-## Standard Agent Tooling Patterns
-
-The platform supports two primary patterns for agent capabilities:
-
-### 1. MCP Wrapper Agents (Asyncio Stdio)
-These agents spawn a separate Docker container for the Model Context Protocol (MCP) server.
-- **GCloud Agent**: Spawns `finopti-gcloud-mcp`
-- **Monitoring Agent**: Spawns `finopti-monitoring-mcp`
-- **GitHub Agent**: Spawns `finopti-github-mcp`
-- **Storage Agent**: Spawns `finopti-storage-mcp`
-- **Brave Search Agent**: Spawns `finopti-brave-search-mcp`
-- **Filesystem Agent**: Spawns `finopti-filesystem-mcp`
-- **Analytics Agent**: Spawns `finopti-google-analytics-mcp`
-- **Puppeteer Agent**: Spawns `finopti-puppeteer-mcp`
-
-### 2. Native ADK Tool Agents
-These agents use the ADK's native tool libraries or logic directly within the python process.
-- **Google Search Agent**: Uses `google.adk.tools.google_search`
-- **Code Execution Agent**: Uses `google.adk.code_executors.BuiltInCodeExecutor`
-- **Sequential Agent**: Uses internal Chain-of-Thought logic
-
----
-
-## Google ADK Plugins (MANDATORY)
-
-All agents MUST include two ADK plugins for proper operation, analytics, and error handling.
-
-### Plugin 1: BigQuery Analytics Plugin
-
-**Purpose:** Tracks all agent interactions, LLM calls, tool executions, and errors to BigQuery for analytics.
-
-**Configuration:**
-```python
-from google.adk.plugins.bigquery_agent_analytics_plugin import (
-    BigQueryAgentAnalyticsPlugin,
-    BigQueryLoggerConfig
-)
-
-# Initialize Plugin
-bq_plugin = BigQueryAgentAnalyticsPlugin(
-    # Project/Dataset/Table passed to Constructor
-    project_id=os.getenv("GCP_PROJECT_ID"),
-    dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-    table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
-    # Config object for behavior
-    config=BigQueryLoggerConfig(
-        enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-        batch_size=1,
-        max_content_length=100 * 1024
-    )
-)
-```
-
-### Plugin 2: Reflect and Retry Tool Plugin
-
-[... same as before ...]
+All stdout/stderr from containers is automatically collected by Promtail and sent to Loki. Use structured logging.
 
 ---
 
@@ -201,20 +33,16 @@ bq_plugin = BigQueryAgentAnalyticsPlugin(
 
 ```
 sub_agents/{agent_name}_adk/
-├── agent.py           # Core Logic: Agent + App + Plugins + Auth
+├── agent.py           # Core Logic: Agent + App + Plugins + Auth + CONTEXT ISOLATION
 ├── main.py            # Entrypoint: Flask HTTP wrapper
-├── requirements.txt   # Dependencies (google-adk, google-cloud-secret-manager)
+├── verify_agent.py    # Self-Verification Script (MANDATORY)
 ├── Dockerfile         # Container build definition
-├── manifest.json      # Agent Metadata (ID, Description, Tools)
-├── instructions.json  # System Instructions / Persona
-└── verify_agent.py    # Self-Verification Script (MANDATORY)
+└── ...
 ```
 
-### Required Components in Each File
+### 1. `agent.py` (The Pattern)
 
-#### 1. `agent.py` Structure (Standard ADK Pattern)
-
-All agents must use the `App` wrapper to support plugins and `InMemoryRunner` for execution.
+This is the **ONLY** acceptable pattern for `agent.py`. Do not deviate.
 
 ```python
 import os
@@ -222,7 +50,10 @@ import sys
 import asyncio
 import json
 import logging
+from contextvars import ContextVar  # <--- CRITICAL IMPORT
 from pathlib import Path
+from typing import Dict, Any
+
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.runners import InMemoryRunner
@@ -232,143 +63,90 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
     BigQueryLoggerConfig
 )
 from google.genai import types
-from google.cloud import secretmanager
+from config import config
 
-# Configure structured logging
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- AUTHENTICATION ---
-def setup_auth():
-    """Ensure GOOGLE_API_KEY is set (Check Env -> Secret Manager)."""
-    if os.getenv("GOOGLE_API_KEY"):
-        return
+# --- 1. CONTEXT ISOLATION ---
+# Stores the MCP client for the current request/loop.
+# Default=None prevents accidental reuse.
+_mcp_ctx: ContextVar["MyMCPClient"] = ContextVar("mcp_client", default=None)
 
-    project_id = os.getenv("GCP_PROJECT_ID")
-    if project_id:
-        try:
-            client = secretmanager.SecretManagerServiceClient()
-            secret_name = "google-api-key"
-            name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
-            response = client.access_secret_version(request={"name": name})
-            api_key = response.payload.data.decode("UTF-8")
-            os.environ["GOOGLE_API_KEY"] = api_key
-            logger.info("Loaded GOOGLE_API_KEY from Secret Manager")
-        except Exception as e:
-            logger.warning(f"Failed to fetch google-api-key from Secret Manager: {e}")
+class MyMCPClient:
+    def __init__(self):
+        # Allow override via ENV for testing/staging
+        self.image = os.getenv("MY_MCP_DOCKER_IMAGE", "finopti-my-mcp") 
+        self.mount_path = os.getenv('GCLOUD_MOUNT_PATH', f"{os.path.expanduser('~')}/.config/gcloud:/root/.config/gcloud")
+        self.process = None
+        self.request_id = 0
 
-setup_auth()
-
-# --- CONFIGURATION ---
-def get_gemini_model():
-    # ... (Same logic: Env -> Secret Manager -> Default) ...
-    return os.getenv("FINOPTIAGENTS_LLM", "gemini-2.0-flash")
-
-# Load Manifest & Instructions
-manifest = {}
-manifest_path = Path(__file__).parent / "manifest.json"
-if manifest_path.exists():
-    with open(manifest_path, "r") as f:
-        manifest = json.load(f)
-
-instruction_str = "You are a helpful agent."
-instructions_path = Path(__file__).parent / "instructions.json"
-if instructions_path.exists():
-    with open(instructions_path, "r") as f:
-        instruction_str = json.load(f).get("instruction", instruction_str)
-
-# --- AGENT & APP DEFINITION ---
-agent = Agent(
-    name=manifest.get("agent_id", "my_agent"),
-    model=get_gemini_model(),
-    description=manifest.get("description", "My Agent"),
-    instruction=instruction_str,
-    # tools=[...] # Add Tools Here
-)
-
-app = App(
-    name=f"finopti_{manifest.get('agent_id', 'agent')}",
-    root_agent=agent,
-    plugins=[
-        ReflectAndRetryToolPlugin(max_retries=3),
-        BigQueryAgentAnalyticsPlugin(
-            project_id=os.getenv("GCP_PROJECT_ID"),
-            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
-            config=BigQueryLoggerConfig(
-                enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true"
-            )
+    async def connect(self):
+        cmd = ["docker", "run", "-i", "--rm", "-v", self.mount_path, self.image]
+        logger.info(f"Starting MCP: {' '.join(cmd)}")
+        self.process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
-    ]
-)
+        await self._handshake()
 
-# --- EXECUTION LOGIC ---
-async def send_message_async(prompt: str, user_email: str = None, project_id: str = None) -> str:
+    # ... (Standard _handshake, _send_json, call_tool, close) ...
+
+async def ensure_mcp():
+    """Retrieve the client for the CURRENT context."""
+    client = _mcp_ctx.get()
+    if not client:
+        raise RuntimeError("MCP Client not initialized for this context")
+    return client
+
+# --- 2. TOOL WRAPPERS ---
+async def my_tool(arg1: str) -> Dict[str, Any]:
+    client = await ensure_mcp()
+    # verify tool name matches MCP server spec exactly!
+    return await client.call_tool("my_tool", {"arg1": arg1}) 
+
+# --- 3. AGENT SETUP ---
+# ... (Standard Agent, App, Plugin setup) ...
+
+# --- 4. EXECUTION LOGIC (Lifecycle Management) ---
+async def send_message_async(prompt: str, user_email: str = None) -> str:
+    # A. Initialize Client for THIS Scope
+    mcp = MyMCPClient()
+    token_reset = _mcp_ctx.set(mcp) # Bind to ContextVar
+    
     try:
-        if project_id:
-            prompt = f"Project ID: {project_id}\n{prompt}"
-            
+        # B. Connect
+        await mcp.connect()
+        
+        # C. Run Agent
         async with InMemoryRunner(app=app) as runner:
-            session_uid = user_email if user_email else "default"
-            # Create session with app_name
             await runner.session_service.create_session(
-                session_id="default", 
-                user_id=session_uid, 
-                app_name=app.name
+                app_name="finopti_my_agent",
+                user_id="default",
+                session_id="default"
             )
-            
             message = types.Content(parts=[types.Part(text=prompt)])
             response_text = ""
-            
-            async for event in runner.run_async(
-                session_id="default", 
-                user_id=session_uid, 
-                new_message=message
-            ):
+            async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
                  if hasattr(event, 'content') and event.content:
                      for part in event.content.parts:
                          if part.text: response_text += part.text
             return response_text
-    except Exception as e:
-        logger.error(f"Error: {e}", exc_info=True)
-        return f"Error: {str(e)}"
+    finally:
+        # D. Cleanup
+        await mcp.close()
+        _mcp_ctx.reset(token_reset) # Unbind to prevent leaks
 
-def process_request(prompt: str) -> str:
-    """Synchronous Entrypoint for main.py"""
-    return asyncio.run(send_message_async(prompt))
+def send_message(prompt: str, user_email: str = None) -> str:
+    return asyncio.run(send_message_async(prompt, user_email))
 ```
 
-#### 2. `main.py` Structure
-[... same as before (Flask wrapper) ...]
+### 2. `verify_agent.py` (MANDATORY)
 
-#### 3. `requirements.txt`
-```txt
-google-adk>=1.21.0
-google-genai>=0.6.0
-flask>=3.0.3
-gunicorn>=22.0.0
-# ...
-```
-
-#### 4. `manifest.json` (Metadata)
-```json
-{
-  "agent_id": "my_agent_name",
-  "description": "Short description of what this agent does.",
-  "type": "adk-model-powered",
-  "tools": ["tool_name_1"]
-}
-```
-
-#### 5. `instructions.json` (Persona)
-```json
-{
-  "instruction": "You are a specialized agent for X. Your goal is Y."
-}
-```
-
-#### 6. `verify_agent.py` (Self-Verification)
-Every agent MUST include a verification script to test its core functionality via the HTTP endpoint.
+Verification scripts MUST use the valid OAuth token to test accurately.
 
 ```python
 import requests
@@ -376,120 +154,48 @@ import os
 import sys
 
 APISIX_URL = os.getenv("APISIX_URL", "http://localhost:9080")
-AGENT_ROUTE = "/agent/my_agent_name/execute"
-PROMPT = "Test prompt here"
+AGENT_ROUTE = "/agent/my_agent/execute"
+PROMPT = "Test prompt"
 
 def verify():
     url = f"{APISIX_URL}{AGENT_ROUTE}"
-    print(f"Sending prompt to {url}...")
+    headers = {}
+    
+    # Authenticate like the real platform
+    token = os.getenv("GOOGLE_OAUTH_ACCESS_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        
     try:
-        response = requests.post(url, json={"prompt": PROMPT}, timeout=60)
-        print(f"Status: {response.status_code}")
-        print(f"Response: {response.text}")
-        if response.status_code == 200 and "\"success\":true" in response.text:
-            return True
-        return False
-    except Exception as e:
-        print(f"Error: {e}")
-        return False
-
-if __name__ == "__main__":
-    if verify():
-        sys.exit(0)
-    else:
-        sys.exit(1)
+        response = requests.post(url, json={"prompt": PROMPT}, headers=headers, timeout=60)
+        # ... validation logic ...
 ```
 
 ---
 
-## Validation Checklist
+## Troubleshooting & Common Pitfalls
 
-Before considering an agent "complete", verify:
+### 1. "Event Loop Mismatch" / 504 Gateway Timeout
+- **Symptom**: Agent hangs, returns 504, or logs `RuntimeError: active loop mismatch`.
+- **Cause**: Reusing a global MCP client variable across different `asyncio.run()` calls.
+- **Fix**: **Use `ContextVar`** as shown in Rule 1. Never store `_mcp` globally.
 
-**Code & Config:**
-- [ ] `agent.py` uses `App` wrapper and `InMemoryRunner`.
-- [ ] `manifest.json` and `instructions.json` are present and loaded.
-- [ ] Authentication uses Secret Manager fallback.
-- [ ] Plugins (`ReflectAndRetry`, `BigQueryAnalytics`) are configured correctly.
+### 2. "Given Arrow field content_parts is a list..." (BigQuery Error)
+- **Symptom**: BigQuery plugin logs errors about schema mismatch.
+- **Cause**: The `agent_events` table was created with `NULLABLE` `content_parts` but updated code sends `REPEATED` (List).
+- **Fix**: Drop the table. The plugin will recreate it correctly on next run.
 
-**Infrastructure:**
-- [ ] Docker Compose has agent service with all ENV vars (`GCP_PROJECT_ID`, `GOOGLE_API_KEY`).
-- [ ] Health check pass: `curl /health`.
+### 3. "Image pull backoff" / "Connection lost"
+- **Symptom**: Agent starts but fails immediately when called.
+- **Cause**: Hardcoded Docker image (e.g., `mcp/server:latest`) does not exist locally.
+- **Fix**: Use env var `os.getenv("SERVICE_MCP_DOCKER_IMAGE")` and set it to your local image name (e.g., `finopti-service-mcp`) in `docker-compose.yml`.
 
-**Testing:**
-- [ ] **MANDATORY**: `verify_agent.py` passes successfully against the running container/APISIX.
-- [ ] **Full Suite**: Run `python3 tests/run_suite.py` to verify against other agents.
+### 4. "Parameter mismatch" (LLM Error)
+- **Symptom**: LLM says "I tried to call tool X but it failed" or logic error.
+- **Cause**: Python tool wrapper kwargs (`project_id`) dont match MCP server spec (`project`).
+- **Fix**: Check MCP server code or logs to verify exact argument names. Map them in `agent.py`.
 
-
-
----
-
-## V. Deployment and Security Integration (MANDATORY)
-
-After coding your agent, you MUST complete these integration steps for it to be reachable and secure.
-
-### 1. Update OPA Policy (Security)
-The platform uses Open Policy Agent (OPA) for authorization. You must explicit allow access to your new agent.
-
-**File:** `opa_policy/authz.rego`
-```rego
-allow if {
-    user_role["gcloud_admin"]
-    input.target_agent == "your_agent_name"  # e.g. "code_execution"
-}
-```
-
-### 2. Update Deployment Scripts
-**File:** `docker-compose.yml`
-Add your service definition:
-```yaml
-  your_agent_name:
-    build:
-      context: .
-      dockerfile: sub_agents/your_agent_name/Dockerfile
-    environment:
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-    ports:
-      - "50xx:50xx"
-    networks:
-      - finopti-net
-```
-*Note: `deploy-local.sh` automatically picks up changes from `docker-compose.yml`, so no changes needed there unless you have custom build logic.*
-
-### 3. Update Orchestrator Routing
-The Orchestrator agent decides which sub-agent handles a request.
-**File:** `orchestrator_adk/agent.py`
-
-1.  **Add Keywords:** Update `detect_intent` to recognize your agent's domain.
-2.  **Register Endpoint:** Update `agent_endpoints` map in `route_to_agent`.
-    ```python
-    'your_agent': f"{config.APISIX_URL}/agent/your_agent/execute",
-    ```
-3.  **Update Prompt:** Update the system instruction in `orchestrator_agent` to make the LLM aware of the new capability.
-
-### 4. Create APISIX Route
-**File:** `apisix_conf/init_routes.sh`
-Add a new route for your agent:
-```bash
-# Route X: Your Agent
-curl -i -X PUT "${APISIX_ADMIN}/routes/X" ...
-    "uri": "/agent/your_agent/*",
-    "upstream": { "nodes": { "your_agent_name:50xx": 1 } }
-    # ...
-```
-
----
-
-## Summary
-
-**Core Principle:** User traffic flows through APISIX. Agent-to-MCP traffic is direct (Stdio) and asynchronous.
-
-**Implementation Checklist:**
-1. Async MCP client (Stdio) with Handshake
-2. Dynamic LLM Model Name (Env/Secret Manager)
-3. Structured Logging & Exception Handling
-4. OPA Policy Update (authz.rego)
-5. Docker Compose Service Definition
-6. Orchestrator Routing & APISIX Route
-
+### 5. "Infinite Retry Loop" / 504 Gateway Timeout
+- **Symptom**: Agent reflects and retries endlessly until it times out. Logs show "Unknown tool".
+- **Cause**: `agent.py` defines a tool (e.g., `list_log_entries`) that **does not exist** on the MCP server (e.g., it's actually named `query_logs`).
+- **Fix**: You must verify the tool names exposed by the MCP server. Use a debug script to send `tools/list` JSON-RPC command to the container to see the source of truth.

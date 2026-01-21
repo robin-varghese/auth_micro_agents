@@ -34,7 +34,7 @@ class StorageMCPClient:
     """Client for connecting to Storage MCP server via Docker Stdio"""
     
     def __init__(self):
-        self.image = os.getenv('GCLOUD_MCP_DOCKER_IMAGE', 'finopti-gcloud-mcp')
+        self.image = os.getenv('STORAGE_MCP_DOCKER_IMAGE', 'finopti-storage-mcp')
         self.mount_path = os.getenv('GCLOUD_MOUNT_PATH', f"{os.path.expanduser('~')}/.config/gcloud:/root/.config/gcloud")
         self.process = None
         self.request_id = 0
@@ -103,13 +103,17 @@ class StorageMCPClient:
                 await self.process.wait()
             except: pass
 
-_mcp = None
+from contextvars import ContextVar
+
+# ContextVar to store the MCP client for the current request
+_mcp_ctx: ContextVar["StorageMCPClient"] = ContextVar("mcp_client", default=None)
+
 async def ensure_mcp():
-    global _mcp
-    if not _mcp:
-        _mcp = StorageMCPClient()
-        await _mcp.connect()
-    return _mcp
+    """Retrieve the client for the CURRENT context."""
+    client = _mcp_ctx.get()
+    if not client:
+        raise RuntimeError("MCP Client not initialized for this context")
+    return client
 
 # --- Tool Wrappers ---
 async def list_objects(bucket_name: str, prefix: str = "") -> Dict[str, Any]:
@@ -239,15 +243,20 @@ app = App(
         BigQueryAgentAnalyticsPlugin(
             project_id=config.GCP_PROJECT_ID,
             dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
+            table_id=config.BQ_ANALYTICS_TABLE,
             config=BigQueryLoggerConfig(enabled=True)
         )
     ]
 )
 
 async def send_message_async(prompt: str, user_email: str = None) -> str:
-    global _mcp
+    # Create new client for this request (and this event loop)
+    mcp = StorageMCPClient()
+    token_reset = _mcp_ctx.set(mcp)
+    
     try:
+        await mcp.connect()
+
         async with InMemoryRunner(app=app) as runner:
             await runner.session_service.create_session(
                 session_id="default",
@@ -262,7 +271,8 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
                          if part.text: response_text += part.text
             return response_text
     finally:
-        if _mcp: await _mcp.close(); _mcp = None
+        await mcp.close()
+        _mcp_ctx.reset(token_reset)
 
 def send_message(prompt: str, user_email: str = None) -> str:
     return asyncio.run(send_message_async(prompt, user_email))

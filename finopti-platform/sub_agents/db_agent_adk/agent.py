@@ -123,14 +123,17 @@ class DBMCPClient:
                 output.append(content.text)
         return "\n".join(output)
 
-_mcp_client = None
+from contextvars import ContextVar
+
+# ContextVar to store the MCP client for the current request
+_mcp_ctx: ContextVar["DBMCPClient"] = ContextVar("mcp_client", default=None)
 
 async def ensure_mcp():
-    global _mcp_client
-    if not _mcp_client:
-        _mcp_client = DBMCPClient()
-        await _mcp_client.connect()
-    return _mcp_client
+    """Retrieve the client for the CURRENT context."""
+    client = _mcp_ctx.get()
+    if not client:
+        raise RuntimeError("MCP Client not initialized for this context")
+    return client
 
 # --------------------------------------------------------------------------------
 # NATIVE TOOLS (BigQuery)
@@ -144,7 +147,7 @@ async def query_agent_analytics(limit: int = 10, days_back: int = 7) -> Dict[str
     try:
         client = bigquery.Client(project=config.GCP_PROJECT_ID)
         dataset_id = os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics")
-        table_id = os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2")
+        table_id = config.BQ_ANALYTICS_TABLE
         full_table_id = f"{config.GCP_PROJECT_ID}.{dataset_id}.{table_id}"
         
         query = f"""
@@ -259,7 +262,7 @@ db_agent = Agent(
 bq_plugin = BigQueryAgentAnalyticsPlugin(
     project_id=config.GCP_PROJECT_ID,
     dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-    table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
+    table_id=config.BQ_ANALYTICS_TABLE,
     config=BigQueryLoggerConfig(
         enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
         batch_size=1
@@ -281,13 +284,14 @@ app = App(
 # --------------------------------------------------------------------------------
 
 async def send_message_async(prompt: str, user_email: str = None, project_id: str = None) -> str:
+    # A. Initialize Client for THIS Scope
+    mcp = DBMCPClient()
+    token_reset = _mcp_ctx.set(mcp)
+    
     try:
-        global _mcp_client
-        # Lazy init MCP
-        if not _mcp_client:
-            _mcp_client = DBMCPClient()
-            await _mcp_client.connect()
-        
+        # B. Connect
+        await mcp.connect()
+
         # Prepend project context if provided
         if project_id:
             prompt = f"Project ID: {project_id}\n{prompt}"
@@ -307,11 +311,9 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
         logger.error(f"Error processing request: {e}", exc_info=True)
         return f"Error: {str(e)}"
     finally:
-        # Don't close MCP here if we want reuse, but current architecture is stateless-ish per request
-        pass
-        # if _mcp_client:
-        #    await _mcp_client.close()
-        #    _mcp_client = None
+        # D. Cleanup
+        await mcp.close()
+        _mcp_ctx.reset(token_reset)
 
 def send_message(prompt: str, user_email: str = None, project_id: str = None) -> str:
     return asyncio.run(send_message_async(prompt, user_email, project_id))

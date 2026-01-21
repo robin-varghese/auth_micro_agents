@@ -408,7 +408,7 @@ bq_config = BigQueryLoggerConfig(
 bq_plugin = BigQueryAgentAnalyticsPlugin(
     project_id=config.GCP_PROJECT_ID,
     dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-    table_id=os.getenv("BQ_ANALYTICS_TABLE", "agent_events_v2"),
+    table_id=config.BQ_ANALYTICS_TABLE,
     config=bq_config,
     location="US"
 )

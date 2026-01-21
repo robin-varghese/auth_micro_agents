@@ -4,13 +4,19 @@ import sys
 
 APISIX_URL = os.getenv("APISIX_URL", "http://localhost:9080")
 AGENT_ROUTE = "/agent/monitoring/execute"
-PROMPT = "List the last 5 log entries for cloud run service 'finopti-orchestrator' in project vector-search-poc"
+PROMPT = "Fetch the last reported error from logs in project vector-search-poc"
 
 def verify():
     url = f"{APISIX_URL}{AGENT_ROUTE}"
     print(f"Sending prompt to {url}: {PROMPT}")
+    headers = {}
+    token = os.getenv("GOOGLE_OAUTH_ACCESS_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        print("Using OAuth Token in request.")
+
     try:
-        response = requests.post(url, json={"prompt": PROMPT}, timeout=180)
+        response = requests.post(url, json={"prompt": PROMPT}, headers=headers, timeout=180)
         print(f"Status Code: {response.status_code}")
         print(f"Response: {response.text}")
         
