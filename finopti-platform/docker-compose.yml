@@ -752,7 +752,7 @@ services:
   mats-sre-agent:
     build:
       context: .
-      dockerfile: mats-agents/sre_agent/Dockerfile
+      dockerfile: mats-agents/mats-sre-agent/Dockerfile
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
@@ -778,7 +778,7 @@ services:
   mats-investigator-agent:
     build:
       context: .
-      dockerfile: mats-agents/investigator_agent/Dockerfile
+      dockerfile: mats-agents/mats-investigator-agent/Dockerfile
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
@@ -802,7 +802,7 @@ services:
   mats-architect-agent:
     build:
       context: .
-      dockerfile: mats-agents/architect_agent/Dockerfile
+      dockerfile: mats-agents/mats-architect-agent/Dockerfile
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
@@ -822,7 +822,7 @@ services:
           memory: 512M
 
   mats-orchestrator:
-    build: ./mats-agents/orchestrator
+    build: ./mats-agents/mats-orchestrator
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}

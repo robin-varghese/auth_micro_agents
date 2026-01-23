@@ -9,11 +9,11 @@ RUN apt-get update && apt-get install -y docker.io procps curl gnupg && \
     apt-get update && apt-get install -y google-cloud-cli && \
     rm -rf /var/lib/apt/lists/*
 
-COPY mats-agents/sre_agent/requirements.txt .
+COPY mats-agents/mats-sre-agent/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY config/ config/
-COPY mats-agents/sre_agent/ .
+COPY mats-agents/mats-sre-agent/ .
 
 # Set unbuffered output for logs to appear in Loki
 ENV PYTHONUNBUFFERED=1

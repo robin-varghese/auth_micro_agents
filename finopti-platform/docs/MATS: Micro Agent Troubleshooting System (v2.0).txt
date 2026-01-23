@@ -1,0 +1,77 @@
+MATS: Micro Agent Troubleshooting System (v2.0)
+1. Executive Summary
+The MATS platform is an autonomous troubleshooting ecosystem driven by Google ADK and MCP.
+The Challenge: Previous iterations suffered from "Routing Hallucinations" where the LLM confused semantic keywords (e.g., "Vector Search Project") with tool capabilities (e.g., "Google Search Engine").
+The Solution: A Sequential Thinking architecture. We separate the workflow into two distinct phases: Planning (Triage) and Execution.
+A specialized "Thinking Agent" analyzes the request against a Lightweight Registry of capabilities to generate a strict JSON plan.
+The Orchestrator blindly executes this plan by delegating tasks to 3 Core Team Lead Agents (Architect, Investigator, SRE).
+This separation allows for a transparent, "Google Antigravity" style user interface.
+2. The Agent Hierarchy
+To manage complexity, we do not expose all 13 specialists to the Orchestrator at once for execution. Instead, we use a Team Lead structure.
+Level 1: The Brain (Orchestrator & Triage)
+Orchestrator Agent: The system entry point. It handles user I/O, manages the WebSocket state for the UI, and creates the feedback loop.
+Sequential Thinking Specialist: The "Cortex". It does not execute tools. It only ingests the Agent Registry and the User Request to produce a Troubleshooting Plan (JSON).
+Level 2: The Team Leads (Core Agents)
+These agents receive high-level tasks from the Orchestrator (e.g., "Analyze logs for service X") and autonomously select which Specialist Tool to use.
+A. Architect Agent (The Blueprinter)
+Goal: Understanding Topology & Configuration.
+Assigned Specialists:
+gcloud_infrastructure_specialist (Check current resource state)
+storage_specialist (Verify bucket permissions/locations)
+github_specialist (Compare running state vs. IaC/Code)
+filesystem_specialist (Read local config files)
+B. Investigator Agent (The Detective)
+Goal: Root Cause Analysis.
+Assigned Specialists:
+cloud_monitoring_specialist (The primary tool: Logs, Traces, Metrics)
+database_specialist (Check for locks, slow queries, schema mismatch)
+analytics_specialist (Correlate system errors with traffic drops)
+code_execution_specialist (Analyze heavy data dumps or crunch log patterns)
+brave_search_specialist / google_search_specialist (Find external documentation for error codes)
+C. SRE Agent (The Fixer)
+Goal: Remediation & Action.
+Assigned Specialists:
+cloud_run_specialist (Deploy, Rollback, Restart)
+github_specialist (Create Issues, PR fixes)
+browser_automation_specialist (Validate UI fixes/Smoke test)
+3. The Lightweight Registry (The Source of Truth)- Already developed->@mats-agents/mats-orchestrator/agent_registry.json
+The Sequential Thinking Specialist is fed a strict JSON definition of capabilities. This is the only context it has, which prevents hallucinations.
+Note specific Anti-Patterns designed to stop "Google Search" misfires.
+code
+
+4. The Workflow: Triage -> Plan -> Execute
+Trigger Events
+User Prompt: "Why is the application hosted in cloud run is failing?"
+Cloud Event: Pub/Sub message indicating 5xx error rate spike.
+Phase 1: Sequential Thinking (The "Antigravity" Planner)
+The Orchestrator sends the Request + Registry to the sequential_thinking_specialist.
+Input: "My application hosted in cloud run is failing."
+Thinking Process (Internal Monologue):
+Analyze Request: User mentions "cloud run".
+Check Registry: google_search_specialist says "Do NOT use for internal project names".
+Selection: This is an error. I need the Investigator Agent.
+Sub-task: The Investigator needs to check Cloud Run logs first.
+Output (JSON Plan):
+code
+JSON
+{
+  "plan_id": "plan_001",
+  "reasoning": "Detected internal project 'vector-search-poc'. Skipping public search. Focusing on internal Cloud Run logs.",
+  "steps": [
+    {
+      "step_id": 1,
+      "assigned_lead": "investigator_agent",
+      "tool_suggestion": "cloud_run_specialist",
+      "action": "get_service_log",
+      "params": {"service_name": "vector-search-poc"},
+      "ui_label": "Investigating Cloud Run Logs"
+    },
+    {
+      "step_id": 2,
+      "assigned_lead": "architect_agent",
+      "tool_suggestion": "storage_specialist",
+      "action": "check_iam_permissions",
+      "ui_label": "Verifying Bucket Access"
+    }
+  ]
+}

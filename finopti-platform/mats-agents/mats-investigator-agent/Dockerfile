@@ -5,11 +5,11 @@ WORKDIR /app
 # Install docker CLI for spawning MCP containers
 RUN apt-get update && apt-get install -y docker.io procps && rm -rf /var/lib/apt/lists/*
 
-COPY mats-agents/investigator_agent/requirements.txt .
+COPY mats-agents/mats-investigator-agent/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY config/ config/
-COPY mats-agents/investigator_agent/ .
+COPY mats-agents/mats-investigator-agent/ .
 
 ENV PYTHONUNBUFFERED=1
 
