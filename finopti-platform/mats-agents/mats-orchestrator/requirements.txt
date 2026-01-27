@@ -8,4 +8,8 @@ aiohttp>=3.9.0
 google-cloud-bigquery>=3.14.0
 google-cloud-logging>=3.9.0
 google-cloud-storage>=2.18.0
+arize-phoenix>=4.0.0
+opentelemetry-sdk
+opentelemetry-exporter-otlp
+openinference-instrumentation-google-genai
 

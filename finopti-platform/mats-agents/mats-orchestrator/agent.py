@@ -23,6 +23,11 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 )
 from google.genai import types
 
+# Observability
+from phoenix.otel import register
+from openinference.instrumentation.google_genai import GoogleGenAIInstrumentor
+
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from config import config
 
@@ -32,6 +37,11 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - [%(session_id)s] %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Initialize tracing
+tracer_provider = register()
+GoogleGenAIInstrumentor().instrument(tracer_provider=tracer_provider)
+
 
 # Set API key
 if config.GOOGLE_API_KEY:

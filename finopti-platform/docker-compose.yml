@@ -325,6 +325,22 @@ services:
       retries: 5
 
   # ====================
+  # Arize Phoenix - LLM Observability
+  # ====================
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: finopti-phoenix
+    ports:
+      - "6006:6006" # UI
+      - "4317:4317" # OTLP GRPC
+    environment:
+      - PHOENIX_SQL_DATABASE_URL=postgresql://postgres:postgres@db_postgres:5432/postgres
+    depends_on:
+      - db_postgres
+    networks:
+      - finopti-net
+
+  # ====================
   # Streamlit UI
   # ====================
   ui:
@@ -849,6 +865,9 @@ services:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
       - PYTHONUNBUFFERED=1
+      # Observability
+      - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-http://phoenix:6006/v1/traces}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:4317}
       # Internal Service URLs for networking
       - SRE_AGENT_URL=http://mats-sre-agent:8081
       - INVESTIGATOR_AGENT_URL=http://mats-investigator-agent:8082

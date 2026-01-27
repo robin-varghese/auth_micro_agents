@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # ====================
+  # Arize Phoenix - LLM Observability
+  # ====================
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: finopti-phoenix-standalone
+    restart: on-failure
+    ports:
+      - "6006:6006" # UI
+      - "4317:4317" # OTLP GRPC
+    environment:
+      - PHOENIX_SQL_DATABASE_URL=postgresql://postgres:postgres@db_observability:5432/postgres
+    depends_on:
+      db_observability:
+        condition: service_healthy
+    networks:
+      - observability-net
+
+  # ====================
+  # Postgres for Observability
+  # ====================
+  db_observability:
+    image: postgres:16-alpine
+    container_name: finopti-db-observability
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5433:5432" # Mapped to different port to avoid conflict with main stack
+    volumes:
+        - observability-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - observability-net
+
+volumes:
+  observability-postgres-data:
+    name: finopti-observability-postgres-data
+
+networks:
+  observability-net:
+    name: observability-net
+    driver: bridge
