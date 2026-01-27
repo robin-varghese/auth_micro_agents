@@ -656,6 +656,19 @@ services:
     # We can rely on container running
     command: [] 
 
+  # ====================
+  # Sequential Thinking MCP Server
+  # ====================
+  sequential_thinking_mcp:
+    image: sequentialthinking
+    build:
+      context: temp_mcp_repo/sequentialthinking
+      dockerfile: Dockerfile
+    container_name: finopti-sequential-thinking-mcp
+    networks:
+      - finopti-net
+    # No ports needed as it's stdio-based, agents spawn it dynamically
+    command: []
 
   # --- Sequential Thinking Agent ---
   sequential_thinking_agent_adk:
@@ -765,6 +778,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
+    ports:
+      - "8081:8081"
     networks:
       - finopti-net
     labels:
@@ -789,6 +804,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
+    ports:
+      - "8082:8082"
     networks:
       - finopti-net
     labels:
@@ -810,7 +827,10 @@ services:
       - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
       - PYTHONUNBUFFERED=1
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
+    ports:
+      - "8083:8083"
     networks:
       - finopti-net
     labels:
@@ -822,7 +842,9 @@ services:
           memory: 512M
 
   mats-orchestrator:
-    build: ./mats-agents/mats-orchestrator
+    build:
+      context: .
+      dockerfile: mats-agents/mats-orchestrator/Dockerfile
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
@@ -832,6 +854,7 @@ services:
       - INVESTIGATOR_AGENT_URL=http://mats-investigator-agent:8082
       - ARCHITECT_AGENT_URL=http://mats-architect-agent:8083
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
     ports:
       - "8084:8084"

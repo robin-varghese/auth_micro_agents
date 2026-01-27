@@ -1,14 +1,11 @@
 
 import os
 import logging
-import asyncio
-import requests
-import google.auth
-from google.auth.transport.requests import Request
 from flask import Flask, request, jsonify
-from permission_check import check_gcp_credentials
-from workflow import run_troubleshooting_workflow
+import asyncio
+from agent import run_investigation_async
 
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mats-orchestrator-main")
 
@@ -18,85 +15,69 @@ app = Flask(__name__)
 def health():
     return jsonify({"status": "healthy", "service": "mats-orchestrator"}), 200
 
-@app.route('/projects', methods=['GET'])
-def list_projects():
-    """
-    List accessible GCP projects via REST API.
-    """
-    valid, msg, _ = check_gcp_credentials()
-    if not valid:
-         return jsonify({"error": msg}), 401
-         
-    try:
-        credentials, _ = google.auth.default()
-        if not credentials.valid:
-            credentials.refresh(Request())
-
-        resp = requests.get(
-            "https://cloudresourcemanager.googleapis.com/v1/projects",
-            headers={"Authorization": f"Bearer {credentials.token}"}
-        )
-        if resp.status_code != 200:
-             return jsonify({"error": f"GCP API Error: {resp.text}"}), resp.status_code
-             
-        data = resp.json()
-        projects = []
-        if 'projects' in data:
-            for p in data['projects']:
-                projects.append({"project_id": p.get('projectId'), "name": p.get('name')})
-        
-        return jsonify({"projects": projects})
-    except Exception as e:
-        logger.error(f"Failed to list projects: {e}")
-        return jsonify({"error": str(e)}), 500
-
 @app.route('/troubleshoot', methods=['POST'])
 def troubleshoot():
     """
-    Trigger the troubleshooting workflow.
+    Main troubleshooting endpoint.
+    Payload: {
+        "user_request": "description",
+        "project_id": "gcp-project",
+        "repo_url": "https://github.com/org/repo",
+        "user_email": "optional"
+    }
     """
     data = request.json
-    required = ['project_id', 'repo_url', 'error_description']
-    if not all(k in data for k in required):
-        return jsonify({"error": f"Missing required fields: {required}"}), 400
-        
-    # Check permissions first
-    valid, msg, _ = check_gcp_credentials()
-    if not valid:
-         return jsonify({"error": msg}), 401
-
-    # Extract Repo Details
-    repo_url = data['repo_url']
-    try:
-        parts = repo_url.rstrip('/').split('/')
-        if 'github.com' in parts:
-            idx = parts.index('github.com')
-            owner = parts[idx+1]
-            repo = parts[idx+2]
-            if repo.endswith('.git'):
-                repo = repo[:-4]
-        else:
-             if len(parts) >= 2:
-                 owner = parts[-2]
-                 repo = parts[-1]
-             else:
-                 raise ValueError("Invalid Format")
-    except Exception:
-        return jsonify({"error": "Invalid GitHub URL format. Expected github.com/owner/repo"}), 400
-
-    project_id = data['project_id']
-    branch = data.get('branch', 'main')
-    desc = data['error_description']
+    if not data:
+        return jsonify({"error": "JSON payload required"}), 400
     
-    logger.info(f"Starting troubleshooting for {project_id} | {owner}/{repo}")
-
+    user_request = data.get('user_request')
+    project_id = data.get('project_id')
+    repo_url = data.get('repo_url')
+    user_email = data.get('user_email', 'unknown')
+    
+    if not all([user_request, project_id, repo_url]):
+        return jsonify({"error": "Missing required fields: user_request, project_id, repo_url"}), 400
+    
+    logger.info(f"Troubleshoot request: {user_request[:100]}")
+    
     try:
-        result = asyncio.run(run_troubleshooting_workflow(
-            project_id, owner, repo, branch, desc
+        # Run the async investigation
+        result = asyncio.run(run_investigation_async(
+            user_request=user_request,
+            project_id=project_id,
+            repo_url=repo_url,
+            user_email=user_email
         ))
         return jsonify(result)
     except Exception as e:
-        logger.error(f"Workflow failed: {e}")
+        logger.error(f"Error processing troubleshoot request: {e}", exc_info=True)
+        return jsonify({"error": str(e), "status": "FAILURE"}), 500
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    """
+    Chat endpoint for conversational troubleshooting.
+    Payload: {"message": "...", "project_id": "...", "repo_url": "..."}
+    """
+    data = request.json
+    if not data or 'message' not in data:
+        return jsonify({"error": "Message is required"}), 400
+    
+    message = data['message']
+    project_id = data.get('project_id', '')
+    repo_url = data.get('repo_url', '')
+    
+    logger.info(f"Chat request: {message[:50]}...")
+    
+    try:
+        result = asyncio.run(run_investigation_async(
+            user_request=message,
+            project_id=project_id,
+            repo_url=repo_url
+        ))
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error in chat endpoint: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
