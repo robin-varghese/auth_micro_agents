@@ -25,8 +25,10 @@ from google.genai import types
 
 # Observability
 from phoenix.otel import register
-from openinference.instrumentation.google_genai import GoogleGenAIInstrumentor
+from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
+from utils.tracing import trace_span
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from config import config
@@ -39,8 +41,31 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Initialize tracing
-tracer_provider = register()
-GoogleGenAIInstrumentor().instrument(tracer_provider=tracer_provider)
+# Use SimpleSpanProcessor for debugging to ensure immediate export 
+# (register uses BatchSpanProcessor by default)
+TRACE_ENDPOINT = os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces")
+
+tracer_provider = register(
+    project_name="finoptiagents-MATS",
+    endpoint=TRACE_ENDPOINT,
+    set_global_tracer_provider=True
+)
+
+# Force SimpleSpanProcessor for immediate export debug
+# Note: register() adds a BatchSpanProcessor. We are adding a second processor.
+# ideally we would replace it, but adding a simple one ensures at least one path flushes immediately.
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+http_exporter = OTLPSpanExporter(endpoint=TRACE_ENDPOINT)
+tracer_provider.add_span_processor(SimpleSpanProcessor(http_exporter))
+
+GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+
+# Send manual test trace on startup
+from opentelemetry import trace
+tracer = trace.get_tracer(__name__)
+with tracer.start_as_current_span("agent-startup-check") as span:
+    span.set_attribute("status", "startup_ok")
+    logger.info("Sent manual startup trace to Phoenix")
 
 
 # Set API key
@@ -296,6 +321,7 @@ app_instance = App(
 
 
 # --- EXECUTION LOGIC ---
+@trace_span("investigation_run", kind="CHAIN")
 async def run_investigation_async(
     user_request: str,
     project_id: str,

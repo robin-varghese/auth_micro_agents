@@ -27,6 +27,16 @@
 ### Rule 4: ALL Logs MUST Go to Grafana/Loki
 All stdout/stderr from containers is automatically collected by Promtail and sent to Loki. Use structured logging.
 
+### Rule 4: ALL Logs MUST Go to Grafana/Loki
+All stdout/stderr from containers is automatically collected by Promtail and sent to Loki. Use structured logging.
+
+### Rule 5: ALL Traces MUST Go to Arize Phoenix
+**CRITICAL:** Every agent must report execution traces to Phoenix for debugging.
+**Requirement:**
+1.  Use `phoenix.otel.register` and `GoogleADKInstrumentor` in `agent.py`.
+2.  **NEVER HARDCODE** the endpoint. Use `os.getenv("PHOENIX_COLLECTOR_ENDPOINT")`.
+3.  Ensure `arize-phoenix` and `openinference-instrumentation-google-adk` are in `requirements.txt`.
+
 ---
 
 ## Mandatory File Structure for New Agents
@@ -65,9 +75,23 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 from google.genai import types
 from config import config
 
+# Observability Imports
+from phoenix.otel import register
+from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# --- 0. OBSERVABILITY SETUP ---
+# Initialize tracing using ADK instrumentation
+# Endpoint is fetched from Config/Env (Secret Manager friendly)
+tracer_provider = register(
+    project_name=os.getenv("GCP_PROJECT_ID", "local-dev") + "-agent",
+    endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
+    set_global_tracer_provider=True
+)
+GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
 
 # --- 1. CONTEXT ISOLATION ---
 # Stores the MCP client for the current request/loop.

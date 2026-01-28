@@ -12,5 +12,14 @@
     "anti_patterns": [
         "Do NOT rush to a conclusion without going through the necessary thinking steps.",
         "Do NOT stop thinking until `nextThoughtNeeded` is false."
+    ],
+    "keywords": [
+        "think",
+        "reason",
+        "plan",
+        "solve",
+        "analyze",
+        "complex",
+        "step by step"
     ]
 }

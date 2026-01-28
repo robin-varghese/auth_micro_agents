@@ -22,129 +22,85 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 from typing import Dict, Any, List, Optional
 import asyncio
 import requests
-
+import json
 
 from config import config
 from structured_logging import propagate_request_id
 
+# Global Registry Cache
+_AGENT_REGISTRY = None
+
+def load_registry(registry_path: str = "master_agent_registry.json") -> List[Dict[str, Any]]:
+    """Load the master agent registry, caching it in memory."""
+    global _AGENT_REGISTRY
+    if _AGENT_REGISTRY:
+        return _AGENT_REGISTRY
+        
+    try:
+        current_dir = Path(__file__).parent
+        with open(current_dir / registry_path, 'r') as f:
+            _AGENT_REGISTRY = json.load(f)
+        return _AGENT_REGISTRY
+    except Exception as e:
+        # Fallback to empty if missing (should not happen in prod)
+        print(f"Error loading registry: {e}")
+        return []
+
+def get_agent_by_id(agent_id: str) -> Optional[Dict[str, Any]]:
+    registry = load_registry()
+    for agent in registry:
+        if agent['agent_id'] == agent_id:
+            return agent
+    return None
+
+
 
 def detect_intent(prompt: str) -> str:
     """
-    Simple keyword-based intent detection with improved accuracy.
-    In production, this could be enhanced with ADK's capabilities.
-    
-    Args:
-        prompt: User's natural language prompt
-        
-        target_agent: One of ['gcloud', 'monitoring', 'github', 'storage', 'db', 
-                            'brave', 'filesystem', 'analytics', 'puppeteer', 'sequential', 'cloud-run', 'mats', 'googlesearch', 'code']
+    Dynamic intent detection based on Master Agent Registry keywords.
     """
+    registry = load_registry()
     prompt_lower = prompt.lower()
-    words = set(prompt_lower.split())
     
-    # Helper for robust matching
-    def count_matches(keywords: List[str]) -> int:
+    best_agent_id = "gcloud_infrastructure_specialist" # Default
+    max_score = 0
+    
+    # 1. Check for explicit MATS triggers (highest priority)
+    if "troubleshoot" in prompt_lower or "debug" in prompt_lower or "fix" in prompt_lower or "investigate" in prompt_lower:
+        return "mats-orchestrator"
+        
+    # 2. Score based on keywords in registry
+    # We prioritize longer matches and exact word matches
+    scores = {}
+    
+    for agent in registry:
+        agent_id = agent['agent_id']
+        keywords = agent.get('keywords', [])
         score = 0
+        
         for k in keywords:
-            # For short keywords/acronyms, require exact word match
+            k = k.lower()
+            # Exact word match for short keywords (len <= 3)
             if len(k) <= 3:
-                if k in words:
-                    score += 1
-            # For longer phrases, use substring match
+                # Naive tokenization
+                if k in prompt_lower.split():
+                    score += 2
             else:
                 if k in prompt_lower:
                     score += 1
-        return score
-
-    # GitHub keywords
-    github_keywords = ['github', 'repo', 'repository', 'git', 'pull request', 'pr', 'issue', 'code', 'commit']
-    # Storage keywords
-    storage_keywords = ['bucket', 'object', 'blob', 'gcs', 'upload', 'download']
-    # DB keywords
-    db_keywords = ['database', 'sql', 'query', 'table', 'postgres', 'postgresql', 'schema', 'select', 'insert', 'bigquery', 'bq', 'history']
-    # Monitoring keywords
-    monitoring_keywords = ['cpu', 'memory', 'logs', 'metrics', 'monitor', 'alert', 'usage', 'check',
-                           'performance', 'latency', 'error', 'log', 'trace', 'observability']
-    # GCloud keywords (fallback for general infra)
-    gcloud_keywords = ['vm', 'instance', 'create', 'delete', 'compute', 'gcp', 'cloud', 'provision', 
-                        'machine', 'disk', 'network', 'firewall', 'operations', 'project', 'region', 'zone']
-    # Cloud Run keywords
-    cloud_run_keywords = ['cloud run', 'service', 'revision', 'container', 'serverless', 'deploy', 'traffic', 'image', 'knative', 'job']
-    # MATS keywords (Troubleshooting)
-    mats_keywords = ['troubleshoot', 'fix', 'debug', 'check what went wrong', 'root cause', 'why is it failing', 'investigate', 'rca', 'diagnosis']
-    
-    # Brave Search keywords
-    brave_keywords = ['search', 'find', 'lookup', 'web', 'internet', 'online', 'google']
-    # Filesystem keywords
-    filesystem_keywords = ['file', 'directory', 'folder', 'cat', 'ls', 'local file', 'read', 'write']
-    # Analytics keywords
-    analytics_keywords = ['analytics', 'traffic', 'users', 'sessions', 'pageviews', 'ga4', 'report', 'visitor']
-    # Puppeteer keywords
-    puppeteer_keywords = ['browser', 'screenshot', 'click', 'navigate', 'visit', 'scrape', 'form', 'webpage']
-    # Sequential keywords
-    sequential_keywords = ['think', 'reason', 'plan', 'solve', 'analyze', 'complex', 'step by step']
-    # Google Search keywords
-    googlesearch_keywords = ['search', 'google', 'find', 'lookup', 'web', 'internet', 'scraping']
-    # Code Execution keywords
-    code_keywords = ['code', 'execute', 'calculate', 'python', 'script', 'math', 'function', 'snippet']
-
-    scores = {
-        'github': count_matches(github_keywords),
-        'storage': count_matches(storage_keywords),
-        'db': count_matches(db_keywords),
-        'monitoring': count_matches(monitoring_keywords),
-        'cloud-run': count_matches(cloud_run_keywords) * 5,
-        'gcloud': count_matches(gcloud_keywords),
-        'mats': count_matches(mats_keywords) * 10,
-        'brave': count_matches(brave_keywords),
-        'filesystem': count_matches(filesystem_keywords),
-        'analytics': count_matches(analytics_keywords),
-        'puppeteer': count_matches(puppeteer_keywords),
-        'sequential': count_matches(sequential_keywords),
-        'googlesearch': count_matches(googlesearch_keywords) * 2,
-        'code': count_matches(code_keywords)
-    }
-    
-    # Resolve Conflicts
-    # 'file' -> Filesystem vs Storage
-    if 'bucket' in prompt_lower or 'object' in prompt_lower:
-        scores['storage'] += 5
+                    # Bonus for finding multi-word concepts ("cloud run")
+                    if ' ' in k:
+                        score += 2
+                        
+        scores[agent_id] = score
         
-    # 'agent operations' -> DB (Analytics)
-    if 'agent' in prompt_lower and 'operations' in prompt_lower:
-        scores['db'] += 10
-        
-    # 'search' -> Brave vs DB vs Google Search
-    if 'sql' in prompt_lower or 'table' in prompt_lower:
-        scores['db'] += 5
-    elif 'google' in prompt_lower and 'search' in prompt_lower and not ('google cloud' in prompt_lower or 'gcp' in prompt_lower):
-        scores['googlesearch'] += 15
-    elif 'brave' in prompt_lower:
-        scores['brave'] += 10
-        
-    # 'code' -> GitHub vs Code Execution
-    if 'repo' in prompt_lower or 'push' in prompt_lower or 'pull' in prompt_lower:
-        scores['github'] += 5
-    elif 'execute' in prompt_lower or 'calculate' in prompt_lower: # Removed generic 'run' to avoid Cloud Run conflict
-        scores['code'] += 5
-        
-    # 'google cloud' -> GCloud (vs Google Search)
-    if 'google cloud' in prompt_lower or 'gcp' in prompt_lower:
-        scores['gcloud'] += 10
-        scores['googlesearch'] -= 5  # Penalize generic search if it's clearly cloud platform
-        
-    # 'mats' explicit trigger overrides others (for troubleshooting context)
-    if 'troubleshoot' in prompt_lower or 'debug' in prompt_lower or 'fix' in prompt_lower:
-        scores['mats'] += 15
-    
-    # Find agent with highest score
-    best_agent = max(scores, key=scores.get)
-    
-    if scores[best_agent] > 0:
-        return best_agent
-    else:
-        # Default to gcloud if unclear/no keywords match
-        return 'gcloud'
+    # Find winner
+    if scores:
+        best_agent_id = max(scores, key=scores.get)
+        if scores[best_agent_id] == 0:
+            return "gcloud_infrastructure_specialist" # Fallback
+            
+    return best_agent_id
 
 
 def check_opa_authorization(user_email: str, target_agent: str) -> dict:
@@ -184,73 +140,60 @@ def check_opa_authorization(user_email: str, target_agent: str) -> dict:
 
 async def route_to_agent(target_agent: str, prompt: str, user_email: str, project_id: str = None, auth_token: str = None) -> Dict[str, Any]:
     """
-    ADK tool: Route request to appropriate sub-agent
-    
-    Args:
-        target_agent: Target agent name
-        prompt: User's prompt
-        user_email: User's email
-        project_id: Optional GCP project ID
-        auth_token: Optional OAuth token for Auth-dependent agents (Analytics)
-    
-    Returns:
-        Response from sub-agent
+    ADK tool: Route request to appropriate sub-agent using Master Registry.
     """
     try:
-        # Map agent to endpoint
-        agent_endpoints = {
-            'gcloud': f"{config.APISIX_URL}/agent/gcloud/execute",
-            'monitoring': f"{config.APISIX_URL}/agent/monitoring/execute",
-            'github': f"{config.APISIX_URL}/agent/github/execute",
-            'storage': f"{config.APISIX_URL}/agent/storage/execute",
-            'db': f"{config.APISIX_URL}/agent/db/execute",
-            'cloud-run': f"{config.APISIX_URL}/agent/cloud-run/execute",
-            'mats': "http://mats-orchestrator:8084/chat",
-            'brave': f"{config.APISIX_URL}/agent/brave/execute",
-            'filesystem': f"{config.APISIX_URL}/agent/filesystem/execute",
-            'analytics': f"{config.APISIX_URL}/agent/analytics/execute",
-            'puppeteer': f"{config.APISIX_URL}/agent/puppeteer/execute",
-            'sequential': f"{config.APISIX_URL}/agent/sequential/execute",
-            'googlesearch': f"{config.APISIX_URL}/agent/googlesearch/execute",
-            'code': f"{config.APISIX_URL}/agent/code/execute"
-        }
+        agent_def = get_agent_by_id(target_agent)
+        endpoint = None
         
-        # Adjust endpoint logic if needed (e.g. cloud-run special case is now standardized above)
-        if target_agent == 'mats':
-             endpoint = agent_endpoints['mats']
-        else:
-             endpoint = agent_endpoints.get(target_agent)
-        
-        if not endpoint:
-            return {
-                "success": False,
-                "error": f"Unknown agent: {target_agent}"
-            }
-        
-        
-        # Prepare payload
-        payload = {
-            "prompt": prompt,
-            "user_email": user_email
-        }
-        
-        if project_id:
-            payload["project_id"] = project_id
-            
-        if target_agent == 'mats':
+        # 1. Special Handling for MATS
+        if target_agent == "mats-orchestrator":
              # Direct internal routing to MATS service
              # Note: MATS requires specific payload structure
              endpoint = "http://mats-orchestrator:8084/troubleshoot"
              payload = {
                  "project_id": project_id or config.GCP_PROJECT_ID,
                  "repo_url": "https://github.com/robin-varghese/auth_micro_agents", # Default for this env
-                 "error_description": prompt,
-                 "branch": "main"
+                 "user_request": prompt, # Updated from logic
+                 "user_email": user_email
              }
+             
+        # 2. Dynamic Routing for Sub-Agents (APISIX)
+        elif agent_def:
+             source_path = agent_def.get("_source_path", "")
+             # Convention: sub_agents/gcloud_agent_adk -> agent/gcloud/execute
+             parts = source_path.split('/')
+             if len(parts) > 1 and parts[-1].endswith("_agent_adk"):
+                 short_name = parts[-1].replace("_agent_adk", "")
+                 endpoint = f"{config.APISIX_URL}/agent/{short_name}/execute"
+             else:
+                 # Fallback/Edge cases (maybe exact match needed or manual mapping if convention fails)
+                 # For now, log warning or fail
+                 pass
+                 
+             payload = {
+                "prompt": prompt,
+                "user_email": user_email
+             }
+             if project_id:
+                payload["project_id"] = project_id
         
-        # Call sub-agent via APISIX
+        if not endpoint:
+            # Fallback for legacy specific IDs if they exist in APISIX map and registry convention fails
+            # (Keeping old map as fallback if registry lookup fails)
+            agent_endpoints = {
+                'gcloud': f"{config.APISIX_URL}/agent/gcloud/execute",
+                # ... (can rely on dynamic logic mostly now)
+            }
+            return {
+                "success": False,
+                "error": f"Could not determine endpoint for agent: {target_agent}"
+            }
+        
+        # Call sub-agent via APISIX/Internal
         headers = {"Content-Type": "application/json"}
         headers = propagate_request_id(headers)
+
         
         # --- Propagate Auth Token ---
         if auth_token:
@@ -399,10 +342,7 @@ orchestrator_agent = Agent(
 
 # Configure BigQuery Analytics Plugin
 bq_config = BigQueryLoggerConfig(
-    enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-    batch_size=1,  # Low latency for real-time analysis
-    max_content_length=100 * 1024,  # 100KB limit
-    shutdown_timeout=10.0
+    enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true"
 )
 
 bq_plugin = BigQueryAgentAnalyticsPlugin(
@@ -527,6 +467,9 @@ if __name__ == "__main__":
         print(f"User: {user_email}")
         print(f"Prompt: {prompt}")
         print("=" * 50)
+        
+        # Load registry for test
+        print(f"Loading registry... {len(load_registry())} agents found.")
         
         result = process_request(prompt, user_email, config.GCP_PROJECT_ID)
         

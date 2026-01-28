@@ -22,5 +22,21 @@
     ],
     "anti_patterns": [
         "Do NOT fetch excessive amounts of log data without limits."
+    ],
+    "keywords": [
+        "cpu",
+        "memory",
+        "logs",
+        "metrics",
+        "monitor",
+        "alert",
+        "usage",
+        "check",
+        "performance",
+        "latency",
+        "error",
+        "log",
+        "trace",
+        "observability"
     ]
 }

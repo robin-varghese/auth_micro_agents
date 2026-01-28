@@ -18,5 +18,15 @@
         "Do NOT use for general web search.",
         "Do NOT infer traffic numbers without running a report.",
         "Do NOT attempt to configure GA4 properties (read-only)."
+    ],
+    "keywords": [
+        "analytics",
+        "traffic",
+        "users",
+        "sessions",
+        "pageviews",
+        "ga4",
+        "report",
+        "visitor"
     ]
 }

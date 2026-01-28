@@ -16,5 +16,14 @@
     "anti_patterns": [
         "Do NOT use for internal codebase search.",
         "Do NOT use for specific database queries."
+    ],
+    "keywords": [
+        "search",
+        "find",
+        "lookup",
+        "web",
+        "internet",
+        "online",
+        "brave"
     ]
 }

@@ -1,0 +1,30 @@
+{
+    "agent_id": "mats-orchestrator",
+    "display_name": "MATS Orchestrator",
+    "icon": "bug_report",
+    "description": "Micro Agent Troubleshooting System (MATS) Orchestrator. Coordinates SRE, Investigator, and Architect agents to diagnose and fix failures.",
+    "capabilities": [
+        "troubleshoot",
+        "debug",
+        "root_cause_analysis",
+        "fix_code",
+        "investigate_failure"
+    ],
+    "dependencies": [
+        "mats-sre-agent",
+        "mats-investigator-agent",
+        "mats-architect-agent"
+    ],
+    "keywords": [
+        "troubleshoot",
+        "fix",
+        "debug",
+        "fail",
+        "error",
+        "investigate",
+        "crash",
+        "exception",
+        "broken",
+        "mats"
+    ]
+}

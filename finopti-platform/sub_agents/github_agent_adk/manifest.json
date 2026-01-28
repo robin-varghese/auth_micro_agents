@@ -29,5 +29,18 @@
     "anti_patterns": [
         "Do NOT commit secrets or sensitive data.",
         "Do NOT force push to main/master branches."
+    ],
+    "keywords": [
+        "github",
+        "repo",
+        "repository",
+        "git",
+        "pull request",
+        "pr",
+        "issue",
+        "code",
+        "commit",
+        "push",
+        "pull"
     ]
 }

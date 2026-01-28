@@ -1,0 +1,19 @@
+{
+    "agent_id": "mats-architect-agent",
+    "display_name": "Architect Agent",
+    "icon": "architecture",
+    "description": "Principal Software Architect. Synthesizes findings into an RCA and recommends fixes.",
+    "capabilities": [
+        "generate_rca",
+        "recommend_fix",
+        "prevention_plan"
+    ],
+    "keywords": [
+        "rca",
+        "root cause analysis",
+        "architecture",
+        "fix recommendation",
+        "design review"
+    ],
+    "dependencies": []
+}

@@ -12,5 +12,14 @@
     ],
     "anti_patterns": [
         "Do NOT hallucinate search results. Always rely on the tool output."
+    ],
+    "keywords": [
+        "search",
+        "google",
+        "find",
+        "lookup",
+        "web",
+        "internet",
+        "scraping"
     ]
 }

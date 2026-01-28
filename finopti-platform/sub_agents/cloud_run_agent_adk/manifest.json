@@ -18,5 +18,17 @@
     "anti_patterns": [
         "Do NOT use for general GCP operations outside Cloud Run.",
         "Do NOT deploy without user confirmation."
+    ],
+    "keywords": [
+        "cloud run",
+        "service",
+        "revision",
+        "container",
+        "serverless",
+        "deploy",
+        "traffic",
+        "image",
+        "knative",
+        "job"
     ]
 }

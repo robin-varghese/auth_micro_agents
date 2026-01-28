@@ -16,5 +16,15 @@
     "anti_patterns": [
         "Do NOT use for system-level operations (e.g. installing packages) unless explicitly allowed.",
         "Do NOT access external APIs unless network access is confirmed."
+    ],
+    "keywords": [
+        "code",
+        "execute",
+        "calculate",
+        "python",
+        "script",
+        "math",
+        "function",
+        "snippet"
     ]
 }

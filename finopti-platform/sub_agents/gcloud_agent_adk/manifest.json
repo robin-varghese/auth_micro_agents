@@ -12,5 +12,24 @@
     "anti_patterns": [
         "Do NOT run interactive commands.",
         "Do NOT execute destructive commands without confirmation."
+    ],
+    "keywords": [
+        "vm",
+        "instance",
+        "create",
+        "delete",
+        "compute",
+        "gcp",
+        "cloud",
+        "provision",
+        "machine",
+        "disk",
+        "network",
+        "firewall",
+        "operations",
+        "project",
+        "region",
+        "zone",
+        "google cloud"
     ]
 }

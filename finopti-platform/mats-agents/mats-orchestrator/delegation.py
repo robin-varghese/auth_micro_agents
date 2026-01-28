@@ -7,6 +7,7 @@ import asyncio
 import aiohttp
 import os
 import logging
+from utils.tracing import trace_span
 from typing import Dict, Any
 from pydantic import ValidationError
 
@@ -52,6 +53,7 @@ async def _http_post(url: str, data: Dict[str, Any], timeout: int = 300) -> Dict
             raise Exception(f"Request to {url} timed out after {timeout}s")
 
 
+@trace_span("delegate_sre", kind="AGENT")
 async def delegate_to_sre(
     task_description: str,
     project_id: str,
@@ -127,6 +129,7 @@ Please analyze the logs and metrics. Return your findings in the following JSON 
     )
 
 
+@trace_span("delegate_investigator", kind="AGENT")
 async def delegate_to_investigator(
     task_description: str,
     sre_context: str,
@@ -202,6 +205,7 @@ Please investigate the code and return findings in this JSON format:
     )
 
 
+@trace_span("delegate_architect", kind="AGENT")
 async def delegate_to_architect(
     sre_findings: Dict[str, Any],
     investigator_findings: Dict[str, Any],

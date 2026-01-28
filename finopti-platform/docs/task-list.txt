@@ -1,0 +1,11 @@
+generate manifest.json and instructions.json for all MATs agents.
+then build the master capability json to be used in master orchestrator (orchestrator_adk). Acccordingly modify the agent.py file for all the MATs agents and load the capabilities from the newly generated manifest.json.
+
+since now MATs agents are ready, all sub agents and MCP servers are ready, lets integrate @ui with @orchestrator_adk. This integration will be already in place only thing to check is whether MAT agents are also integrated in-terms of capability. if not then we need to update the orchestrator_adk to include the MAT agents. @agent.py for the orchestrator_adk needs to be updated inorder to correctly route the request to the agents. the agentic capability should be built from the orchestrator_adk/master_agent_registry.json. This new file needs to be generated from the agent_registry.json + manifest.json of mats-orchestrator agent.  just like @generic_agent_registry.json create a new file to generate the orchestrator_adk/master_agent_registry.json
+
+Once this is completed, when user input is received through the UI, according to the intent of the user prompt, orchestrator_adk checks the agentic capability and sends the request to @mats-orchestrator or any other sub agent in sub_agents. 
+
+
+Do this only after the above task is completed.
+In Phoenix observability, many data fields are missing. Inorder to do effective observability, we need to add many data fields. 
+Phoenix observability needs to be integarted into all the agents. including @orchestrator_adk, @mats-orchestrator, @mats-sre-agent, @mats-investigator-agent, @mats-architect-agent, @mats-sre-agent, @mats-investigator-agent, @mats-architect-agent, all @sub_agents and @mcp_servers

@@ -1,4 +1,4 @@
-version: '3.8'
+
 
 # FinOptiAgents Platform - Docker Compose Configuration
 # 
@@ -119,10 +119,10 @@ services:
   orchestrator:
     build:
       context: .
-      dockerfile: orchestrator_adk/Dockerfile
+      dockerfile: mats-agents/mats-orchestrator/Dockerfile
     container_name: finopti-orchestrator
     # ports:
-    #   - "15000:5000" # Mesh enforcement: Only accessible via APISIX
+    #   - "8080:8080" # Exposed for deployment script verification
     networks:
       - finopti-net
     depends_on:
@@ -131,17 +131,19 @@ services:
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro
     environment:
-      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID}"
-      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID:-}"
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID:-}"
       OPA_URL: "http://opa:8181"
       APISIX_URL: "http://apisix:9080"
-      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
-      BQ_ANALYTICS_DATASET: "${BQ_ANALYTICS_DATASET}"
-      BQ_ANALYTICS_TABLE: "${BQ_ANALYTICS_TABLE}"
-      REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS}"
-      REFLECT_RETRY_THROW_ON_FAIL: "${REFLECT_RETRY_THROW_ON_FAIL}"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED:-}"
+      BQ_ANALYTICS_DATASET: "${BQ_ANALYTICS_DATASET:-}"
+      BQ_ANALYTICS_TABLE: "${BQ_ANALYTICS_TABLE:-}"
+      REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS:-}"
+      REFLECT_RETRY_THROW_ON_FAIL: "${REFLECT_RETRY_THROW_ON_FAIL:-}"
+      USE_SECRET_MANAGER: "true"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -164,17 +166,17 @@ services:
       - ~/.config/gcloud:/root/.config/gcloud:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID}"
-      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID:-}"
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID:-}"
       GCLOUD_MCP_DOCKER_IMAGE: "finopti-gcloud-mcp"
       GCLOUD_MOUNT_PATH: "${HOME}/.config/gcloud:/root/.config/gcloud"
       APISIX_URL: "http://apisix:9080"
-      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
-      BQ_ANALYTICS_DATASET: "${BQ_ANALYTICS_DATASET}"
-      BQ_ANALYTICS_TABLE: "${BQ_ANALYTICS_TABLE}"
-      REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS}"
-      REFLECT_RETRY_THROW_ON_FAIL: "${REFLECT_RETRY_THROW_ON_FAIL}"
-      GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED:-}"
+      BQ_ANALYTICS_DATASET: "${BQ_ANALYTICS_DATASET:-}"
+      BQ_ANALYTICS_TABLE: "${BQ_ANALYTICS_TABLE:-}"
+      REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS:-}"
+      REFLECT_RETRY_THROW_ON_FAIL: "${REFLECT_RETRY_THROW_ON_FAIL:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
       interval: 10s
@@ -199,16 +201,16 @@ services:
       - ~/.config/gcloud:/root/.config/gcloud:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID}"
-      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID:-}"
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID:-}"
       MONITORING_MCP_DOCKER_IMAGE: "finopti-monitoring-mcp"
       GCLOUD_MOUNT_PATH: "${HOME}/.config/gcloud:/root/.config/gcloud"
       APISIX_URL: "http://apisix:9080"
-      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
-      BQ_ANALYTICS_TABLE: "${BQ_ANALYTICS_TABLE}"
-      REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS}"
-      REFLECT_RETRY_THROW_ON_FAIL: "${REFLECT_RETRY_THROW_ON_FAIL}"
-      GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED:-}"
+      BQ_ANALYTICS_TABLE: "${BQ_ANALYTICS_TABLE:-}"
+      REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS:-}"
+      REFLECT_RETRY_THROW_ON_FAIL: "${REFLECT_RETRY_THROW_ON_FAIL:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
       interval: 10s
@@ -363,9 +365,9 @@ services:
       GOOGLE_CLOUD_PROJECT: "vector-search-poc"
       GOOGLE_PROJECT_ID: "vector-search-poc"
       # Optional fallback OAuth env vars (not used when Secret Manager is enabled)
-      GOOGLE_OAUTH_CLIENT_ID: "${GOOGLE_OAUTH_CLIENT_ID}"
-      GOOGLE_OAUTH_CLIENT_SECRET: "${GOOGLE_OAUTH_CLIENT_SECRET}"
-      GOOGLE_OAUTH_REDIRECT_URI: "${GOOGLE_OAUTH_REDIRECT_URI}"
+      GOOGLE_OAUTH_CLIENT_ID: "${GOOGLE_OAUTH_CLIENT_ID:-}"
+      GOOGLE_OAUTH_CLIENT_SECRET: "${GOOGLE_OAUTH_CLIENT_SECRET:-}"
+      GOOGLE_OAUTH_REDIRECT_URI: "${GOOGLE_OAUTH_REDIRECT_URI:-}"
 
   # ====================
   # NEW AGENTS & MCP SERVERS
@@ -382,14 +384,14 @@ services:
     depends_on:
       - apisix
     environment:
-      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID}"
-      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID:-}"
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID:-}"
       GITHUB_MCP_DOCKER_IMAGE: "finopti-github-mcp"
-      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN:-}"
       APISIX_URL: "http://apisix:9080"
-      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
-      REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS}"
-      GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED:-}"
+      REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
@@ -422,13 +424,13 @@ services:
     depends_on:
       - apisix
     environment:
-      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID}"
-      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID:-}"
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID:-}"
       STORAGE_MCP_DOCKER_IMAGE: "finopti-storage-mcp"
       GCLOUD_MOUNT_PATH: "${HOME}/.config/gcloud:/root/.config/gcloud"
       APISIX_URL: "http://apisix:9080"
-      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
-      GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro
       - /var/run/docker.sock:/var/run/docker.sock
@@ -462,11 +464,11 @@ services:
       - apisix
       - db_mcp_toolbox
     environment:
-      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID}"
-      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID:-}"
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID:-}"
       APISIX_URL: "http://apisix:9080"
-      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
-      GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
       DB_MCP_TOOLBOX_URL: "http://db_mcp_toolbox:5000/mcp"
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro
@@ -525,13 +527,13 @@ services:
     depends_on:
       - apisix
     environment:
-      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID}"
-      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+      GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID:-}"
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID:-}"
       CLOUD_RUN_MCP_DOCKER_IMAGE: "finopti-cloud-run-mcp"
       GCLOUD_MOUNT_PATH: "${HOME}/.config/gcloud:/root/.config/gcloud"
       APISIX_URL: "http://apisix:9080"
-      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED}"
-      GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
+      BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro
       - /var/run/docker.sock:/var/run/docker.sock
@@ -552,11 +554,11 @@ services:
     depends_on:
       - apisix
     environment:
-      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID:-}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - APISIX_URL=http://apisix:9080
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
       # Brave API Key handled by Secret Manager logic in agent, but passing env just in case we switch
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -578,11 +580,11 @@ services:
     depends_on:
       - apisix
     environment:
-      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID:-}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - APISIX_URL=http://apisix:9080
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
       - FILESYSTEM_MCP_IMAGE=finopti-filesystem-mcp
       - FILESYSTEM_ROOT=/tmp/agent_filesystem
     volumes:
@@ -619,11 +621,11 @@ services:
     depends_on:
       - apisix
     environment:
-      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID:-}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - APISIX_URL=http://apisix:9080
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
@@ -644,11 +646,11 @@ services:
     depends_on:
       - apisix
     environment:
-      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID:-}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - APISIX_URL=http://apisix:9080
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
@@ -697,11 +699,11 @@ services:
     depends_on:
       - apisix
     environment:
-      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID:-}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - APISIX_URL=http://apisix:9080
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
@@ -722,12 +724,12 @@ services:
     depends_on:
       - apisix
     environment:
-      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID:-}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - APISIX_URL=http://apisix:9080
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
-      - BQ_ANALYTICS_TABLE=${BQ_ANALYTICS_TABLE}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
+      - BQ_ANALYTICS_TABLE=${BQ_ANALYTICS_TABLE:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
@@ -748,10 +750,10 @@ services:
     depends_on:
       - apisix
     environment:
-      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID:-}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - APISIX_URL=http://apisix:9080
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - FINOPTIAGENTS_LLM=${FINOPTIAGENTS_LLM:-gemini-2.0-flash}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -772,7 +774,7 @@ services:
     networks:
       - finopti-net
     ports:
-      - "6006:6006" # Debug port
+      - "6008:6006" # Debug port (Changed to 6008 to avoid conflict with Phoenix)
 
   # ==========================================
   # MATS (Multimodal Autonomous Troubleshooting System)
@@ -783,12 +785,12 @@ services:
       context: .
       dockerfile: mats-agents/mats-sre-agent/Dockerfile
     environment:
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
 
       - GCLOUD_MCP_DOCKER_IMAGE=finopti-gcloud-mcp
       - MONITORING_MCP_DOCKER_IMAGE=finopti-monitoring-mcp
-      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
       - PYTHONUNBUFFERED=1
       - GCLOUD_MOUNT_PATH=${HOME}/.config/gcloud:/root/.config/gcloud
     volumes:
@@ -811,11 +813,11 @@ services:
       context: .
       dockerfile: mats-agents/mats-investigator-agent/Dockerfile
     environment:
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
 
       - GITHUB_MCP_DOCKER_IMAGE=finopti-github-mcp-server
-      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
       - PYTHONUNBUFFERED=1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -837,10 +839,10 @@ services:
       context: .
       dockerfile: mats-agents/mats-architect-agent/Dockerfile
     environment:
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
 
-      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED}
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
       - PYTHONUNBUFFERED=1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -862,8 +864,8 @@ services:
       context: .
       dockerfile: mats-agents/mats-orchestrator/Dockerfile
     environment:
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - PYTHONUNBUFFERED=1
       # Observability
       - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-http://phoenix:6006/v1/traces}
@@ -876,7 +878,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
     ports:
-      - "8084:8084"
+      - "8080:8080"
     networks:
       - finopti-net
     labels:
@@ -898,7 +900,7 @@ services:
     container_name: monkey_agent
     environment:
       - ORCHESTRATOR_URL=http://apisix:9080/orchestrator/ask
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - LOG_LEVEL=INFO
       - PYTHONUNBUFFERED=1
     ports:

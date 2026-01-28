@@ -32,5 +32,14 @@
     "anti_patterns": [
         "Do NOT download large objects without confirmation.",
         "Do NOT delete buckets regardless if they are empty without explicit user consent."
+    ],
+    "keywords": [
+        "bucket",
+        "object",
+        "blob",
+        "gcs",
+        "upload",
+        "download",
+        "storage"
     ]
 }

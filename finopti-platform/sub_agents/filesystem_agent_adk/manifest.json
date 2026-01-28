@@ -25,5 +25,15 @@
         "Do NOT access files outside the allowed directories.",
         "Do NOT overwrite critical configuration files without backup.",
         "Use `dryRun` first when using `edit_file`."
+    ],
+    "keywords": [
+        "file",
+        "directory",
+        "folder",
+        "cat",
+        "ls",
+        "local file",
+        "read",
+        "write"
     ]
 }

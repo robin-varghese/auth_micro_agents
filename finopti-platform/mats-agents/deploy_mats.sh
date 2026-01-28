@@ -91,7 +91,7 @@ for i in {1..30}; do
     fi
     if [ $i -eq 30 ]; then
         echo -e "${RED}✗ Orchestrator failed to start${NC}"
-        docker logs mats-orchestrator
+        docker-compose logs mats-orchestrator
         exit 1
     fi
     echo -n "."

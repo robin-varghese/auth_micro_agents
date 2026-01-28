@@ -1,0 +1,24 @@
+{
+    "agent_id": "mats-sre-agent",
+    "display_name": "SRE Agent",
+    "icon": "analytics",
+    "description": "Senior Site Reliability Engineer. Triages incidents by analyzing logs and metrics.",
+    "capabilities": [
+        "analyze_logs",
+        "extract_error_signatures",
+        "find_stack_traces",
+        "check_metrics"
+    ],
+    "keywords": [
+        "logs",
+        "metrics",
+        "stack trace",
+        "error signature",
+        "sre",
+        "triage",
+        "monitor"
+    ],
+    "dependencies": [
+        "gcloud"
+    ]
+}

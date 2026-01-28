@@ -1,0 +1,23 @@
+{
+    "agent_id": "mats-investigator-agent",
+    "display_name": "Investigator Agent",
+    "icon": "code",
+    "description": "Senior Backend Developer. Analyzes code repositories to locate bugs based on SRE findings.",
+    "capabilities": [
+        "analyze_code",
+        "find_bug",
+        "trace_execution",
+        "search_repo"
+    ],
+    "keywords": [
+        "code analysis",
+        "investigate code",
+        "find bug",
+        "repo search",
+        "trace",
+        "github"
+    ],
+    "dependencies": [
+        "github"
+    ]
+}

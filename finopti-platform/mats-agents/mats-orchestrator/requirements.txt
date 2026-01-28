@@ -12,4 +12,4 @@ arize-phoenix>=4.0.0
 opentelemetry-sdk
 opentelemetry-exporter-otlp
 openinference-instrumentation-google-genai
-
+openinference-instrumentation-google-adk

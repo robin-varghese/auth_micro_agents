@@ -16,5 +16,16 @@
     ],
     "anti_patterns": [
         "Do NOT use for highly interactive sites requiring complex login flows without careful script management."
+    ],
+    "keywords": [
+        "browser",
+        "screenshot",
+        "click",
+        "navigate",
+        "visit",
+        "scrape",
+        "form",
+        "webpage",
+        "puppeteer"
     ]
 }

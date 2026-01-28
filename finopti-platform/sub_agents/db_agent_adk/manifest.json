@@ -18,5 +18,19 @@
     "anti_patterns": [
         "Do NOT drop tables without explicit user confirmation.",
         "Do NOT execute unrestricted DELETE/UPDATE queries without WHERE clauses."
+    ],
+    "keywords": [
+        "database",
+        "sql",
+        "query",
+        "table",
+        "postgres",
+        "postgresql",
+        "schema",
+        "select",
+        "insert",
+        "bigquery",
+        "bq",
+        "history"
     ]
 }
