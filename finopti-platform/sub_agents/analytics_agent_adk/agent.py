@@ -24,6 +24,18 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 from google.genai import types
 from config import config
 
+# Observability
+from phoenix.otel import register
+from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+
+# Initialize tracing
+tracer_provider = register(
+    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-analytics-agent",
+    endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
+    set_global_tracer_provider=True
+)
+GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+
 class AnalyticsMCPClient:
     def __init__(self):
         self.image = "finopti-analytics-mcp"
@@ -164,19 +176,25 @@ ga_agent = Agent(
     ]
 )
 
-app = App(
-    name="finopti_analytics_agent",
-    root_agent=ga_agent,
-    plugins=[
-        ReflectAndRetryToolPlugin(max_retries=3),
-        BigQueryAgentAnalyticsPlugin(
-            project_id=config.GCP_PROJECT_ID,
-            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            table_id=config.BQ_ANALYTICS_TABLE,
-            config=BigQueryLoggerConfig(enabled=True)
-        )
-    ]
-)
+
+def create_app():
+    # Ensure API Key is in environment
+    if config.GOOGLE_API_KEY:
+        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+
+    return App(
+        name="finopti_analytics_agent",
+        root_agent=ga_agent,
+        plugins=[
+            ReflectAndRetryToolPlugin(max_retries=3),
+            BigQueryAgentAnalyticsPlugin(
+                project_id=config.GCP_PROJECT_ID,
+                dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+                table_id=config.BQ_ANALYTICS_TABLE,
+                config=BigQueryLoggerConfig(enabled=True)
+            )
+        ]
+    )
 
 async def send_message_async(prompt: str, user_email: str = None, token: str = None) -> str:
     # Initialize client locally for this request
@@ -188,7 +206,8 @@ async def send_message_async(prompt: str, user_email: str = None, token: str = N
             await mcp.connect(token)
         else:
             return "Error: No OAuth Token provided."
-            
+        
+        app = create_app()
         async with InMemoryRunner(app=app) as runner:
             await runner.session_service.create_session("default", "default", "ga_app")
             message = types.Content(parts=[types.Part(text=prompt)])

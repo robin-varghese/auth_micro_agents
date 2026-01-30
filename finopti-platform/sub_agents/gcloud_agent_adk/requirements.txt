@@ -10,3 +10,7 @@ google-cloud-secret-manager>=2.16.0
 google-cloud-bigquery>=3.0.0
 deprecated
 Flask>=3.0.0
+arize-phoenix>=4.0.0
+openinference-instrumentation-google-adk>=0.1.0
+opentelemetry-sdk
+opentelemetry-exporter-otlp

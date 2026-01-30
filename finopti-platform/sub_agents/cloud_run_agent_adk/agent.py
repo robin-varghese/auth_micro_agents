@@ -23,6 +23,18 @@ from google.adk.runners import InMemoryRunner
 from google.genai import types
 from config import config
 
+# Observability
+from phoenix.otel import register
+from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+
+# Initialize tracing
+tracer_provider = register(
+    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-cloud-run-agent",
+    endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
+    set_global_tracer_provider=True
+)
+GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+
 # 1. MCP Client
 class CloudRunMCPClient:
     def __init__(self):
@@ -186,24 +198,30 @@ cloud_run_agent = Agent(
     ]
 )
 
-# App Configuration
-bq_config = BigQueryLoggerConfig(
-    enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-)
 
-app = App(
-    name="finopti_cloud_run_agent",
-    root_agent=cloud_run_agent,
-    plugins=[
-        ReflectAndRetryToolPlugin(max_retries=3),
-        BigQueryAgentAnalyticsPlugin(
-            project_id=config.GCP_PROJECT_ID,
-            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            table_id=config.BQ_ANALYTICS_TABLE,
-            config=bq_config
-        )
-    ]
-)
+# Helper to create app per request
+def create_app():
+    # Ensure API Key is in environment
+    if config.GOOGLE_API_KEY:
+        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+
+    bq_config = BigQueryLoggerConfig(
+        enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+    )
+    
+    return App(
+        name="finopti_cloud_run_agent",
+        root_agent=cloud_run_agent,
+        plugins=[
+            ReflectAndRetryToolPlugin(max_retries=3),
+            BigQueryAgentAnalyticsPlugin(
+                project_id=config.GCP_PROJECT_ID,
+                dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+                table_id=config.BQ_ANALYTICS_TABLE,
+                config=bq_config
+            )
+        ]
+    )
 
 async def send_message_async(prompt: str, user_email: str = None) -> str:
     # Create new client for this request (and this event loop)
@@ -212,6 +230,10 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
     
     try:
         await mcp.connect()
+        
+        # Create app per request
+        app = create_app()
+
         async with InMemoryRunner(app=app) as runner:
             await runner.session_service.create_session(
                 app_name="finopti_cloud_run_agent",

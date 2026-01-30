@@ -37,6 +37,14 @@ All stdout/stderr from containers is automatically collected by Promtail and sen
 2.  **NEVER HARDCODE** the endpoint. Use `os.getenv("PHOENIX_COLLECTOR_ENDPOINT")`.
 3.  Ensure `arize-phoenix` and `openinference-instrumentation-google-adk` are in `requirements.txt`.
 
+### Rule 6: Asyncio Event Loop Safety (NO GLOBAL APP)
+**CRITICAL:** The `App` and its `Plugins` (especially `BigQueryAgentAnalyticsPlugin`) create async primitives (locks, queues) bound to the event loop active at instantiation.
+**Requirement:**
+1.  **NEVER** instantiate `App` or `Plugins` globally.
+2.  Define a `create_app()` function that builds them.
+3.  Call `create_app()` **inside** your request handler (`send_message_async`).
+4.  Use `asyncio.run()` for the entry point to ensure graceful loop cleanup.
+
 ---
 
 ## Mandatory File Structure for New Agents
@@ -199,10 +207,16 @@ def verify():
 
 ## Troubleshooting & Common Pitfalls
 
-### 1. "Event Loop Mismatch" / 504 Gateway Timeout
-- **Symptom**: Agent hangs, returns 504, or logs `RuntimeError: active loop mismatch`.
-- **Cause**: Reusing a global MCP client variable across different `asyncio.run()` calls.
-- **Fix**: **Use `ContextVar`** as shown in Rule 1. Never store `_mcp` globally.
+### 1. "Event Loop Mismatch" / "Event loop is closed"
+- **Symptom**: `RuntimeError: active loop mismatch`, `RuntimeError: bound to a different event loop`, or `Event loop is closed`.
+- **Cause**: 
+    1. Reusing a global MCP client across requests.
+    2. Instantiating `App` or `Plugins` globally (binding them to the import-time loop).
+    3. Using manual `loop.close()` prematurely.
+- **Fix**: 
+    1. **Use `ContextVar`** for MCP Clients (Rule 1).
+    2. **Use `create_app()`** inside the request handler (Rule 6).
+    3. Use `asyncio.run()` for lifecycle management.
 
 ### 2. "Given Arrow field content_parts is a list..." (BigQuery Error)
 - **Symptom**: BigQuery plugin logs errors about schema mismatch.

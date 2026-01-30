@@ -26,6 +26,18 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 from google.genai import types
 from config import config
 
+# Observability
+from phoenix.otel import register
+from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+
+# Initialize tracing
+tracer_provider = register(
+    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-monitoring-agent-adk",
+    endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
+    set_global_tracer_provider=True
+)
+GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -199,19 +211,33 @@ agent = Agent(
     ]
 )
 
-app = App(
-    name="finopti_monitoring_agent",
-    root_agent=agent,
-    plugins=[
-        ReflectAndRetryToolPlugin(),
-        BigQueryAgentAnalyticsPlugin(
-            project_id=config.GCP_PROJECT_ID,
-            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            table_id=config.BQ_ANALYTICS_TABLE,
-            config=BigQueryLoggerConfig(enabled=True)
-        )
-    ]
-)
+
+# Helper to create app per request
+def create_app():
+    # Ensure API Key is in environment
+    if config.GOOGLE_API_KEY:
+        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+
+    bq_config = BigQueryLoggerConfig(
+        enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true"
+    )
+
+    bq_plugin = BigQueryAgentAnalyticsPlugin(
+        project_id=config.GCP_PROJECT_ID,
+        dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+        table_id=config.BQ_ANALYTICS_TABLE,
+        config=bq_config
+    )
+
+    return App(
+        name="finopti_monitoring_agent",
+        root_agent=agent,
+        plugins=[
+            ReflectAndRetryToolPlugin(),
+            bq_plugin
+        ]
+    )
+
 
 async def send_message_async(prompt: str, user_email: str = None, project_id: str = None) -> str:
     # Create new client for this request (and this event loop)
@@ -220,6 +246,9 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
     
     try:
         await mcp.connect()
+        
+        # Create app per request
+        app = create_app()
 
         # Prepend project context if provided
         if project_id:

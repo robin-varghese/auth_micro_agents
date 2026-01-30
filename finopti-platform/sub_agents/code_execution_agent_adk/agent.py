@@ -21,6 +21,18 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Observability
+from phoenix.otel import register
+from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+
+# Initialize tracing
+tracer_provider = register(
+    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-code-execution-agent",
+    endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
+    set_global_tracer_provider=True
+)
+GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+
 # Agent Configuration
 APP_NAME = "code_execution_agent"
 USER_ID = "finopti_user"

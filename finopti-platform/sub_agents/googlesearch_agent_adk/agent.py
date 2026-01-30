@@ -24,6 +24,18 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 from google.genai import types
 from config import config
 
+# Observability
+from phoenix.otel import register
+from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+
+# Initialize tracing
+tracer_provider = register(
+    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-googlesearch-agent",
+    endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
+    set_global_tracer_provider=True
+)
+GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -66,32 +78,38 @@ if instructions_path.exists():
 else:
     instruction_str = "You are a Google Search Specialist."
 
-# Agent Definition
-# Uses exact Tool definition from google-genai
-search_tool = types.Tool(google_search=types.GoogleSearch())
+from google.adk.tools import google_search
 
+# Agent Definition
+# Uses ADK's native GoogleSearchTool
 agent = Agent(
     name=manifest.get("agent_id", "google_search_specialist"),
     model=config.FINOPTIAGENTS_LLM,
     description=manifest.get("description", "Google Search Specialist."),
     instruction=instruction_str,
-    # tools=[search_tool]
+    tools=[google_search]
 )
 
 # App Definition
-app = App(
-    name="finopti_googlesearch_agent",
-    root_agent=agent,
-    plugins=[
-        ReflectAndRetryToolPlugin(max_retries=3),
-        BigQueryAgentAnalyticsPlugin(
-            project_id=config.GCP_PROJECT_ID,
-            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            table_id=config.BQ_ANALYTICS_TABLE,
-            config=BigQueryLoggerConfig(enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true")
-        )
-    ]
-)
+
+def create_app():
+    # Ensure API Key is in environment
+    if config.GOOGLE_API_KEY:
+        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+
+    return App(
+        name="finopti_googlesearch_agent",
+        root_agent=agent,
+        plugins=[
+            ReflectAndRetryToolPlugin(max_retries=3),
+            BigQueryAgentAnalyticsPlugin(
+                project_id=config.GCP_PROJECT_ID,
+                dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+                table_id=config.BQ_ANALYTICS_TABLE,
+                config=BigQueryLoggerConfig(enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true")
+            )
+        ]
+    )
 
 async def send_message_async(prompt: str, user_email: str = None, project_id: str = None) -> str:
     try:
@@ -99,6 +117,7 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
         if project_id:
             prompt = f"Project ID: {project_id}\n{prompt}"
             
+        app = create_app()
         async with InMemoryRunner(app=app) as runner:
             # Use dynamic user_id if provided
             session_uid = user_email if user_email else "default"
@@ -106,21 +125,22 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
             message = types.Content(parts=[types.Part(text=prompt)])
             response_text = ""
             async for event in runner.run_async(session_id="default", user_id=session_uid, new_message=message):
+                 # logging.info(f"Event received: {event}")
                  if hasattr(event, 'content') and event.content:
-                     for part in event.content.parts:
-                         if part.text: response_text += part.text
+                     if event.content.parts:
+                        for part in event.content.parts:
+                            if part.text: 
+                                response_text += part.text
+            
+            if not response_text:
+                return "Analysis completed but no textual summary was generated. Debug: Tool executed but no final text response."
+            
             return response_text
     except Exception as e:
         return f"Error: {str(e)}"
 
 def send_message(prompt: str, user_email: str = None, project_id: str = None) -> str:
-    # return asyncio.run(send_message_async(prompt, user_email, project_id))
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(send_message_async(prompt, user_email, project_id))
-    finally:
-        loop.close()
+    return asyncio.run(send_message_async(prompt, user_email, project_id))
 
 def process_request(prompt: str) -> str:
     """Synchronous wrapper for main.py."""

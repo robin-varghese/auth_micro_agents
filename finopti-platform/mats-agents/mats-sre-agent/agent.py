@@ -29,6 +29,18 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 
+# Observability
+from phoenix.otel import register
+from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+
+# Initialize tracing
+tracer_provider = register(
+    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-mats-sre",
+    endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
+    set_global_tracer_provider=True
+)
+GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+
 from config import config
 
 # Configure Logging
@@ -173,29 +185,34 @@ sre_agent = Agent(
     tools=[read_logs] 
 )
 
-# Plugins
-bq_plugin = BigQueryAgentAnalyticsPlugin(
-    project_id=os.getenv("GCP_PROJECT_ID"),
-    dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-    table_id=config.BQ_ANALYTICS_TABLE,
-    config=BigQueryLoggerConfig(
-        enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-    )
-)
-
-app_instance = App(
-    name="mats_sre_agent_app",
-    root_agent=sre_agent,
-    plugins=[
-        ReflectAndRetryToolPlugin(),
-        bq_plugin
-    ]
-)
 
 # -------------------------------------------------------------------------
 # RUNNER
 # -------------------------------------------------------------------------
 async def process_request(prompt: str):
+    # Ensure API Key is in environment
+    if config.GOOGLE_API_KEY:
+        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    
+    # Plugins
+    bq_plugin = BigQueryAgentAnalyticsPlugin(
+        project_id=os.getenv("GCP_PROJECT_ID"),
+        dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+        table_id=config.BQ_ANALYTICS_TABLE,
+        config=BigQueryLoggerConfig(
+            enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+        )
+    )
+
+    app_instance = App(
+        name="mats_sre_agent_app",
+        root_agent=sre_agent,
+        plugins=[
+            ReflectAndRetryToolPlugin(),
+            bq_plugin
+        ]
+    )
+
     response_text = ""
     try:
         async with InMemoryRunner(app=app_instance) as runner:

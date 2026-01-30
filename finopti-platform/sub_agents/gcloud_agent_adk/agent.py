@@ -27,6 +27,18 @@ import logging
 
 from config import config
 
+# Observability
+from phoenix.otel import register
+from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+
+# Initialize tracing
+tracer_provider = register(
+    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-gcloud-agent-adk",
+    endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
+    set_global_tracer_provider=True
+)
+GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+
 # MCP Client for GCloud via Docker Stdio
 class GCloudMCPClient:
     """Client for connecting to GCloud MCP server via Docker Stdio"""
@@ -255,48 +267,50 @@ if instructions_path.exists():
 else:
     instruction_str = "You are a Google Cloud Platform Specialist."
 
-# Create ADK Agent
-gcloud_agent = Agent(
-    name=manifest.get("agent_id", "gcloud_infrastructure_specialist"),
-    model=config.FINOPTIAGENTS_LLM,
-    description=manifest.get("description", "Google Cloud Platform infrastructure management specialist."),
-    instruction=instruction_str,
-    tools=[execute_gcloud_command]
-)
 
-# Configure BigQuery Analytics Plugin
-bq_config = BigQueryLoggerConfig(
-    enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-    batch_size=1,
-    max_content_length=100 * 1024,
-    shutdown_timeout=10.0
-)
+# Helper function to create agent/app per request
+def create_app():
+    # Ensure API Key is in environment for GenAI library
+    if config.GOOGLE_API_KEY:
+        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
-bq_plugin = BigQueryAgentAnalyticsPlugin(
-    project_id=config.GCP_PROJECT_ID,
-    dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-    table_id=config.BQ_ANALYTICS_TABLE,
-    config=bq_config,
-    location="US"
-)
+    # Create ADK Agent
+    gcloud_agent = Agent(
+        name=manifest.get("agent_id", "gcloud_infrastructure_specialist"),
+        model=config.FINOPTIAGENTS_LLM,
+        description=manifest.get("description", "Google Cloud Platform infrastructure management specialist."),
+        instruction=instruction_str,
+        tools=[execute_gcloud_command]
+    )
 
-# Ensure API Key is in environment for GenAI library
-if config.GOOGLE_API_KEY:
-    os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    # Configure BigQuery Analytics Plugin
+    bq_config = BigQueryLoggerConfig(
+        enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+        batch_size=1,
+        max_content_length=100 * 1024,
+        shutdown_timeout=10.0
+    )
 
-# Create the App
-app = App(
-    name="finopti_gcloud_agent",
-    root_agent=gcloud_agent,
-    plugins=[
-        ReflectAndRetryToolPlugin(
-            max_retries=int(os.getenv("REFLECT_RETRY_MAX_ATTEMPTS", "3")),
-            throw_exception_if_retry_exceeded=os.getenv("REFLECT_RETRY_THROW_ON_FAIL", "true").lower() == "true"
-        ),
-        bq_plugin
-    ]
-)
+    bq_plugin = BigQueryAgentAnalyticsPlugin(
+        project_id=config.GCP_PROJECT_ID,
+        dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+        table_id=config.BQ_ANALYTICS_TABLE,
+        config=bq_config,
+        location="US"
+    )
 
+    # Create the App
+    return App(
+        name="finopti_gcloud_agent",
+        root_agent=gcloud_agent,
+        plugins=[
+            ReflectAndRetryToolPlugin(
+                max_retries=int(os.getenv("REFLECT_RETRY_MAX_ATTEMPTS", "3")),
+                throw_exception_if_retry_exceeded=os.getenv("REFLECT_RETRY_THROW_ON_FAIL", "true").lower() == "true"
+            ),
+            bq_plugin
+        ]
+    )
 
 from google.adk.runners import InMemoryRunner
 from google.genai import types
@@ -319,6 +333,9 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
             _mcp_client = GCloudMCPClient()
             await _mcp_client.connect()
         
+        # Create App instance for this request (ensures fresh event loop binding for plugins)
+        app = create_app()
+
         # Use InMemoryRunner to execute the app
         async with InMemoryRunner(app=app) as runner:
             sid = "default"

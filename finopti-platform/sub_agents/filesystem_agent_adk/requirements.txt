@@ -5,4 +5,8 @@ flask>=3.0.0
 gunicorn>=21.2.0
 requests>=2.31.0
 mcp
+arize-phoenix>=4.0.0
+openinference-instrumentation-google-adk>=0.1.0
+opentelemetry-sdk
+opentelemetry-exporter-otlp
 

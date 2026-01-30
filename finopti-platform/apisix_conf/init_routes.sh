@@ -579,7 +579,7 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/21" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "code_agent_route",
-    "uri": "/agent/code/*",
+    "uri": "/agent/code_execution/*",
     "upstream": {
       "type": "roundrobin",
       "nodes": {
@@ -593,7 +593,7 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/21" \
     },
     "plugins": {
       "proxy-rewrite": {
-        "regex_uri": ["^/agent/code/(.*)", "/$1"]
+        "regex_uri": ["^/agent/code_execution/(.*)", "/$1"]
       }
     }
   }'

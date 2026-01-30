@@ -32,6 +32,18 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 from google.genai import types
 from config import config
 
+# Observability
+from phoenix.otel import register
+from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+
+# Initialize tracing
+tracer_provider = register(
+    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-filesystem-agent",
+    endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
+    set_global_tracer_provider=True
+)
+GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -230,19 +242,25 @@ fs_agent = Agent(
     ]
 )
 
-app = App(
-    name="finopti_filesystem_agent",
-    root_agent=fs_agent,
-    plugins=[
-        ReflectAndRetryToolPlugin(max_retries=3),
-        BigQueryAgentAnalyticsPlugin(
-            project_id=config.GCP_PROJECT_ID,
-            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            table_id=config.BQ_ANALYTICS_TABLE,
-            config=BigQueryLoggerConfig(enabled=True)
-        )
-    ]
-)
+
+def create_app():
+    # Ensure API Key is in environment
+    if config.GOOGLE_API_KEY:
+        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+
+    return App(
+        name="finopti_filesystem_agent",
+        root_agent=fs_agent,
+        plugins=[
+            ReflectAndRetryToolPlugin(max_retries=3),
+            BigQueryAgentAnalyticsPlugin(
+                project_id=config.GCP_PROJECT_ID,
+                dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+                table_id=config.BQ_ANALYTICS_TABLE,
+                config=BigQueryLoggerConfig(enabled=True)
+            )
+        ]
+    )
 
 async def send_message_async(prompt: str, user_email: str = None, project_id: str = None) -> str:
     # Create new client for this request (and this event loop)
@@ -256,6 +274,7 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
         if project_id:
             prompt = f"Project ID: {project_id}\n{prompt}"
 
+        app = create_app()
         async with InMemoryRunner(app=app) as runner:
             await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_filesystem_agent")
             message = types.Content(parts=[types.Part(text=prompt)])

@@ -27,6 +27,18 @@ import json
 from config import config
 from structured_logging import propagate_request_id
 
+# Observability
+from phoenix.otel import register
+from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+
+# Initialize tracing
+tracer_provider = register(
+    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-orchestrator-adk",
+    endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
+    set_global_tracer_provider=True
+)
+GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+
 # Global Registry Cache
 _AGENT_REGISTRY = None
 
@@ -347,31 +359,37 @@ orchestrator_agent = Agent(
     tools=[route_to_agent]
 )
 
-# Configure BigQuery Analytics Plugin
-bq_config = BigQueryLoggerConfig(
-    enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true"
-)
+# Helper to create app per request
+def create_app():
+    # Ensure API Key is in environment for GenAI library
+    if config.GOOGLE_API_KEY:
+        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
-bq_plugin = BigQueryAgentAnalyticsPlugin(
-    project_id=config.GCP_PROJECT_ID,
-    dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-    table_id=config.BQ_ANALYTICS_TABLE,
-    config=bq_config,
-    location="US"
-)
+    # Configure BigQuery Analytics Plugin
+    bq_config = BigQueryLoggerConfig(
+        enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true"
+    )
 
-# Create App# Create the App
-app = App(
-    name="finopti_orchestrator",
-    root_agent=orchestrator_agent,
-    plugins=[
-        ReflectAndRetryToolPlugin(
-            max_retries=int(os.getenv("REFLECT_RETRY_MAX_ATTEMPTS", "3")),
-            throw_exception_if_retry_exceeded=os.getenv("REFLECT_RETRY_THROW_ON_FAIL", "true").lower() == "true"
-        ),
-        bq_plugin
-    ]
-)
+    bq_plugin = BigQueryAgentAnalyticsPlugin(
+        project_id=config.GCP_PROJECT_ID,
+        dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+        table_id=config.BQ_ANALYTICS_TABLE,
+        config=bq_config,
+        location="US"
+    )
+
+    # Create the App
+    return App(
+        name="finopti_orchestrator",
+        root_agent=orchestrator_agent,
+        plugins=[
+            ReflectAndRetryToolPlugin(
+                max_retries=int(os.getenv("REFLECT_RETRY_MAX_ATTEMPTS", "3")),
+                throw_exception_if_retry_exceeded=os.getenv("REFLECT_RETRY_THROW_ON_FAIL", "true").lower() == "true"
+            ),
+            bq_plugin
+        ]
+    )
 
 
 async def process_request_async(
@@ -393,6 +411,9 @@ async def process_request_async(
         Dictionary with response and metadata
     """
     try:
+        # Create App per request
+        app = create_app()
+
         # Detect intent
         target_agent = detect_intent(prompt)
         

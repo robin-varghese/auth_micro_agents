@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, TypedDict
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -25,6 +25,18 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 )
 from google.genai import types
 from config import config
+
+# Observability
+from phoenix.otel import register
+from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+
+# Initialize tracing
+tracer_provider = register(
+    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-github-agent-adk",
+    endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
+    set_global_tracer_provider=True
+)
+GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -147,8 +159,20 @@ async def create_or_update_file(owner: str, repo: str, path: str, content: str, 
     if sha: args["sha"] = sha
     return await _call_gh_tool("create_or_update_file", args, github_pat)
 
-async def push_files(owner: str, repo: str, branch: str, files: List[Dict[str, str]], message: str, github_pat: str = None) -> Dict[str, Any]:
-    return await _call_gh_tool("push_files", {"owner": owner, "repo": repo, "branch": branch, "files": files, "message": message}, github_pat)
+async def push_files(owner: str, repo: str, branch: str, files: str, message: str, github_pat: str = None) -> Dict[str, Any]:
+    """
+    Push files to a branch.
+    files: JSON string representing list of files [{'path': '...', 'content': '...'}, ...]
+    """
+    try:
+         if isinstance(files, str):
+             files_list = json.loads(files)
+         else:
+             files_list = files
+    except:
+         files_list = files # Fallback
+         
+    return await _call_gh_tool("push_files", {"owner": owner, "repo": repo, "branch": branch, "files": files_list, "message": message}, github_pat)
 
 async def create_issue(owner: str, repo: str, title: str, body: str = None, github_pat: str = None) -> Dict[str, Any]:
     args = {"owner": owner, "repo": repo, "title": title}
@@ -213,35 +237,44 @@ if instructions_path.exists():
 else:
     instruction_str = "You are a GitHub Specialist."
 
-agent = Agent(
-    name=manifest.get("agent_id", "github_specialist"),
-    model=config.FINOPTIAGENTS_LLM,
-    description=manifest.get("description", "GitHub Specialist."),
-    instruction=instruction_str,
-    tools=[
-        search_repositories, list_repositories, get_file_contents, create_or_update_file,
-        push_files, create_issue, list_issues, update_issue, add_issue_comment,
-        create_pull_request, list_pull_requests, merge_pull_request, get_pull_request,
-        create_branch, list_branches, get_commit, search_code, search_issues
-    ]
-)
+def create_app():
+    # Ensure API Key is in environment
+    if config.GOOGLE_API_KEY:
+        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    if config.GCP_PROJECT_ID:
+        os.environ["GOOGLE_CLOUD_PROJECT"] = config.GCP_PROJECT_ID
+        os.environ["GCP_PROJECT_ID"] = config.GCP_PROJECT_ID
 
-app = App(
-    name="finopti_github_agent",
-    root_agent=agent,
-    plugins=[
-        ReflectAndRetryToolPlugin(max_retries=3),
-        BigQueryAgentAnalyticsPlugin(
-            project_id=config.GCP_PROJECT_ID,
-            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            table_id=config.BQ_ANALYTICS_TABLE,
-            config=BigQueryLoggerConfig(enabled=True)
-        )
-    ]
-)
+    agent = Agent(
+        name=manifest.get("agent_id", "github_specialist"),
+        model=config.FINOPTIAGENTS_LLM,
+        description=manifest.get("description", "GitHub Specialist."),
+        instruction=instruction_str,
+        tools=[
+            search_repositories, list_repositories, get_file_contents, create_or_update_file,
+            push_files, create_issue, list_issues, update_issue, add_issue_comment,
+            create_pull_request, list_pull_requests, merge_pull_request, get_pull_request,
+            create_branch, list_branches, get_commit, search_code, search_issues
+        ]
+    )
+
+    return App(
+        name="finopti_github_agent",
+        root_agent=agent,
+        plugins=[
+            ReflectAndRetryToolPlugin(max_retries=3),
+            BigQueryAgentAnalyticsPlugin(
+                project_id=config.GCP_PROJECT_ID,
+                dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+                table_id=config.BQ_ANALYTICS_TABLE,
+                config=BigQueryLoggerConfig(enabled=True)
+            )
+        ]
+    )
 
 async def send_message_async(prompt: str, user_email: str = None) -> str:
     try:
+        app = create_app()
         async with InMemoryRunner(app=app) as runner:
             await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_github_agent")
             message = types.Content(parts=[types.Part(text=prompt)])
