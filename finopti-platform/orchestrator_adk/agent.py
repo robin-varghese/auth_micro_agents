@@ -327,11 +327,18 @@ orchestrator_agent = Agent(
     **Code Execution Agent**:
     - "Calculate fibonacci", "Run python script", "Solve math problem"
     
+    **MATS Orchestrator** - Use for troubleshooting and debugging:
+    - "Troubleshoot this failure", "Why did the build fail?"
+    - "Debug this error", "Find the root cause of..."
+    - "Investigate this crash", "Fix my code"
+    - "RCA for the last incident"
+    
     **Key Rules:**
     1. "operations in GCP/cloud/project" → **gcloud** (NEVER github)
     2. Mention of "project ID" or "GCP Project" → **gcloud**
     3. "GitHub repos/code" → **github**  
-    4. Default for infrastructure → **gcloud**
+    4. "troubleshoot/debug/fix" complex issues → **mats-orchestrator**
+    5. Default for infrastructure → **gcloud**
     
     WARNING: Do NOT route "cloud project" or "project operations" to the github agent. The github agent only handles code repositories on github.com. GCP operations like "list operations" MUST go to gcloud.
     
@@ -471,6 +478,13 @@ if __name__ == "__main__":
         # Load registry for test
         print(f"Loading registry... {len(load_registry())} agents found.")
         
+        # When running locally on host, 'http://opa:8181' (docker DNS) won't resolve.
+        # If OPA_URL is the default docker value, override to localhost for testing.
+        current_opa = config.OPA_URL
+        if "opa:8181" in current_opa or not current_opa:
+             print(f"Note: Overriding OPA_URL from '{current_opa}' to 'http://localhost:8181' for local testing.")
+             config.OPA_URL = "http://localhost:8181"
+            
         result = process_request(prompt, user_email, config.GCP_PROJECT_ID)
         
         import json

@@ -297,6 +297,36 @@ with st.sidebar:
             set_prompt("Plan a 3-day itinerary for a trip to Tokyo step-by-step")
             st.rerun()
 
+        st.markdown("**Troubleshooting (MATS)**")
+        
+        if st.button("Troubleshoot Cloud Run", use_container_width=True):
+            set_prompt("Troubleshoot my cloud run service 'frontend-service' which is crashing on startup")
+            st.rerun()
+
+        if st.button("Debug Deployment", use_container_width=True):
+            set_prompt("Debug the failed deployment in project 'vector-search-poc'. Why did it fail?")
+            st.rerun()
+
+        st.markdown("**Infrastructure**")
+
+        if st.button("List Cloud Run Services", use_container_width=True):
+            set_prompt("List all Cloud Run services in us-central1")
+            st.rerun()
+
+        if st.button("Check Monitoring Metrics", use_container_width=True):
+            set_prompt("Show CPU utilization for the last hour")
+            st.rerun()
+
+        st.markdown("**Data & Storage**")
+
+        if st.button("Query Database Schema", use_container_width=True):
+            set_prompt("Show me the schema for the 'users' table in the database")
+            st.rerun()
+
+        if st.button("List Storage Objects", use_container_width=True):
+            set_prompt("List files in the 'finopti-assets' bucket")
+            st.rerun()
+
         
     st.markdown("---")
     st.caption("MATS Platform v1.0")
