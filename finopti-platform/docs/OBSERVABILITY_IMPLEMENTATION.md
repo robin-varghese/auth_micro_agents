@@ -128,7 +128,7 @@ Add these services to `docker-compose.yml` after the `ui` service:
     image: grafana/grafana:10.2.3
     container_name: finopti-grafana
     ports:
-      - "3000:3000"
+      - "3001:3000"
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana-data:/var/lib/grafana
@@ -221,7 +221,7 @@ docker-compose ps
 
 ### Step 4: Access Grafana
 
-1. Open http://localhost:3000
+1. Open http://localhost:3001
 2. Login with `admin` / `admin`
 3. Go to "Explore"
 4. Select "Loki" datasource
@@ -368,7 +368,7 @@ curl -X POST http://localhost:9080/orchestrator/ask \
   -d '{"prompt": "create a VM"}'
 
 # 2. Open Grafana
-open http://localhost:3000
+open http://localhost:3001
 
 # 3. Go to Explore → Select Loki
 
@@ -385,7 +385,7 @@ Update `README.md` to add:
 ```markdown
 ## Observability
 
-Access Grafana: http://localhost:3000 (admin/admin)
+Access Grafana: http://localhost:3001 (admin/admin)
 
 ### View Logs
 1. Open Grafana
@@ -405,7 +405,7 @@ Access Grafana: http://localhost:3000 (admin/admin)
 - [ ] Loki service starts successfully
 - [ ] Promtail service starts successfully  
 - [ ] Grafana service starts successfully
-- [ ] Can access Grafana at http://localhost:3000
+- [ ] Can access Grafana at http://localhost:3001
 - [ ] Loki datasource is configured in Grafana
 - [ ] Can see logs in Grafana Explore
 - [ ] Logs are in JSON format
@@ -434,4 +434,4 @@ Access Grafana: http://localhost:3000 (admin/admin)
 
 **Observability Config**: `observability/` directory
 
-**Grafana URL**: http://localhost:3000 (admin/admin)
+**Grafana URL**: http://localhost:3001 (admin/admin)

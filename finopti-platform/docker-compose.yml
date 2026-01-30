@@ -300,6 +300,46 @@ services:
     command: -config.file=/etc/promtail/config.yml
 
   # ====================
+  # Prometheus - Metrics DB
+  # ====================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: finopti-prometheus
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - finopti-net
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+
+  # ====================
+  # cAdvisor - Container Metrics
+  # ====================
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.0
+    container_name: finopti-cadvisor
+    # ports:
+    #   - "8080:8080" # Internal use only
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - finopti-net
+    devices:
+      - /dev/kmsg
+    privileged: true # Required for some metric access
+
+
+  # ====================
   # Grafana - Visualization
   # ====================
   grafana:
@@ -934,6 +974,8 @@ volumes:
     name: finopti-loki-data
   grafana-data:
     name: finopti-grafana-data
+  prometheus-data:
+    name: finopti-prometheus-data
 
 # ====================
 # Network Configuration

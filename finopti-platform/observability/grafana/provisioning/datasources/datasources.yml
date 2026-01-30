@@ -15,11 +15,11 @@ datasources:
           name: TraceID
           url: "$${__value.raw}"
     
-  # Prometheus datasource for APISIX metrics
+  # Prometheus datasource (Centralized)
   - name: Prometheus
     type: prometheus
     access: proxy
-    url: http://apisix:9091
+    url: http://prometheus:9090
     isDefault: false
     jsonData:
       timeInterval: "5s"

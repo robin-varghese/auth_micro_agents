@@ -24,7 +24,7 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/1" \
     "upstream": {
       "type": "roundrobin",
       "nodes": {
-        "orchestrator:5000": 1
+        "orchestrator:8080": 1
       },
       "timeout": {
         "connect": 6,
