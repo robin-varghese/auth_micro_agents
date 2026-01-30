@@ -418,14 +418,23 @@ async def process_request_async(
         )
         
         # Propagate error if present
-        response_data = agent_response.get('data', {})
         if not agent_response.get('success', False):
             error_msg = agent_response.get('error', 'Unknown sub-agent error')
-            response_data = {"error": error_msg}
+            return {
+                "error": True,
+                "message": f"Agent {target_agent} failed: {error_msg}",
+                "orchestrator": {
+                    "user_email": user_email,
+                    "target_agent": target_agent,
+                    "authorized": True
+                }
+            }
+
+        response_data = agent_response.get('data', {})
 
         # Add orchestrator metadata
         return {
-            "success": agent_response.get('success', False),
+            "success": True,
             "response": response_data,
             "orchestrator": {
                 "user_email": user_email,

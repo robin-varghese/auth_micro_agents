@@ -53,6 +53,34 @@ def troubleshoot():
         logger.error(f"Error processing troubleshoot request: {e}", exc_info=True)
         return jsonify({"error": str(e), "status": "FAILURE"}), 500
 
+@app.route('/ask', methods=['POST'])
+def ask():
+    """
+    Adapter endpoint for UI requests (uses 'prompt' key).
+    """
+    data = request.json
+    if not data or 'prompt' not in data:
+        return jsonify({"error": "Prompt is required"}), 400
+    
+    prompt = data['prompt']
+    project_id = data.get('project_id', 'vector-search-poc') # Default for UI
+    repo_url = data.get('repo_url', '')
+    user_email = request.headers.get('X-User-Email', 'unknown')
+    
+    logger.info(f"Ask request from {user_email}: {prompt[:50]}...")
+    
+    try:
+        result = asyncio.run(run_investigation_async(
+            user_request=prompt,
+            project_id=project_id,
+            repo_url=repo_url,
+            user_email=user_email
+        ))
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error in ask endpoint: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/chat', methods=['POST'])
 def chat():
     """

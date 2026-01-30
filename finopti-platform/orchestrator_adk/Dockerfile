@@ -12,7 +12,11 @@ COPY orchestrator_adk/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy all Python files from orchestrator_adk
+# Copy all Python files from orchestrator_adk
 COPY orchestrator_adk/*.py .
+
+# Copy Master Agent Registry
+COPY orchestrator_adk/master_agent_registry.json .
 
 # Copy config module
 COPY config /app/config
