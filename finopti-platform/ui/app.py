@@ -40,11 +40,169 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Configuration
-APISIX_URL = "http://apisix:9080"
-ORCHESTRATOR_ENDPOINT = f"{APISIX_URL}/orchestrator/ask"
+import time
 
-# Available users (simulated Google Auth)
+# Initialize session state
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+if 'user_email' not in st.session_state:
+    st.session_state.user_email = None
+if 'user_name' not in st.session_state:
+    st.session_state.user_name = None
+if 'id_token' not in st.session_state:
+    st.session_state.id_token = None
+if 'auth_method' not in st.session_state:
+    st.session_state.auth_method = None  # 'oauth' or 'simulated'
+if 'messages' not in st.session_state:
+    st.session_state.messages = []
+if 'pending_prompt' not in st.session_state:
+    st.session_state.pending_prompt = None
+
+# ... (Configuration)
+APISIX_URL = "http://apisix:9080"
+ORCHESTRATOR_JOBS = f"{APISIX_URL}/agent/mats/jobs"
+
+# ... (Auth and Helpers)
+
+def start_job(prompt: str) -> dict:
+    """Start an async troubleshooting job"""
+    try:
+        headers = oauth_helper.get_auth_headers()
+        payload = {"prompt": prompt}
+        
+        response = requests.post(
+            ORCHESTRATOR_JOBS,
+            headers=headers,
+            json=payload,
+            timeout=10
+        )
+        
+        if response.status_code == 202:
+            return response.json() # {"job_id": "...", "status": "RUNNING"}
+        else:
+            return {"error": f"Failed to start job: {response.text}"}
+            
+    except Exception as e:
+        return {"error": str(e)}
+
+def poll_job(job_id: str) -> dict:
+    """Poll job status"""
+    try:
+        headers = oauth_helper.get_auth_headers()
+        response = requests.get(
+            f"{ORCHESTRATOR_JOBS}/{job_id}",
+            headers=headers,
+            timeout=5
+        )
+        if response.status_code == 200:
+            return response.json()
+        return {"error": "Failed to poll"}
+    except:
+        return {"error": "Poll error"}
+
+# ... (Sidebar)
+
+# Main Content
+if not st.session_state.authenticated:
+    # ... (Login Page)
+    pass
+else:
+    st.title("MATS Chat 💬")
+    
+    # Display chat messages
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+    
+    # Chat input logic
+    user_input = st.chat_input("Ask me to perform GCloud or Monitoring operations...")
+    
+    if st.session_state.pending_prompt:
+        user_input = st.session_state.pending_prompt
+        st.session_state.pending_prompt = None
+    
+    if user_input:
+        # Add user message to chat
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.markdown(user_input)
+        
+        # Async Interaction Loop
+        with st.chat_message("assistant"):
+            status_container = st.status("🚀 Initializing...", expanded=True)
+            console_container = st.empty()
+            plan_container = st.empty()
+            
+            # 1. Start Job
+            job_data = start_job(user_input)
+            
+            if "error" in job_data:
+                status_container.update(label="❌ Failed to start", state="error")
+                st.error(job_data["error"])
+            else:
+                job_id = job_data["job_id"]
+                status_container.update(label="🔄 MATS Active", state="running")
+                
+                # 2. Poll Loop
+                final_result = None
+                processed_events = set()
+                
+                start_time = time.time()
+                while True:
+                    # Timeout safety
+                    if time.time() - start_time > 600:
+                        status_container.update(label="❌ Timeout", state="error")
+                        break
+                        
+                    status_data = poll_job(job_id)
+                    current_status = status_data.get("status", "UNKNOWN")
+                    
+                    # Update Events
+                    events = status_data.get("events", [])
+                    
+                    # Render Plan if found
+                    for evt in events:
+                        if evt["type"] == "PLAN" and "plan_rendered" not in st.session_state:
+                            plan_container.markdown(evt["message"])
+                            
+                    # Render Console Log items (Latest 20)
+                    console_text = ""
+                    for evt in events[-10:]:
+                        icon = "ℹ️"
+                        if evt["type"] == "TOOL_USE": icon = "🛠️"
+                        elif evt["type"] == "OBSERVATION": icon = "✅"
+                        elif evt["type"] == "THOUGHT": icon = "🧠"
+                        elif evt["type"] == "ERROR": icon = "❌"
+                        elif evt["type"] == "PLAN": icon = "📋"
+                        
+                        source = evt.get("source", "system").replace("mats-", "").replace("-agent", "").upper()
+                        console_text += f"{icon} **[{source}]** {evt['message']}\n\n"
+                        
+                    console_container.caption(console_text)
+                    
+                    if current_status in ["COMPLETED", "FAILED", "PARTIAL"]:
+                        final_result = status_data.get("result")
+                        if current_status == "COMPLETED":
+                            status_container.update(label="✅ Complete", state="complete", expanded=False)
+                        else:
+                            status_container.update(label=f"⚠️ {current_status}", state="error", expanded=False)
+                        break
+                        
+                    time.sleep(2)
+                
+                # 3. Render Final Response
+                if final_result:
+                    # Parse result for nicer display
+                    response_msg = ""
+                    if isinstance(final_result, dict):
+                         response_msg = final_result.get("response") or final_result.get("message") or str(final_result)
+                    else:
+                         response_msg = str(final_result)
+                         
+                    st.markdown(response_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": response_msg})
+                else:
+                     st.error("No final result received.")
 AVAILABLE_USERS = {
     "admin@cloudroaster.com": {
         "name": "Admin User",
@@ -63,21 +221,7 @@ AVAILABLE_USERS = {
     }
 }
 
-# Initialize session state
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
-if 'user_email' not in st.session_state:
-    st.session_state.user_email = None
-if 'user_name' not in st.session_state:
-    st.session_state.user_name = None
-if 'id_token' not in st.session_state:
-    st.session_state.id_token = None
-if 'auth_method' not in st.session_state:
-    st.session_state.auth_method = None  # 'oauth' or 'simulated'
-if 'messages' not in st.session_state:
-    st.session_state.messages = []
-if 'pending_prompt' not in st.session_state:
-    st.session_state.pending_prompt = None
+
 
 def login_simulated(user_email: str):
     """Simulate user login (development mode)"""
@@ -115,32 +259,63 @@ def send_message(prompt: str) -> dict:
             ORCHESTRATOR_ENDPOINT,
             headers=headers,
             json=payload,
-            timeout=120
+            timeout=600
         )
         
         if response.status_code == 200:
-            return {
-                "success": True,
-                "data": response.json()
-            }
+            try:
+                data = response.json()
+                return {
+                    "success": True,
+                    "data": data
+                }
+            except ValueError:
+                return {
+                    "success": False,
+                    "error": "Invalid Response",
+                    "message": f"Server returned 200 OK but invalid JSON: {response.text[:200]}"
+                }
+
         elif response.status_code == 403:
+            try:
+                msg = response.json().get("message", "Access denied")
+            except ValueError:
+                msg = response.text
+                
             return {
                 "success": False,
                 "error": "Authorization Error",
-                "message": response.json().get("message", "Access denied")
+                "message": msg
             }
+            
+        elif response.status_code == 504:
+            return {
+                "success": False,
+                "error": "Gateway Timeout",
+                "message": (
+                    "The request took too long to process (timeout > 10m). "
+                    "The agent is likely still working in the background. "
+                    "Please check back later or check the 'rca-reports-mats' bucket directly."
+                )
+            }
+            
         else:
+            try:
+                msg = response.json().get("message", "Unknown error")
+            except ValueError:
+                msg = f"Raw response: {response.text[:200]}"
+                
             return {
                 "success": False,
                 "error": f"HTTP {response.status_code}",
-                "message": response.json().get("message", "Unknown error")
+                "message": msg
             }
     
     except requests.exceptions.Timeout:
         return {
             "success": False,
             "error": "Timeout",
-            "message": "Request timed out after 60 seconds"
+            "message": "Request timed out (execution took > 600s). The agent is likely still working in the background."
         }
     except requests.exceptions.ConnectionError:
         return {
@@ -300,7 +475,7 @@ with st.sidebar:
         st.markdown("**Troubleshooting (MATS)**")
         
         if st.button("Troubleshoot Cloud Run", use_container_width=True):
-            set_prompt("Troubleshoot my cloud run service 'frontend-service' which is crashing on startup")
+            set_prompt("I have hosted one cloud run service in my gcp project vector-search-poc. name:calculator-app Region: us-central1 URL: https://calculator-app-912533822336.us-central1.run.app can you troubleshoot this application for any problem. ")
             st.rerun()
 
         if st.button("Debug Deployment", use_container_width=True):
@@ -331,56 +506,4 @@ with st.sidebar:
     st.markdown("---")
     st.caption("MATS Platform v1.0")
 
-# Main content
-if not st.session_state.authenticated:
-    st.title("Welcome to MATS")
-    st.markdown("""
-    ### Intelligent Application Troubleshooting
-    
-    MATS serves as your autonomous Site Reliability Engineer. It simplifies troubleshooting by coordinating specialized agents to:
-    
-    1.  **Understand Context**: Identifies your GCP projects and relevant resources.
-    2.  **Analyze Code & Logs**: Connects to your GitHub repositories and specific branches to correlate code with production logs.
-    3.  **Diagnose Issues**: Uses factual evidence from logs and metrics to pinpoint root causes, acting as a "Senior SRE" to extract the smoking gun.
-    
-    **Get Started:**
-    Login from the sidebar to begin an autonomous troubleshooting session.
-    """)
 
-
-else:
-    st.title("MATS Chat 💬")
-    
-    # Display chat messages
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-    
-    # Chat input logic
-    user_input = st.chat_input("Ask me to perform GCloud or Monitoring operations...")
-    
-    # Check for pending prompt from shortcuts
-    if st.session_state.pending_prompt:
-        user_input = st.session_state.pending_prompt
-        st.session_state.pending_prompt = None
-    
-    if user_input:
-        # Add user message to chat
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
-        
-        # Send to orchestrator with simple loading state
-        with st.status("🔄 Processing your request...", expanded=False) as status:
-            response = send_message(user_input)
-            
-            if response.get("success"):
-                status.update(label="✅ Request completed", state="complete", expanded=False)
-            else:
-                status.update(label="❌ Request failed", state="error", expanded=True)
-        
-        # Format and display assistant response
-        assistant_message = format_response(response)
-        st.session_state.messages.append({"role": "assistant", "content": assistant_message})
-        with st.chat_message("assistant"):
-            st.markdown(assistant_message)

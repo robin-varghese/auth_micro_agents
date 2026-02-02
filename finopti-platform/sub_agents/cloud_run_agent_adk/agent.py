@@ -169,23 +169,13 @@ if instructions_path.exists():
 else:
     instruction_str = "You are a Cloud Run expert."
 
-# Helper: Dynamic Model Loading
-def get_gemini_model(default_model: str = "gemini-1.5-flash-001") -> str:
-    model = os.getenv("FINOPTIAGENTS_LLM")
-    if model: return model
-    try:
-        model = getattr(config, "FINOPTIAGENTS_LLM", None)
-        if model: return model
-    except: pass
-    return default_model
-
 # Ensure API Key is in environment for GenAI library
 if hasattr(config, "GOOGLE_API_KEY") and config.GOOGLE_API_KEY:
     os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
 cloud_run_agent = Agent(
     name=manifest.get("agent_id", "cloud_run_specialist"),
-    model=get_gemini_model(),
+    model=config.FINOPTIAGENTS_LLM,
     description=manifest.get("description", "Google Cloud Run specialist."),
     instruction=instruction_str,
     tools=[
@@ -193,63 +183,92 @@ cloud_run_agent = Agent(
         get_service,
         get_service_log,
         list_projects,
-        create_project
-        # deploy_file_contents - Excluded for now as arg structure is ambiguous without deeper inspection
+        create_project,
+        deploy_file_contents
     ]
 )
 
 
-# Helper to create app per request
+# Helper to create and configure the BQ plugin
+def create_bq_plugin():
+    bq_config = BigQueryLoggerConfig(
+        enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+    )
+    
+    return BigQueryAgentAnalyticsPlugin(
+        project_id=config.GCP_PROJECT_ID,
+        dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+        table_id=config.BQ_ANALYTICS_TABLE,
+        config=bq_config
+    )
+
 def create_app():
     # Ensure API Key is in environment
     if config.GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
-
-    bq_config = BigQueryLoggerConfig(
-        enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-    )
     
     return App(
         name="finopti_cloud_run_agent",
         root_agent=cloud_run_agent,
         plugins=[
             ReflectAndRetryToolPlugin(max_retries=3),
-            BigQueryAgentAnalyticsPlugin(
-                project_id=config.GCP_PROJECT_ID,
-                dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-                table_id=config.BQ_ANALYTICS_TABLE,
-                config=bq_config
-            )
+            create_bq_plugin()
         ]
     )
 
-async def send_message_async(prompt: str, user_email: str = None) -> str:
-    # Create new client for this request (and this event loop)
-    mcp = CloudRunMCPClient()
-    token_reset = _mcp_ctx.set(mcp)
-    
-    try:
-        await mcp.connect()
-        
-        # Create app per request
-        app = create_app()
+# Limit concurrency to restrict file descriptor/thread usage
+_concurrency_sem = asyncio.Semaphore(5)
 
-        async with InMemoryRunner(app=app) as runner:
-            await runner.session_service.create_session(
-                app_name="finopti_cloud_run_agent",
-                user_id="default",
-                session_id="default"
-            )
-            message = types.Content(parts=[types.Part(text=prompt)])
-            response_text = ""
-            async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
-                if hasattr(event, 'content') and event.content:
-                    for part in event.content.parts:
-                        if part.text: response_text += part.text
-            return response_text
-    finally:
-        await mcp.close()
-        _mcp_ctx.reset(token_reset)
+async def send_message_async(prompt: str, user_email: str = None) -> str:
+    async with _concurrency_sem:
+        # Create new client for this request (and this event loop)
+        mcp = CloudRunMCPClient()
+        token_reset = _mcp_ctx.set(mcp)
+        
+        # Keep track of BQ plugin for cleanup
+        bq_plugin = None
+        
+        try:
+            await mcp.connect()
+            
+            # Create app per request
+            app = create_app()
+            
+            # Find BQ plugin to ensure cleanup
+            for p in app.plugins:
+                if isinstance(p, BigQueryAgentAnalyticsPlugin):
+                    bq_plugin = p
+                    break
+
+            async with InMemoryRunner(app=app) as runner:
+                await runner.session_service.create_session(
+                    app_name="finopti_cloud_run_agent",
+                    user_id="default",
+                    session_id="default"
+                )
+                message = types.Content(parts=[types.Part(text=prompt)])
+                response_text = ""
+                async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
+                    if hasattr(event, 'content') and event.content:
+                        for part in event.content.parts:
+                            if part.text: response_text += part.text
+                return response_text
+        finally:
+            # Clean up MCP
+            await mcp.close()
+            _mcp_ctx.reset(token_reset)
+            
+            # Clean up BQ Plugin (Critical for preventing BookingIOError/Resource Exhaustion)
+            if bq_plugin:
+                try:
+                    # Attempt to close the client if it exists (standard google cloud client pattern)
+                    if hasattr(bq_plugin, 'client') and hasattr(bq_plugin.client, 'close'):
+                        bq_plugin.client.close()
+                    # Also check for private _client attribute just in case
+                    elif hasattr(bq_plugin, '_client') and hasattr(bq_plugin._client, 'close'):
+                        bq_plugin._client.close()
+                except Exception as e:
+                    logging.error(f"Error closing BQ plugin client: {e}")
 
 def send_message(prompt: str, user_email: str = None) -> str:
     return asyncio.run(send_message_async(prompt, user_email))

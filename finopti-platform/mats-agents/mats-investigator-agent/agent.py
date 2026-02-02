@@ -1,4 +1,3 @@
-
 """
 MATS Investigator Agent - Code Analysis
 """
@@ -8,6 +7,8 @@ import asyncio
 import json
 import logging
 from typing import Dict, Any, List
+
+import requests
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
@@ -40,9 +41,36 @@ from config import config
 if config.GOOGLE_API_KEY:
     os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
+# -------------------------------------------------------------------------
+# PROGRESS HELPER (ASYNC)
+# -------------------------------------------------------------------------
+async def _report_progress(message: str, event_type: str = "INFO"):
+    """Helper to send progress to Orchestrator"""
+    job_id = os.environ.get("MATS_JOB_ID")
+    orchestrator_url = os.environ.get("MATS_ORCHESTRATOR_URL", "http://mats-orchestrator:8084")
+    
+    if not job_id:
+        return
+
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, 
+            lambda: requests.post(
+                f"{orchestrator_url}/jobs/{job_id}/events",
+                json={
+                    "type": event_type,
+                    "message": message,
+                    "source": "mats-investigator-agent"
+                },
+                timeout=2
+            )
+        )
+    except Exception as e:
+        logger.warning(f"Failed to report progress: {e}")
 
 # -------------------------------------------------------------------------
-# ASYNC MCP CLIENT (Re-using pattern)
+# ASYNC MCP CLIENT
 # -------------------------------------------------------------------------
 class AsyncMCPClient:
     def __init__(self, image: str, env_vars: Dict[str, str]):
@@ -177,6 +205,7 @@ async def get_github_client():
 # -------------------------------------------------------------------------
 async def read_file(owner: str, repo: str, path: str, branch: str = "main") -> Dict[str, Any]:
     """Read contents of a file from GitHub"""
+    await _report_progress(f"Reading file: {path} (branch={branch})", "TOOL_USE")
     try:
         client = await get_github_client()
         # Note: The underlying MCP might expect different args, adapting to standard GitHub MCP
@@ -187,16 +216,19 @@ async def read_file(owner: str, repo: str, path: str, branch: str = "main") -> D
             "ref": branch
         })
     except Exception as e:
+        await _report_progress(f"File read failed: {str(e)}", "ERROR")
         return {"error": str(e)}
 
 async def search_code(query: str, owner: str, repo: str) -> Dict[str, Any]:
     """Search for code within a repository"""
+    await _report_progress(f"Searching code: '{query}' in {owner}/{repo}", "TOOL_USE")
     try:
         client = await get_github_client()
         return await client.call_tool("search_code", {
             "query": f"{query} repo:{owner}/{repo}"
         })
     except Exception as e:
+        await _report_progress(f"Search failed: {str(e)}", "ERROR")
         return {"error": str(e)}
 
 # -------------------------------------------------------------------------
@@ -219,6 +251,11 @@ investigator_agent = Agent(
     1. File Path & Line Number of root cause.
     2. Logic Flaw Description.
     3. Evidence (Values of variables, etc).
+
+    AVAILABLE SUB-AGENT CAPABILITIES (For Context Only):
+    - GitHub Specialist: search_repositories, list_repositories, get_file_contents, create_or_update_file, push_files, create_issue, list_issues, update_issue, add_issue_comment, create_pull_request, list_pull_requests, merge_pull_request, get_pull_request, create_branch, list_branches, get_commit, search_code, search_issues
+    - Code Execution Specialist: execute_python_code, solve_math_problems, process_data, generate_text_programmatically
+    - GCloud Specialist: run_gcloud_command
     """,
     tools=[read_file, search_code] 
 )
@@ -227,10 +264,40 @@ investigator_agent = Agent(
 # -------------------------------------------------------------------------
 # RUNNER
 # -------------------------------------------------------------------------
-async def process_request(prompt: str):
+async def process_request(prompt_or_payload: Any):
     # Ensure API Key is in environment
     if config.GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+        
+    # Handle Dict or JSON stirng payload
+    prompt = ""
+    job_id = None
+    orchestrator_url = None
+    
+    # Parse generic input
+    if isinstance(prompt_or_payload, dict):
+        prompt = prompt_or_payload.get("message", "")
+        job_id = prompt_or_payload.get("job_id")
+        orchestrator_url = prompt_or_payload.get("orchestrator_url")
+    else:
+         # Try to parse string as json just in case
+         input_str = str(prompt_or_payload)
+         try:
+             data = json.loads(input_str)
+             if isinstance(data, dict):
+                 prompt = data.get("message", input_str)
+                 job_id = data.get("job_id")
+                 orchestrator_url = data.get("orchestrator_url")
+             else:
+                 prompt = input_str
+         except:
+             prompt = input_str
+             
+    # Set Env vars for tools to access context
+    if job_id:
+        os.environ["MATS_JOB_ID"] = job_id
+    if orchestrator_url:
+        os.environ["MATS_ORCHESTRATOR_URL"] = orchestrator_url
 
     bq_plugin = BigQueryAgentAnalyticsPlugin(
         project_id=os.getenv("GCP_PROJECT_ID"),
@@ -262,6 +329,10 @@ async def process_request(prompt: str):
                     for part in event.content.parts:
                         if part.text:
                             response_text += part.text
+                            # Report thought to UI
+                            if job_id:
+                                await _report_progress(part.text[:200], "THOUGHT")
+
     except Exception as e:
         response_text = f"Error: {e}"
     

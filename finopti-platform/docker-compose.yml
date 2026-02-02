@@ -794,7 +794,7 @@ services:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - APISIX_URL=http://apisix:9080
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-      - FINOPTIAGENTS_LLM=${FINOPTIAGENTS_LLM:-gemini-2.0-flash}
+      - FINOPTIAGENTS_LLM=${FINOPTIAGENTS_LLM:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
@@ -830,7 +830,7 @@ services:
 
       - GCLOUD_MCP_DOCKER_IMAGE=finopti-gcloud-mcp
       - MONITORING_MCP_DOCKER_IMAGE=finopti-monitoring-mcp
-      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
+      - BQ_ANALYTICS_ENABLED=false
       - PYTHONUNBUFFERED=1
       - GCLOUD_MOUNT_PATH=${HOME}/.config/gcloud:/root/.config/gcloud
     volumes:
@@ -857,7 +857,7 @@ services:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
 
       - GITHUB_MCP_DOCKER_IMAGE=finopti-github-mcp-server
-      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
+      - BQ_ANALYTICS_ENABLED=false
       - PYTHONUNBUFFERED=1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -882,7 +882,7 @@ services:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
 
-      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
+      - BQ_ANALYTICS_ENABLED=false
       - PYTHONUNBUFFERED=1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -907,6 +907,7 @@ services:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - PYTHONUNBUFFERED=1
+      - PORT=8084
       # Observability
       - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-http://phoenix:6006/v1/traces}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:4317}
@@ -918,7 +919,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
     ports:
-      - "8080:8080"
+      - "8084:8084"
     networks:
       - finopti-net
     labels:

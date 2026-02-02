@@ -1,8 +1,5 @@
 """
 Orchestrator ADK Agent - Central Hub with Intelligent Routing
-
-This is the main orchestrator that uses Google ADK for intelligent request routing.
-It maintains OPA authorization integration and routes requests to specialized sub-agents.
 """
 
 import os

@@ -1,5 +1,11 @@
 import os
 import sys
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from config import config
 
 def check_environment():
     print("--- Verifying GitHub Agent Environment ---")
@@ -13,6 +19,9 @@ def check_environment():
         return False
         
     # Check 2: API Key presence
+    if hasattr(config, "GOOGLE_API_KEY") and config.GOOGLE_API_KEY:
+        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         print("[WARN] GOOGLE_API_KEY not set. Skipping LLM generation test.")
@@ -24,7 +33,7 @@ def check_environment():
     # Check 3: LLM Connectivity (if key exists)
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(os.environ.get("FINOPTIAGENTS_LLM", "gemini-3-flash-preview")) # Use configured model
+        model = genai.GenerativeModel(config.FINOPTIAGENTS_LLM) # Use configured model
         print("[INFO] Attempting to generate content...")
         response = model.generate_content("Ping")
         print(f"[PASS] Generation successful. Response: {response.text.strip()}")

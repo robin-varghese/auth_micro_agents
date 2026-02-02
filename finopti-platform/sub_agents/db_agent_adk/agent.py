@@ -48,18 +48,7 @@ logger = logging.getLogger(__name__)
 # UTILITIES
 # --------------------------------------------------------------------------------
 
-def get_gemini_model(project_id: str) -> str:
-    """Fetch Gemini model name dynamically."""
-    env_model = os.getenv("FINOPTIAGENTS_LLM")
-    if env_model: return env_model
-    try:
-        client = secretmanager.SecretManagerServiceClient()
-        name = f"projects/{project_id}/secrets/finoptiagents-llm/versions/latest"
-        response = client.access_secret_version(request={"name": name})
-        return response.payload.data.decode("UTF-8").strip()
-    except Exception as e:
-        logger.warning(f"Could not fetch LLM model from Secret Manager: {e}")
-    return "gemini-2.0-flash-exp"
+# (get_gemini_model removed - using config.FINOPTIAGENTS_LLM)
 
 # --------------------------------------------------------------------------------
 # MCP CLIENT (PostgreSQL)
@@ -245,7 +234,7 @@ else:
 
 db_agent = Agent(
     name=manifest.get("agent_id", "database_specialist"),
-    model=get_gemini_model(config.GCP_PROJECT_ID),
+    model=config.FINOPTIAGENTS_LLM,
     description=manifest.get("description", "Database specialist."),
     instruction=instruction_str,
     tools=[

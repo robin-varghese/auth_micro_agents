@@ -69,7 +69,8 @@ def gate_triage_to_analysis(
         return (GateDecision.RETRY, "No error signature found, retry with expanded window")
     
     # Check confidence
-    if sre.confidence < 0.3:
+    confidence = sre.confidence if sre.confidence is not None else 0.0
+    if confidence < 0.3:
         return (GateDecision.RETRY, f"Low SRE confidence ({sre.confidence})")
     
     logger.info(f"[{session_id}] Triage gate PASSED - confidence={sre.confidence}")

@@ -93,6 +93,61 @@ def execute_scenario():
             "message": str(e)
         }), 502
 
+@app.route('/reply', methods=['POST'])
+def reply_to_agent():
+    """
+    Forwards a user's reply to the Orchestrator for an active conversation.
+    Uses the same X-Request-ID logic to maintain context.
+    """
+    data = request.json
+    scenario_id = data.get("id")
+    action = data.get("action")
+    message = data.get("message")
+    user_email = "robin@cloudroaster.com" # Force authorized user for testing
+
+    if not scenario_id or not action or not message:
+        return jsonify({"error": "Invalid parameters. Need 'id', 'action', and 'message'"}), 400
+
+    # Reconstruct Request ID to match the original execution
+    request_id = f"chaos-{str(scenario_id)}-{action}"
+    
+    logger.info(f"Forwarding Reply for Scenario {scenario_id} [{action}]: {message}")
+
+    try:
+        # Call FinOpti Orchestrator
+        payload = {
+            "prompt": message,
+            "project_id": "vector-search-poc" # Explicitly pass project context if needed
+        }
+        
+        headers = {
+            "Content-Type": "application/json",
+            "X-User-Email": user_email,
+            "X-Request-ID": request_id
+        }
+        
+        response = requests.post(
+            ORCHESTRATOR_URL, 
+            json=payload, 
+            headers=headers,
+            timeout=600
+        )
+        
+        response.raise_for_status()
+        orchestrator_data = response.json()
+
+        return jsonify({
+            "status": "success",
+            "orchestrator_response": orchestrator_data
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to forward reply: {e}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 502
+
 if __name__ == '__main__':
     port = int(os.getenv("PORT", 5007))
     app.run(host='0.0.0.0', port=port)

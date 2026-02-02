@@ -141,7 +141,10 @@
       "gcs",
       "upload",
       "download",
-      "storage"
+      "storage",
+      "save",
+      "store",
+      "archive"
     ],
     "_source_path": "sub_agents/storage_agent_adk"
   },

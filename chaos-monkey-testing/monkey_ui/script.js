@@ -94,6 +94,8 @@ async function executeAction(action) {
 
     showToast(`Initiating ${action.toUpperCase()}...`);
     orchestratorOutputEl.textContent = `Sending ${action} request...`;
+    hideInput(); // Hide previous input until response
+    window.lastAction = action; // Store for reply context
 
     try {
         const response = await fetch(`${API_BASE}/execute`, {
@@ -107,6 +109,7 @@ async function executeAction(action) {
         if (response.ok) {
             orchestratorOutputEl.textContent = JSON.stringify(data.orchestrator_response, null, 2);
             showToast(`${action.toUpperCase()} Completed!`);
+            showInput(); // Allow user to reply if needed
         } else {
             orchestratorOutputEl.textContent = `Error: ${data.message || 'Unknown error'}`;
             showToast('Execution Failed', true);
@@ -126,4 +129,63 @@ function showToast(msg, isError = false) {
     setTimeout(() => {
         toastEl.classList.add('hidden');
     }, 3000);
+}
+
+// --- New Reply Functionality ---
+const inputAreaEl = document.getElementById('input-area');
+const userInputEl = document.getElementById('user-input');
+
+function showInput() {
+    inputAreaEl.classList.remove('hidden');
+    userInputEl.value = ''; // Clear previous input
+    userInputEl.focus();
+}
+
+function hideInput() {
+    inputAreaEl.classList.add('hidden');
+}
+
+async function sendReply() {
+    if (!activeScenarioId) return;
+
+    const message = userInputEl.value.trim();
+    if (!message) {
+        showToast('Please type a reply first', true);
+        return;
+    }
+
+    // Determine context (last action) - simplistic approach: default to 'break' if unknowable, 
+    // or ideally track 'lastAction' in a global variable. For now, let's assume 'break'.
+    // Better yet, update executeAction to store the last action.
+    const action = window.lastAction || 'break';
+
+    showToast(`Sending Reply...`);
+    orchestratorOutputEl.textContent += `\n\n> User: ${message}\n> Sending...`;
+
+    try {
+        const response = await fetch(`${API_BASE}/reply`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                id: activeScenarioId,
+                action: action,
+                message: message
+            })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            orchestratorOutputEl.textContent += `\n> Agent: ` + JSON.stringify(data.orchestrator_response.response || data.orchestrator_response, null, 2);
+            showToast(`Reply Sent!`);
+            userInputEl.value = ''; // Clear after send
+        } else {
+            orchestratorOutputEl.textContent += `\n> Error: ${data.message || 'Unknown error'}`;
+            showToast('Reply Failed', true);
+        }
+    } catch (error) {
+        console.error('Reply Error:', error);
+        orchestratorOutputEl.textContent += `\n> Network Error: ${error.message}`;
+        showToast('Network Error', true);
+    }
 }

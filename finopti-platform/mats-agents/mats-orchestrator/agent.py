@@ -190,7 +190,7 @@ async def ensure_sequential_thinking():
 # --- TOOL WRAPPERS ---
 async def generate_plan(user_request: str, agent_registry: list) -> Dict[str, Any]:
     """
-    Generate investigation plan using Sequential Thinking.
+    Generate investigation plan using LLM directly (Bypassing MCP tool to avoid schema errors).
     
     Args:
         user_request: User's problem description
@@ -199,8 +199,6 @@ async def generate_plan(user_request: str, agent_registry: list) -> Dict[str, An
     Returns:
         Plan with reasoning and steps
     """
-    client = await ensure_sequential_thinking()
-    
     # Format agent registry for context
     capabilities_summary = "\n".join([
         f"- {agent['name']}: {agent.get('capabilities', 'N/A')}"
@@ -208,45 +206,83 @@ async def generate_plan(user_request: str, agent_registry: list) -> Dict[str, An
     ])
     
     prompt = f"""
-You are planning a troubleshooting investigation.
-
-USER REQUEST: {user_request}
-
-AVAILABLE CAPABILITIES:
-{capabilities_summary}
-
-Create a step-by-step investigation plan. Your plan should:
-1. Start with log/metric triage (SRE)
-2. Move to code analysis (Investigator)
-3. End with RCA synthesis (Architect)
-
-Think through the approach carefully and output a JSON plan with:
-- plan_id
-- reasoning (why this approach)
-- steps (array of {{step_id, assigned_lead, task, ui_label}})
-"""
+    You are a Principal SRE Investigator planning a troubleshooting session.
     
-    result = await client.call_tool("sequentialthinking", {"query": prompt})
+    USER REQUEST: {user_request}
     
-    # Parse the result
-    thinking_output = result.get("content", [{}])[0].get("text", "")
+    AVAILABLE CAPABILITIES:
+    {capabilities_summary}
     
-    # Extract JSON from output
+    Create a step-by-step investigation plan. Your plan should:
+    1. Start with log/metric triage (SRE)
+    2. Move to code analysis (Investigator)
+    3. End with RCA synthesis (Architect)
+    
+    Think through the approach carefully and output a JSON plan with:
+    - plan_id
+    - reasoning (why this approach)
+    - steps (array of {{step_id, assigned_lead, task, ui_label}})
+    """
+    
     try:
-        if "```json" in thinking_output:
-            json_str = thinking_output.split("```json")[1].split("```")[0].strip()
+        from google import genai
+        client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+        
+        logger.info(f"Generating plan using model: {config.FINOPTIAGENTS_LLM}")
+        response = client.models.generate_content(
+            model=config.FINOPTIAGENTS_LLM,
+            contents=prompt,
+            config={"response_mime_type": "application/json"}
+        )
+        
+        if not response.parsed:
+             # Fallback parsing if needed
+             import json
+             plan = json.loads(response.text)
         else:
-            json_str = thinking_output
-        plan = json.loads(json_str)
+             plan = response.parsed
+             
+        # Robust parsing for List output (common small model behavior)
+        if isinstance(plan, list):
+            logger.warning(f"Plan generation returned a list, attempting to wrap: {str(plan)[:100]}...")
+            if len(plan) > 0 and isinstance(plan[0], dict):
+                # Case 1: List of steps
+                if "step_id" in plan[0]:
+                    plan = {
+                        "plan_id": "auto-generated",
+                        "reasoning": "Model returned raw list of steps",
+                        "steps": plan
+                    }
+                # Case 2: List containing the plan object
+                elif "steps" in plan[0]:
+                    plan = plan[0]
+                else:
+                    return {
+                        "plan_id": "fallback-list",
+                        "reasoning": "Model returned unrecognized list format",
+                        "steps": [
+                            {"step_id": 1, "assigned_lead": "sre", "task": f"Analyze logs: {user_request}", "ui_label": "Investigating"}
+                        ]
+                    }
+            else:
+                 return {
+                    "plan_id": "fallback-empty",
+                    "reasoning": "Model returned empty/invalid list",
+                    "steps": [
+                        {"step_id": 1, "assigned_lead": "sre", "task": f"Analyze logs: {user_request}", "ui_label": "Investigating"}
+                    ]
+                 }
+                 
         return plan
-    except json.JSONDecodeError:
+        
+    except Exception as e:
+        logger.error(f"Plan generation failed: {e}")
         # Fallback plan
-        logger.error("Could not parse Sequential Thinking output, using fallback plan")
         return {
             "plan_id": "fallback-001",
-            "reasoning": "Using default 3-step investigation",
+            "reasoning": "Using default 3-step investigation due to planning error",
             "steps": [
-                {"step_id": 1, "assigned_lead": "sre", "task": "Analyze logs and metrics", "ui_label": "Investigating Logs"},
+                {"step_id": 1, "assigned_lead": "sre", "task": f"Analyze logs for: {user_request}", "ui_label": "Investigating Logs"},
                 {"step_id": 2, "assigned_lead": "investigator", "task": "Analyze code", "ui_label": "Analyzing Code"},
                 {"step_id": 3, "assigned_lead": "architect", "task": "Generate RCA", "ui_label": "Generating RCA"}
             ]
@@ -326,7 +362,8 @@ async def run_investigation_async(
     user_request: str,
     project_id: str,
     repo_url: str,
-    user_email: str = None
+    user_email: str = None,
+    job_id: str = None # New optional param
 ) -> Dict[str, Any]:
     """
     Run complete investigation workflow.
@@ -342,12 +379,21 @@ async def run_investigation_async(
         gate_analysis_to_synthesis,
         GateDecision
     )
+    # Import JobManager locally to avoid circular imports if any (though cleaner to import at top if possible)
+    # Assuming job_manager is in python path or relative
+    try:
+        from job_manager import JobManager
+    except ImportError:
+        JobManager = None
     
     # Create session
     session = create_session(user_email or "default", project_id, repo_url)
     session_id = session.session_id
     
-    logger.info(f"[{session_id}] Starting investigation: {user_request[:100]}")
+    logger.info(f"[{session_id}] Starting investigation (Job: {job_id}): {user_request[:100]}")
+    
+    if job_id and JobManager:
+        JobManager.add_event(job_id, "SYSTEM", f"Investigation started for session {session_id}", "orchestrator")
     
     # Initialize Sequential Thinking MCP
     seq_client = SequentialThinkingClient()
@@ -361,27 +407,71 @@ async def run_investigation_async(
         agent_registry = load_agent_registry()
         plan = await generate_plan(user_request, agent_registry)
         
+        # EMIT PLAN EVENT
+        if job_id and JobManager:
+            # Emit the raw plan or a formatted summary
+            plan_summary = f"**Investigation Plan**\n\nReasoning: {plan.get('reasoning', 'N/A')}\n\nSteps:\n"
+            for step in plan.get('steps', []):
+                plan_summary += f"{step.get('step_id')}. {step.get('ui_label')} ({step.get('assigned_lead')})\n"
+            
+            JobManager.add_event(job_id, "PLAN", plan_summary, "orchestrator")
+        
         gate_result, reason = gate_planning_to_triage(plan, session_id)
         if gate_result == GateDecision.FAIL:
             session.add_blocker("E000", f"Planning failed: {reason}")
             session.mark_completed("FAILURE")
-            return {"status": "FAILURE", "error": reason}
+            return {
+                "status": "FAILURE", 
+                "error": reason,
+                "response": f"❌ **Planning Failed**\n\n{reason}"
+            }
         
         # Phase 2: TRIAGE (SRE)
         session.workflow.transition_to(WorkflowPhase.TRIAGE, "Analyzing logs and metrics")
+        
+        # Pass job_id to sub-agents for progress reporting
         sre_result = await delegate_to_sre(
             f"{user_request}\n\nFocus on finding error signatures and stack traces.",
             project_id,
-            session_id
+            session_id,
+            job_id=job_id # Passing job_id
         )
         session.sre_findings = sre_result
         session.confidence_scores['sre'] = sre_result.get('confidence', 0.0)
         
         gate_result, reason = gate_triage_to_analysis(sre_result, session_id)
+        
+        # New: Handle Interactive SRE Pause
+        if sre_result.get("status") == "WAITING_FOR_APPROVAL":
+             pending_steps = sre_result.get("pending_steps", [])
+             steps_list = "\n".join([f"- {s}" for s in pending_steps])
+             response_msg = (
+                 f"⚠️ **SRE Analysis Paused**\n\n"
+                 f"The SRE Agent has completed initial checks but identified {len(pending_steps)} more potential analysis steps.\n\n"
+                 f"**Completed Work**: Analyzed initial logs.\n"
+                 f"**Pending Steps**:\n{steps_list}\n\n"
+                 f"Do you want to continue with these steps? (Reply 'Yes' or 'Continue')"
+             )
+             
+             # Save state (conceptually - simplistic for now)
+             # In a real system, we'd persist the session state. Here we return to UI.
+             return {
+                 "status": "WAITING_FOR_USER",
+                 "sre_findings": sre_result,
+                 "response": response_msg,
+                 "execution_trace": sre_result.get("execution_trace", [])
+             }
+
         if gate_result == GateDecision.FAIL:
             session.add_blocker("E001", reason)
             session.mark_completed("PARTIAL_SUCCESS")
-            return {"status": "PARTIAL", "sre_findings": sre_result, "error": reason}
+            return {
+                "status": "PARTIAL", 
+                "sre_findings": sre_result, 
+                "error": reason,
+                "response": f"⚠️ **Triage Incomplete**\n\nSRE found issues but could not proceed to code analysis.\n\nReason: {reason}",
+                "execution_trace": sre_result.get("execution_trace", [])
+            }
         
         # Phase 3: CODE ANALYSIS (Investigator)
         session.workflow.transition_to(WorkflowPhase.CODE_ANALYSIS, "Investigating code")
@@ -396,15 +486,23 @@ async def run_investigation_async(
         session.confidence_scores['investigator'] = inv_result.get('confidence', 0.0)
         
         gate_result, reason = gate_analysis_to_synthesis(inv_result, session_id)
+        gate_result, reason = gate_analysis_to_synthesis(inv_result, session_id)
         if gate_result == GateDecision.FAIL:
-            session.add_blocker("E006", reason)
-            session.mark_completed("PARTIAL_SUCCESS")
-            return {
-                "status": "PARTIAL",
-                "sre_findings": sre_result,
-                "investigator_findings": inv_result,
-                "error": reason
-            }
+            # Smart Fallback: If SRE was very confident (e.g. found deletion/infra issue), proceed to RCA anyway
+            sre_confidence = sre_result.get('confidence', 0.0)
+            if sre_confidence > 0.7:
+                 logger.warning(f"[{session_id}] Investigator failed ({reason}) but SRE confidence high ({sre_confidence}). Proceeding to RCA.")
+            else:
+                session.add_blocker("E006", reason)
+                session.mark_completed("PARTIAL_SUCCESS")
+                return {
+                    "status": "PARTIAL",
+                    "sre_findings": sre_result,
+                    "investigator_findings": inv_result,
+                    "error": reason,
+                    "response": f"⚠️ **Analysis Incomplete**\n\nInvestigator could not find the root cause in the code.\n\nReason: {reason}",
+                    "execution_trace": sre_result.get("execution_trace", [])
+                }
         
         # Phase 4: SYNTHESIS (Architect)
         session.workflow.transition_to(WorkflowPhase.SYNTHESIS, "Generating RCA")
@@ -419,21 +517,40 @@ async def run_investigation_async(
         
         logger.info(f"[{session_id}] Investigation complete, confidence={overall_confidence:.2f}")
         
+        # Construct summary response for UI
+        response_msg = f"**Investigation Complete** (Confidence: {overall_confidence:.2f})\n\n"
+        if session.rca_url:
+            response_msg += f"📄 **RCA Document**: {session.rca_url}\n\n"
+        elif arch_result.get('rca_content'):
+             response_msg += "📄 **RCA generated** (See content below).\n\n"
+
+        response_msg += "**Summary:**\n"
+        # Extract summary from Architect if possible (or truncate rca_content if very long)
+        rca_content = arch_result.get('rca_content', 'No details available.')
+        response_msg += rca_content[:1000] + ("..." if len(rca_content) > 1000 else "")
+
         return {
             "status": "SUCCESS",
             "session_id": session_id,
+            "response": response_msg,
             "confidence": overall_confidence,
             "rca_url": session.rca_url,
             "rca_content": arch_result.get('rca_content'),
             "warnings": session.warnings,
-            "recommendations": arch_result.get('recommendations', [])
+            "recommendations": arch_result.get('recommendations', []),
+            # Propagate SRE traces for Verbose UI
+            "execution_trace": sre_result.get("execution_trace", [])
         }
         
     except Exception as e:
         logger.error(f"[{session_id}] Investigation failed: {e}", exc_info=True)
         session.add_blocker("E000", str(e))
         session.mark_completed("FAILURE")
-        return {"status": "FAILURE", "error": str(e)}
+        return {
+            "status": "FAILURE", 
+            "error": str(e),
+            "response": f"💥 **System Error**\n\nAn unexpected error occurred during investigation.\n\nError: {str(e)}"
+        }
         
     finally:
         await seq_client.close()

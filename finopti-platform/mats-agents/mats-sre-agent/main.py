@@ -30,8 +30,12 @@ def chat():
 
     try:
         # Run the async agent loop
-        response = asyncio.run(process_request(user_message))
-        return jsonify({"response": response})
+        agent_result = asyncio.run(process_request(user_message))
+        
+        # agent_result is now a dict: {"response": "...", "execution_trace": [...]}
+        # We return it directly as JSON
+        return jsonify(agent_result)
+
     except Exception as e:
         logger.error(f"Error processing request: {e}")
         return jsonify({"error": str(e)}), 500

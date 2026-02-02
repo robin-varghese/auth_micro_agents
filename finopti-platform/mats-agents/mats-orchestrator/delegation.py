@@ -23,7 +23,7 @@ INVESTIGATOR_AGENT_URL = os.getenv("INVESTIGATOR_AGENT_URL", "http://mats-invest
 ARCHITECT_AGENT_URL = os.getenv("ARCHITECT_AGENT_URL", "http://mats-architect-agent:8083")
 
 
-async def _http_post(url: str, data: Dict[str, Any], timeout: int = 300) -> Dict[str, Any]:
+async def _http_post(url: str, data: Dict[str, Any], timeout: int = 200) -> Dict[str, Any]:
     """
     Make HTTP POST request with error handling.
     
@@ -57,7 +57,8 @@ async def _http_post(url: str, data: Dict[str, Any], timeout: int = 300) -> Dict
 async def delegate_to_sre(
     task_description: str,
     project_id: str,
-    session_id: str = "unknown"
+    session_id: str = "unknown",
+    job_id: str = None
 ) -> Dict[str, Any]:
     """
     Delegate task to SRE Agent.
@@ -66,6 +67,7 @@ async def delegate_to_sre(
         task_description: What the SRE should investigate
         project_id: GCP project ID
         session_id: Investigation session ID for logging
+        job_id: Async Job ID for progress reporting
         
     Returns:
         SREOutput schema dict
@@ -96,7 +98,13 @@ Please analyze the logs and metrics. Return your findings in the following JSON 
     
     async def _call():
         logger.info(f"[{session_id}] Delegating to SRE: {task_description[:100]}")
-        result = await _http_post(SRE_AGENT_URL, {"message": prompt})
+        # Use 300s for SRE as it does heavy lifting
+        payload = {"message": prompt}
+        if job_id:
+            payload["job_id"] = job_id
+            payload["orchestrator_url"] = "http://mats-orchestrator:8084" # Hardcoded internal service name for now
+            
+        result = await _http_post(SRE_AGENT_URL, payload, timeout=300)
         response_text = result.get("response", "")
         
         # Try to parse JSON from response
@@ -115,7 +123,13 @@ Please analyze the logs and metrics. Return your findings in the following JSON 
             # Validate against schema
             sre_output = SREOutput(**output_dict)
             logger.info(f"[{session_id}] SRE completed with status={sre_output.status}, confidence={sre_output.confidence}")
-            return sre_output.dict()
+            
+            final_output = sre_output.dict()
+            # Inject execution trace from the raw API response (if present) to propagate to UI
+            if "execution_trace" in result:
+                final_output["execution_trace"] = result["execution_trace"]
+                
+            return final_output
             
         except (json.JSONDecodeError, ValidationError) as e:
             logger.error(f"[{session_id}] SRE output invalid: {e}")
@@ -123,7 +137,7 @@ Please analyze the logs and metrics. Return your findings in the following JSON 
     
     return await retry_async(
         _call,
-        max_attempts=3,
+        max_attempts=2,
         session_id=session_id,
         agent_name="SRE"
     )
@@ -134,7 +148,8 @@ async def delegate_to_investigator(
     task_description: str,
     sre_context: str,
     repo_url: str,
-    session_id: str = "unknown"
+    session_id: str = "unknown",
+    job_id: str = None
 ) -> Dict[str, Any]:
     """
     Delegate task to Investigator Agent.
@@ -144,6 +159,7 @@ async def delegate_to_investigator(
         sre_context: Context from SRE findings
         repo_url: GitHub repository URL
         session_id: Investigation session ID
+        job_id: Async Job ID
         
     Returns:
         InvestigatorOutput schema dict
@@ -176,7 +192,12 @@ Please investigate the code and return findings in this JSON format:
     
     async def _call():
         logger.info(f"[{session_id}] Delegating to Investigator")
-        result = await _http_post(INVESTIGATOR_AGENT_URL, {"message": prompt})
+        payload = {"message": prompt}
+        if job_id:
+            payload["job_id"] = job_id
+            payload["orchestrator_url"] = "http://mats-orchestrator:8084" 
+            
+        result = await _http_post(INVESTIGATOR_AGENT_URL, payload)
         response_text = result.get("response", "")
         
         import json
@@ -199,7 +220,7 @@ Please investigate the code and return findings in this JSON format:
     
     return await retry_async(
         _call,
-        max_attempts=3,
+        max_attempts=2,
         session_id=session_id,
         agent_name="Investigator"
     )
@@ -283,7 +304,7 @@ Also return your response in this JSON format:
     
     return await retry_async(
         _call,
-        max_attempts=3,
+        max_attempts=2,
         session_id=session_id,
         agent_name="Architect"
     )

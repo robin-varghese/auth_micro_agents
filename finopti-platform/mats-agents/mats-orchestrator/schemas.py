@@ -9,8 +9,8 @@ from pydantic import BaseModel, Field, validator
 
 class SREOutput(BaseModel):
     """Expected output schema from SRE Agent"""
-    status: str = Field(..., description="SUCCESS|PARTIAL|FAILURE")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence in findings")
+    status: str = Field(..., description="SUCCESS|PARTIAL|FAILURE|WAITING_FOR_APPROVAL")
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="Confidence in findings")
     
     evidence: Dict[str, Any] = Field(default_factory=dict, description="Collected evidence")
     timestamp: Optional[str] = Field(None, description="Error timestamp (ISO8601)")
@@ -21,10 +21,11 @@ class SREOutput(BaseModel):
     
     blockers: List[str] = Field(default_factory=list, description="Issues preventing analysis")
     recommendations: List[str] = Field(default_factory=list, description="Next steps")
+    pending_steps: List[str] = Field(default_factory=list, description="Steps remaining for interactive mode")
     
     @validator('status')
     def validate_status(cls, v):
-        allowed = ['SUCCESS', 'PARTIAL', 'FAILURE']
+        allowed = ['SUCCESS', 'PARTIAL', 'FAILURE', 'WAITING_FOR_APPROVAL']
         if v not in allowed:
             raise ValueError(f"Status must be one of {allowed}")
         return v

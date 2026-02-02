@@ -89,6 +89,15 @@
                             <h3>Orchestrator Output</h3>
                             <pre id="orchestrator-output" class="code-block placeholder">Ready for execution...</pre>
                         </div>
+
+                        <!-- User Input Area (Hidden by default) -->
+                        <div id="input-area" class="input-area hidden" style="margin-top: 20px; padding: 15px; background: #1e1e1e; border-radius: 6px; border: 1px solid #333;">
+                            <h3 style="margin-top: 0; margin-bottom: 10px; font-size: 14px; color: #8b949e;">Reply to Agent</h3>
+                            <textarea id="user-input" rows="3" placeholder="Type your confirmation or reply here..." style="width: 100%; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; border-radius: 4px; padding: 8px; margin-bottom: 10px; resize: vertical;"></textarea>
+                            <button class="btn btn-restore" onclick="sendReply()" style="width: 100%;">
+                                <span class="icon">💬</span> Send Reply
+                            </button>
+                        </div>
                     </div>
 
                 </div>

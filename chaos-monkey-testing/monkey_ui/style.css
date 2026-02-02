@@ -469,3 +469,7 @@ body {
     transform: translateY(100px);
     opacity: 0;
 }
+
+.hidden {
+    display: none !important;
+}

@@ -322,13 +322,13 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/11" \
 
 echo ""
 # Route 12: Cloud Run Agent
-echo "Creating route: /agent/cloud-run -> cloud_run_agent:5006"
+echo "Creating route: /agent/cloud_run -> cloud_run_agent:5006"
 curl -i -X PUT "${APISIX_ADMIN}/routes/12" \
   -H "X-API-KEY: ${ADMIN_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "cloud_run_agent_route",
-    "uri": "/agent/cloud-run/*",
+    "uri": "/agent/cloud_run/*",
     "upstream": {
       "type": "roundrobin",
       "nodes": {
@@ -342,7 +342,7 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/12" \
     },
     "plugins": {
       "proxy-rewrite": {
-        "regex_uri": ["^/agent/cloud-run/(.*)", "/$1"]
+        "regex_uri": ["^/agent/cloud_run/(.*)", "/$1"]
       }
     }
   }'
