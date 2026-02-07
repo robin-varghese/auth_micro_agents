@@ -13,6 +13,9 @@ services:
       - "4317:4317" # OTLP GRPC
     environment:
       - PHOENIX_SQL_DATABASE_URL=postgresql://postgres:postgres@db_observability:5432/postgres
+      - PHOENIX_SESSION_EVALUATOR_FILE_PATH=/app/session_extractor.py
+    volumes:
+      - ./session_extractor.py:/app/session_extractor.py:ro
     depends_on:
       db_observability:
         condition: service_healthy

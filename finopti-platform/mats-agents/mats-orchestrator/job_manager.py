@@ -13,25 +13,6 @@ class JobManager:
     _jobs: Dict[str, Dict[str, Any]] = {}
     
     @classmethod
-    def create_job(cls, user_request: str) -> str:
-        job_id = str(uuid.uuid4())
-        cls._jobs[job_id] = {
-            "id": job_id,
-            "status": "RUNNING",
-            "created_at": time.time(),
-            "user_request": user_request,
-            "events": [],  # List of {timestamp, type, message, source}
-            "result": None,
-            "error": None
-        }
-        cls.add_event(job_id, "SYSTEM", "Job started", "orchestrator")
-        return job_id
-
-    @classmethod
-    def get_job(cls, job_id: str) -> Optional[Dict[str, Any]]:
-        return cls._jobs.get(job_id)
-
-    @classmethod
     def update_result(cls, job_id: str, result: Any, status: str = "COMPLETED"):
         if job_id in cls._jobs:
             cls._jobs[job_id]["result"] = result
@@ -44,6 +25,39 @@ class JobManager:
             cls._jobs[job_id]["error"] = error
             cls._jobs[job_id]["status"] = "FAILED"
             cls.add_event(job_id, "ERROR", error, "orchestrator")
+
+    @classmethod
+    def get_job(cls, job_id: str) -> Optional[Dict[str, Any]]:
+        return cls._jobs.get(job_id)
+
+    @classmethod
+    def get_active_job_for_user(cls, user_email: str) -> Optional[str]:
+        """Find a running or waiting job for a user"""
+        # Linear search is fine for in-memory POC
+        for job in cls._jobs.values():
+            # Check if job belongs to user (heuristic via user_request or metadata if we had it)
+            # For now, we only have user_request. Real impl would store user_email in job.
+            # We'll rely on the caller to handle email matching if not stored, 
+            # BUT we should store it. Let's assume we store it in create_job or update it.
+            if job.get("user_email") == user_email and job.get("status") in ["RUNNING", "WAITING_FOR_USER"]:
+                return job["id"]
+        return None
+
+    @classmethod
+    def create_job(cls, user_request: str, user_email: str = "unknown") -> str:
+        job_id = str(uuid.uuid4())
+        cls._jobs[job_id] = {
+            "id": job_id,
+            "status": "RUNNING",
+            "created_at": time.time(),
+            "user_request": user_request,
+            "user_email": user_email,
+            "events": [], 
+            "result": None,
+            "error": None
+        }
+        cls.add_event(job_id, "SYSTEM", "Job started", "orchestrator")
+        return job_id
 
     @classmethod
     def add_event(cls, job_id: str, event_type: str, message: str, source: str = "orchestrator"):

@@ -28,7 +28,7 @@ from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 # Initialize tracing
 tracer_provider = register(
-    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-mats-investigator",
+    project_name="finoptiagents-MATS",  # Unified project for all MATS agents
     endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
     set_global_tracer_provider=True
 )
@@ -299,41 +299,80 @@ async def process_request(prompt_or_payload: Any):
     if orchestrator_url:
         os.environ["MATS_ORCHESTRATOR_URL"] = orchestrator_url
 
-    bq_plugin = BigQueryAgentAnalyticsPlugin(
-        project_id=os.getenv("GCP_PROJECT_ID"),
-        dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-        table_id=config.BQ_ANALYTICS_TABLE,
-        config=BigQueryLoggerConfig(
-            enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-        )
-    )
+    # --- Trace Context Extraction ---
+    trace_context = {}
+    if isinstance(prompt_or_payload, dict):
+        trace_context = prompt_or_payload.get("headers", {})
+    elif isinstance(prompt_or_payload, str):
+         try:
+             d = json.loads(prompt_or_payload)
+             if isinstance(d, dict):
+                 trace_context = d.get("headers", {})
+         except: pass
 
-    app_instance = App(
-        name="mats_investigator_app",
-        root_agent=investigator_agent,
-        plugins=[
-            ReflectAndRetryToolPlugin(),
-            bq_plugin
-        ]
-    )
-
-    response_text = ""
-    try:
-        async with InMemoryRunner(app=app_instance) as runner:
-            sid = "default"
-            await runner.session_service.create_session(session_id=sid, user_id="user", app_name="mats_investigator_app")
-            msg = types.Content(parts=[types.Part(text=prompt)])
-            
-            async for event in runner.run_async(user_id="user", session_id=sid, new_message=msg):
-                if hasattr(event, 'content') and event.content:
-                    for part in event.content.parts:
-                        if part.text:
-                            response_text += part.text
-                            # Report thought to UI
-                            if job_id:
-                                await _report_progress(part.text[:200], "THOUGHT")
-
-    except Exception as e:
-        response_text = f"Error: {e}"
+    # Extract parent trace context for span linking
+    from opentelemetry import propagate, trace
+    from openinference.semconv.trace import SpanAttributes, OpenInferenceSpanKindValues
     
-    return response_text
+    parent_ctx = propagate.extract(trace_context) if trace_context else None
+    tracer = trace.get_tracer(__name__)
+    
+    # Create child span linked to orchestrator's root span
+    span_context = {"context": parent_ctx} if parent_ctx else {}
+    
+    with tracer.start_as_current_span(
+        "investigator_code_analysis",
+        **span_context,
+        attributes={
+            SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.CHAIN.value,
+            "agent.name": "mats-investigator",
+            "agent.type": "code_analysis"
+        }
+    ):
+        # Initialize Observability (legacy compatibility)
+        try:
+            from common.observability import FinOptiObservability
+            FinOptiObservability.setup("mats-investigator-agent")
+            if trace_context:
+                FinOptiObservability.middleware_extract_trace(trace_context)
+        except ImportError:
+             logger.warning("Common Observability lib missing")
+
+        bq_plugin = BigQueryAgentAnalyticsPlugin(
+            project_id=os.getenv("GCP_PROJECT_ID"),
+            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+            table_id=config.BQ_ANALYTICS_TABLE,
+            config=BigQueryLoggerConfig(
+                enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+            )
+        )
+
+        app_instance = App(
+            name="mats_investigator_app",
+            root_agent=investigator_agent,
+            plugins=[
+                ReflectAndRetryToolPlugin(),
+                bq_plugin
+            ]
+        )
+
+        response_text = ""
+        try:
+            async with InMemoryRunner(app=app_instance) as runner:
+                sid = "default"
+                await runner.session_service.create_session(session_id=sid, user_id="user", app_name="mats_investigator_app")
+                msg = types.Content(parts=[types.Part(text=prompt)])
+                
+                async for event in runner.run_async(user_id="user", session_id=sid, new_message=msg):
+                    if hasattr(event, 'content') and event.content:
+                        for part in event.content.parts:
+                            if part.text:
+                                response_text += part.text
+                                # Report thought to UI
+                                if job_id:
+                                    await _report_progress(part.text[:200], "THOUGHT")
+
+        except Exception as e:
+            response_text = f"Error: {e}"
+        
+        return response_text

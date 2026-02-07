@@ -4,3 +4,5 @@ google-auth>=2.25.0
 google-auth-oauthlib>=1.2.0
 google-auth-httplib2>=0.2.0
 google-cloud-secret-manager>=2.16.0
+opentelemetry-api
+opentelemetry-sdk

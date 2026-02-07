@@ -134,7 +134,8 @@ async def delete_object(bucket_name: str, object_name: str) -> Dict[str, Any]:
 
 async def write_object(bucket_name: str, object_name: str, content: str) -> Dict[str, Any]:
     client = await ensure_mcp()
-    return await client.call_tool("write_object", {"bucket_name": bucket_name, "object_name": object_name, "content": content})
+    # MCP server has write_object_safe
+    return await client.call_tool("write_object_safe", {"bucket_name": bucket_name, "object_name": object_name, "content": content})
 
 async def update_object_metadata(bucket_name: str, object_name: str, metadata: dict) -> Dict[str, Any]:
     client = await ensure_mcp()
@@ -142,15 +143,19 @@ async def update_object_metadata(bucket_name: str, object_name: str, metadata: d
 
 async def copy_object(source_bucket: str, source_object: str, dest_bucket: str, dest_object: str) -> Dict[str, Any]:
     client = await ensure_mcp()
-    return await client.call_tool("copy_object", {"source_bucket": source_bucket, "source_object": source_object, "dest_bucket": dest_bucket, "dest_object": dest_object})
+    return await client.call_tool("copy_object_safe", {"source_bucket_name": source_bucket, "source_object_name": source_object, "destination_bucket_name": dest_bucket, "destination_object_name": dest_object})
 
 async def move_object(source_bucket: str, source_object: str, dest_bucket: str, dest_object: str) -> Dict[str, Any]:
+    # MCP does not support move_object directly. Implementing as copy + delete.
     client = await ensure_mcp()
-    return await client.call_tool("move_object", {"source_bucket": source_bucket, "source_object": source_object, "dest_bucket": dest_bucket, "dest_object": dest_object})
+    copy_res = await client.call_tool("copy_object_safe", {"source_bucket_name": source_bucket, "source_object_name": source_object, "destination_bucket_name": dest_bucket, "destination_object_name": dest_object})
+    if "error" in copy_res:
+        return copy_res
+    return await client.call_tool("delete_object", {"bucket_name": source_bucket, "object_name": source_object})
 
 async def upload_object(bucket_name: str, object_name: str, file_path: str) -> Dict[str, Any]:
     client = await ensure_mcp()
-    return await client.call_tool("upload_object", {"bucket_name": bucket_name, "object_name": object_name, "file_path": file_path})
+    return await client.call_tool("upload_object_safe", {"bucket_name": bucket_name, "object_name": object_name, "file_path": file_path})
 
 async def download_object(bucket_name: str, object_name: str, file_path: str) -> Dict[str, Any]:
     client = await ensure_mcp()

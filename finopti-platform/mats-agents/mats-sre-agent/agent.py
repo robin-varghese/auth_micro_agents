@@ -37,6 +37,14 @@ from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 from config import config
 
+# Initialize Phoenix tracing
+tracer_provider = register(
+    project_name="finoptiagents-MATS",  # Unified project for all MATS agents
+    endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
+    set_global_tracer_provider=True
+)
+GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -124,6 +132,16 @@ async def read_logs(project_id: str, filter_str: str, hours_ago: int = 1) -> Dic
     """
     setup_gcloud_config()
     
+    # Enforce Environment Project ID to prevent hallucinations
+    env_project_id = os.environ.get("GCP_PROJECT_ID")
+    if env_project_id and env_project_id != project_id:
+        logger.warning(f"Agent attempted to query project '{project_id}' but is restricted to '{env_project_id}'. Overriding.")
+    override_warning = ""
+    if env_project_id and env_project_id != project_id:
+        logger.warning(f"Agent attempted to query project '{project_id}' but is restricted to '{env_project_id}'. Overriding.")
+        override_warning = f" [WARNING: Project '{project_id}' does not exist or is restricted. Query was executed against '{env_project_id}' instead.]"
+        project_id = env_project_id
+
     await _report_progress(f"Querying Cloud Logging for project {project_id} (filter='{filter_str}')", "TOOL_USE")
     
     # Calculate timestamp
@@ -176,13 +194,15 @@ async def read_logs(project_id: str, filter_str: str, hours_ago: int = 1) -> Dic
                         "severity": log.get("severity"),
                         "textPayload": log.get("textPayload"),
                         "jsonPayload": log.get("jsonPayload"),
+                        "protoPayload": log.get("protoPayload"), # Crucial for Audit Logs (IAM)
                         "resource": log.get("resource"),
                         "insertId": log.get("insertId")
                     })
                 
                 log_count = len(simplified_logs)
                 await _report_progress(f"Found {log_count} relevant logs.", "OBSERVATION")
-                return {"logs": simplified_logs, "count": log_count}
+                await _report_progress(f"Found {log_count} relevant logs.", "OBSERVATION")
+                return {"logs": simplified_logs, "count": log_count, "note": override_warning if override_warning else None}
             except json.JSONDecodeError:
                 return {"error": "Failed to parse gcloud output JSON", "raw_output": result.stdout[:500]}
         else:
@@ -205,17 +225,20 @@ sre_agent = Agent(
     You are a Senior Site Reliability Engineer (SRE).
     
     OPERATIONAL RULES:
-    1. FILTER: Always filter logs by `severity="ERROR"` first.
+    1. FILTER: Filter logs by `(severity=ERROR OR severity=WARNING)`.
     2. VERSIONING: Scan logs for 'git_commit_sha', 'image_tag' or 'version'.
-    3. INTERACTIVE BATCHING (STRICT): 
-       - EXECUTE ONLY THE TOP 3 MOST CRITICAL QUERIES.
-       - AFTER 3 QUERIES, YOU MUST STOP.
-       - Return `status="WAITING_FOR_APPROVAL"` and list `pending_steps`.
-       - DO NOT EXCEED 3 TOOLS CALLS PER TURN.
+    3. IAM/AUTH: Check `protoPayload` for 'Permission Denied', '403', or 'IAM' errors.
+    4. EXECUTION STRATEGY: 
+       - EXECUTE ALL NECESSARY QUERIES AUTONOMOUSLY.
+       - DO NOT ASK FOR PERMISSION TO RUN QUERIES.
+       - If a query yields 0 logs, assume no issue of that type exists and TRY THE NEXT hypothesis.
+       - If you have checked logs, metrics, and IAM and found nothing, return `status="FAILURE"` with `error="Root Cause Not Found"`.
+       - RETURN ONLY WHEN YOU HAVE A DEFINITIVE FINDING OR HAVE EXHAUSTED ALL CHECKS.
     
     OUTPUT JSON FORMAT:
     {
         "status": "SUCCESS|WAITING_FOR_APPROVAL|FAILURE", 
+        "root_cause_found": true|false,
         "incident_timestamp": "...",
         "service_name": "...",
         "version_sha": "...",
@@ -245,6 +268,7 @@ async def process_request(prompt_or_payload: Any):
     prompt = ""
     job_id = None
     orchestrator_url = None
+    project_id = None
     
     # Parse generic input
     if isinstance(prompt_or_payload, dict):
@@ -260,98 +284,126 @@ async def process_request(prompt_or_payload: Any):
                  prompt = data.get("message", input_str)
                  job_id = data.get("job_id")
                  orchestrator_url = data.get("orchestrator_url")
+                 project_id = data.get("project_id")
              else:
                  prompt = input_str
          except:
              prompt = input_str
              
-    # Set Env vars for tools to access context
+    #  Set Env vars for tools to access context
     if job_id:
         os.environ["MATS_JOB_ID"] = job_id
     if orchestrator_url:
         os.environ["MATS_ORCHESTRATOR_URL"] = orchestrator_url
+    if project_id:
+        os.environ["GCP_PROJECT_ID"] = project_id
+        os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
+        logger.info(f"Set SRE Project Context: {project_id}")
     
-    # Plugins
-    bq_plugin = BigQueryAgentAnalyticsPlugin(
-        project_id=os.getenv("GCP_PROJECT_ID"),
-        dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-        table_id=config.BQ_ANALYTICS_TABLE,
-        config=BigQueryLoggerConfig(
-            enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+    # --- Trace Context Extraction ---
+    trace_context = {}
+    if isinstance(prompt_or_payload, dict):
+        trace_context = prompt_or_payload.get("headers", {})
+    elif isinstance(prompt_or_payload, str):
+         try:
+             d = json.loads(prompt_or_payload)
+             if isinstance(d, dict):
+                 trace_context = d.get("headers", {})
+         except: pass
+
+    # Extract parent trace context for span linking
+    from opentelemetry import propagate, trace
+    from openinference.semconv.trace import SpanAttributes, OpenInferenceSpanKindValues
+    
+    parent_ctx = propagate.extract(trace_context) if trace_context else None
+    tracer = trace.get_tracer(__name__)
+    
+    # Create child span linked to orchestrator's root span
+    span_context = {"context": parent_ctx} if parent_ctx else {}
+    
+    with tracer.start_as_current_span(
+        "sre_log_analysis",
+        **span_context,
+        attributes={
+            SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.CHAIN.value,
+            "agent.name": "mats-sre",
+            "agent.type": "triage"
+        }
+    ):
+        # Plugins (BQ Disabled due to stability issues)
+        # bq_plugin = BigQueryAgentAnalyticsPlugin(...)
+
+        app_instance = App(
+            name="mats_sre_agent_app",
+            root_agent=sre_agent,
+            plugins=[
+                ReflectAndRetryToolPlugin()
+                # bq_plugin
+            ]
         )
-    )
 
-    app_instance = App(
-        name="mats_sre_agent_app",
-        root_agent=sre_agent,
-        plugins=[
-            ReflectAndRetryToolPlugin(),
-            bq_plugin
-        ]
-    )
-
-    response_text = ""
-    execution_trace = []
-    
-    try:
-        async with InMemoryRunner(app=app_instance) as runner:
-            sid = "default"
-            await runner.session_service.create_session(session_id=sid, user_id="user", app_name="mats_sre_agent_app")
-            msg = types.Content(parts=[types.Part(text=prompt)])
-            
-            async for event in runner.run_async(user_id="user", session_id=sid, new_message=msg):
-                # Capture Trace Events
-                # Note: The structure of 'event' depends on Google ADK version, assuming standard patterns
+        response_text = ""
+        execution_trace = []
+        
+        try:
+            async with InMemoryRunner(app=app_instance) as runner:
+                sid = "default"
+                await runner.session_service.create_session(session_id=sid, user_id="user", app_name="mats_sre_agent_app")
+                msg = types.Content(parts=[types.Part(text=prompt)])
                 
-                # 1. Thought (Model generating plan) - often mapped to 'model_response' before tool calls
-                if hasattr(event, 'content') and event.content:
-                     for part in event.content.parts:
-                        if part.text:
-                            response_text += part.text
-                            execution_trace.append({
-                                "type": "thought",
-                                "content": part.text[:200] + "..." if len(part.text) > 200 else part.text
-                            })
-                            # Also report thought to UI
-                            if job_id:
-                                await _report_progress(part.text[:200], "THOUGHT")
-                            
-                # 2. Tool Calls
-                if hasattr(event, 'tool_calls') and event.tool_calls:
-                    for tc in event.tool_calls:
-                         execution_trace.append({
-                             "type": "tool_call",
-                             "tool": tc.function_name,
-                             "args": tc.args,
-                             "content": f"Calling {tc.function_name}"
-                         })
-                         
-                # Break infinite loops
-                execution_trace_count = len([e for e in execution_trace if e.get("type") in ["tool_call", "thought"]])
-                if execution_trace_count > 15:
-                    logger.warning(f"Max turns exceeded ({execution_trace_count}). Forcing stop.")
-                    response_text += "\n[SYSTEM] Max execution turns exceeded. Stopping validation."
-                    break
+                async for event in runner.run_async(user_id="user", session_id=sid, new_message=msg):
+                    # Capture Trace Events
+                    # Note: The structure of 'event' depends on Google ADK version, assuming standard patterns
+                    
+                    # 1. Thought (Model generating plan) - often mapped to 'model_response' before tool calls
+                    if hasattr(event, 'content') and event.content:
+                         for part in event.content.parts:
+                            if part.text:
+                                response_text += part.text
+                                execution_trace.append({
+                                    "type": "thought",
+                                    "content": part.text[:200] + "..." if len(part.text) > 200 else part.text
+                                })
+                                # Also report thought to UI
+                                if job_id:
+                                    await _report_progress(part.text[:200], "THOUGHT")
+                                
+                    # 2. Tool Calls
+                    if hasattr(event, 'tool_calls') and event.tool_calls:
+                        for tc in event.tool_calls:
+                             execution_trace.append({
+                                 "type": "tool_call",
+                                 "tool": tc.function_name,
+                                 "args": tc.args,
+                                 "content": f"Calling {tc.function_name}"
+                             })
+                             
+                    # Break infinite loops
+                    execution_trace_count = len([e for e in execution_trace if e.get("type") in ["tool_call", "thought"]])
+                    if execution_trace_count > 10:
+                        logger.warning(f"Max turns exceeded ({execution_trace_count}). Forcing stop.")
+                        response_text += "\\n[SYSTEM] Max execution turns exceeded. Stopping validation."
+                        break
 
-                # 3. Tool Outputs
-                if hasattr(event, 'tool_outputs') and event.tool_outputs:
-                     for to in event.tool_outputs:
-                         execution_trace.append({
-                             "type": "observation",
-                             "tool": to.function_name,
-                             "content": str(to.text_content)[:500]
-                         })
+                    # 3. Tool Outputs
+                    if hasattr(event, 'tool_outputs') and event.tool_outputs:
+                         for to in event.tool_outputs:
+                             execution_trace.append({
+                                 "type": "observation",
+                                 "tool": to.function_name,
+                                 "content": str(to.text_content)[:500]
+                             })
 
-    except Exception as e:
-        response_text = f"Error: {e}"
-        logger.error(f"Runner failed: {e}")
-        execution_trace.append({"type": "error", "content": str(e)})
-    
-    # Fallback if empty
-    if not response_text:
-        response_text = "Analysis completed but no textual summary was generated. Check logs."
+        except Exception as e:
+            response_text = f"Error: {e}"
+            logger.error(f"Runner failed: {e}")
+            execution_trace.append({"type": "error", "content": str(e)})
+        
+        # Fallback if empty
+        if not response_text:
+            response_text = "Analysis completed but no textual summary was generated. Check logs."
 
-    return {
-        "response": response_text,
-        "execution_trace": execution_trace
-    }
+        return {
+            "response": response_text,
+            "execution_trace": execution_trace
+        }

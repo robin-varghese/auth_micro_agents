@@ -9,6 +9,7 @@ COPY mats-agents/mats-architect-agent/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY config/ config/
+COPY mats-agents/common/ common/
 COPY mats-agents/mats-architect-agent/ .
 
 ENV PYTHONUNBUFFERED=1

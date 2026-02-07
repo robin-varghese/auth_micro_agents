@@ -1,0 +1,16 @@
+# Root Cause Analysis: Authentication Failure for Cloud Run Service @calculator-app@
+
+## 1. Executive Summary
+The `calculator-app` service in project `vector-search-poc` was inaccessible to the public because it was configured to require authentication, causing the Google Front End (GFE) to block all unauthenticated requests with a 403-equivalent "not authenticated" error.
+
+## 2. Technical Context & Impact
+- **Affected Service**: `calculator-app`
+- **Impact Duration**: Ongoing until remediation (Detected 2026-02-02T18:22:2:Z0)
+- **User Impact**: 100% of public/unauthenticated users are unable to access the calculator service, receiving a "The request was not authenticated" error page.
+
+## 3. Timeline & Detection
+- **Detection Timestamp**: 2026-02-02T18:22:29.329012Z
+- **Detection Method**: SRE Log analysis and GFE\œ›ÜˆÚYÛ˜]\™HX]Ú[™Ë‚‹H
+ŠY™™XİY™\œÚ[ÛŠŠˆÚLM™™NMNXØXNMŒ˜ÎM˜ML™ÍÍÙLNNYÍXXÙ˜ØLÙ˜ÎÌX‹H
+Š•[Y[[™JŠ‚ˆHNŒŒ–ˆÔ‘H[™\İYØ][ÛˆY[YšY\È•H™\]Y\İØ\È›İ]][XØ]YˆÚYÛ˜]\™H[ˆÙÜË‚ˆHNŒŒÖˆ[™\İYØ]ÜˆY[YšY\ÈXÚÈÙˆ›Û\ËÜ[‹š[›ÚÙ\˜›Üˆ[\Ù\œØ‚ˆHNŒVˆÙXÛÛ™\H\ÜİYHY[YšYYˆ\œ›ÜœÈ›Üˆİ]XÈ\ÜÙ]È
+Ù˜]šXÛÛŠæ–6ö’à ¢22Bâ&ö÷B6W6R…FV6†æ–6ÂFVWF—fR¥F†R6W'f–6Rv2FWÆ÷–VBv—F†÷WBF†RÒÖÆÆ÷r×VæWF†VçF–6FVFfÆrâ–âvöövÆR6Æ÷VB'VâÂ6W'f–6W2&R&—fFR'’FVfVÇBâv†Vâ&WVW7B&V6†W2F†RvöövÆRg&öçBVæB„tdR’Â—B6†V6·2f÷"fÆ–Bô”D2–FVçF—G’Fö¶Vâ–âF†RWF†VçF–6F–öæ†VFW"â&V6W6RÆÅW6W'6v2æ÷Bw&çFVB&öÆW2÷'Vâæ–çfö¶W&ÂF†RtdR&V¦V7FVB&WVW7G2&Vf÷&RF†W’WfW"&V6†VBF†RÆ–6F–öâ6öçF–æW"âF†R6öçF–æW"—G6VÆb—2†VÇF‡’†2Wf–FVæ6VB'’7V66W76gVÂ7F'GW÷6‡WFF÷vâÆöw2’Â'WBVç&V6†&ÆRà ¢22Râ&VÖVF–F–öâ…6†÷'BFW&Ò¢Ò¢¤7F–öâF¶Vâ¢£¢w&çBV&Æ–2–çfö¶W"W&Ö—76–öç2FòF†R6W'f–6Rà¢Ò¢¤6öFRf—‚¢£ ¦&6€¦v6Æ÷VB'Vâ6W'f–6W2FBÖ–Ò×öÆ–7’Ö&–æF–ær6Æ7VÆF÷"ÖÅÀ¢ÒÖÖVÖ&W#Ò&ÆÅW6W'2"ÅÀ¢Ò×&öÆSÒ'&öÆW2÷'Vâæ–çfö¶W""ÅÀ¢Ò×&Vv–öâW2Ö6VçG&ÃÅÀ¢Ò×&ö¦V7BfV7F÷"×6V&6‚×ö0¦€ ¢22bâ&WfVçF–öâ„ÆöærFW&Ò¢Ò¢¤&6†—FV7GW&Â6†ævR¢£¢–×ÆVÖVçB–æg&7G'V7GW&R26öFR…FW'&f÷&Ò’FòÖævR”ÒöÆ–6–W2ÂVç7W&–ærF†RvöövÆUö6Æ÷VE÷'Vå÷6W'f–6Uö–ÕöÖVÖ&W&&W6÷W&6R—2W‡Æ–6—FÇ’FVf–æVBf÷"V&Æ–26W'f–6W2à¢Ò¢¥FW7F–ær¢£¢FB7–çF†WF–2%6Öö¶RFW7B"–âF†R4’ô4B—VÆ–æRF†BGFV×G2âVæWF†VçF–6FVBtUD&WVW7BFòF†R6W'f–6RU$ÂgFW"FWÆ÷–ÖVçBà¢Ò¢¤Ööæ—F÷&–ær¢£¢6WBW6Æ÷VBÖöæ—F÷&–ærÆW'Bf÷"C6„f÷&&–FFVâ’W'&÷"7–¶W2BF†RÆöB&Ææ6W"ôtdRÆWfVÂà  ¢22râvVçB6öæf–FVæ6R66÷&P¢Ò¢¤6öæf–FVæ6R66÷&R¢£¢“RP¢Ò¢¥&V6öæ–ær¢£¢F†RW'&÷"6–væGW&R—2F†R6æöæ–6Â&W7öç6Rf÷"Ö—76–ær6Æ÷VB'Vâ”ÒöÆ–6–W2ÂæBÆ–6F–öâÆöw26öæf—&ÒF†R6öçF–æW"7F'GW÷6‡WFF÷vâÆöw2æB6öæf—&ÒF†R6W'f–6R—2†VÇF‡’'WBVç&V6†&ÆRà ¢22‚â¶æ÷vâÆ–Ö—FF–öç0¢Ò&W÷6—F÷'’66W72v2&W7G&–7FVBGW&–ær–çfW7F–vF–øì‚6öFRÖÆWfVÂ6†ævW2f÷"ff–6öâ†æFÆ–ærvW&R–æfW'&VBg&öÒCBÆöw2&F†W"F†âF—&V7Bf–ÆR–ç7V7F–öâà¢Ò7GVÂ–æ6–FVçB7F'BF–ÖR—2&÷†–ÖFVB&6VBöâÆörf–Æ&–Æ—G’à

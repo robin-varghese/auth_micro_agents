@@ -57,6 +57,12 @@ if 'messages' not in st.session_state:
     st.session_state.messages = []
 if 'pending_prompt' not in st.session_state:
     st.session_state.pending_prompt = None
+if 'active_job_id' not in st.session_state:
+    st.session_state.active_job_id = None
+if 'job_status' not in st.session_state:
+    st.session_state.job_status = None
+if 'active_trace_id' not in st.session_state:
+    st.session_state.active_trace_id = None
 
 # ... (Configuration)
 APISIX_URL = "http://apisix:9080"
@@ -64,10 +70,45 @@ ORCHESTRATOR_JOBS = f"{APISIX_URL}/agent/mats/jobs"
 
 # ... (Auth and Helpers)
 
-def start_job(prompt: str) -> dict:
-    """Start an async troubleshooting job"""
+import uuid
+from opentelemetry import trace, propagate
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+# Simple OTel setup for UI (Trace Initiator)
+# Note: For full OTLP export, we would add OTLPSpanExporter here.
+# For now, we mainly need the ID generation logic.
+trace.set_tracer_provider(TracerProvider())
+tracer = trace.get_tracer(__name__)
+
+def _generate_trace_id():
+    """Generate a valid 32-char hex trace ID"""
+    return uuid.uuid4().hex
+
+def _get_trace_header(trace_id: str, span_id: str = None):
+    """Create W3C traceparent header"""
+    if not span_id:
+        span_id = uuid.uuid4().hex[:16]
+    return f"00-{trace_id}-{span_id}-01"
+
+def start_job(prompt: str, trace_id: str = None, session_id: str = None) -> dict:
+    """Start an async troubleshooting job with Trace Context"""
     try:
         headers = oauth_helper.get_auth_headers()
+        
+        # 1. Trace Propagation Logic
+        # Use existing trace_id if provided (Resume), else generate new
+        if not trace_id:
+            trace_id = _generate_trace_id()
+            
+        span_id = uuid.uuid4().hex[:16]
+        traceparent = _get_trace_header(trace_id, span_id)
+        
+        # Inject into headers
+        headers["traceparent"] = traceparent
+        # Optional: Pass custom session ID if provided, otherwise Orchestrator generates
+        if session_id:
+            headers["X-Session-ID"] = session_id
+
         payload = {"prompt": prompt}
         
         response = requests.post(
@@ -78,17 +119,27 @@ def start_job(prompt: str) -> dict:
         )
         
         if response.status_code == 202:
-            return response.json() # {"job_id": "...", "status": "RUNNING"}
+            data = response.json()
+            # Store trace_id in response for UI tracking if needed
+            data["trace_id"] = trace_id 
+            return data
         else:
             return {"error": f"Failed to start job: {response.text}"}
             
     except Exception as e:
         return {"error": str(e)}
 
-def poll_job(job_id: str) -> dict:
-    """Poll job status"""
+def poll_job(job_id: str, trace_id: str = None) -> dict:
+    """Poll job status with consistent trace context"""
     try:
         headers = oauth_helper.get_auth_headers()
+        
+        # Verification: Continue the trace? Or new span? 
+        # For polling, arguably a new span appearing under the same trace is best.
+        if trace_id:
+             # Create a new span ID for this poll request, linked to original trace
+             headers["traceparent"] = _get_trace_header(trace_id)
+
         response = requests.get(
             f"{ORCHESTRATOR_JOBS}/{job_id}",
             headers=headers,
@@ -107,7 +158,29 @@ if not st.session_state.authenticated:
     # ... (Login Page)
     pass
 else:
-    st.title("MATS Chat 💬")
+    # Handle Resume via URL
+    if "trace_id" in st.query_params and not st.session_state.active_trace_id:
+        st.session_state.active_trace_id = st.query_params["trace_id"]
+        st.toast(f"Resumed Trace: {st.session_state.active_trace_id}")
+
+    # Display Session ID prominently at top
+    col_session, col_new = st.columns([4, 1])
+    with col_session:
+        st.title("MATS Chat 💬")
+        # Auto-generate session if not exists
+        if not st.session_state.get('active_trace_id'):
+            st.session_state.active_trace_id = _generate_trace_id()
+        
+        # Display Session ID prominently
+        st.info(f"📋 **Session ID:** `{st.session_state.active_trace_id}`")
+        st.caption("Use this Session ID for troubleshooting in Phoenix: http://localhost:6006")
+    
+    with col_new:
+        if st.button("➕ New Investigation", help="Start a fresh investigation with new session ID"):
+            st.session_state.active_trace_id = _generate_trace_id()
+            st.session_state.active_job_id = None
+            st.session_state.messages = []
+            st.rerun()
     
     # Display chat messages
     for message in st.session_state.messages:
@@ -121,88 +194,140 @@ else:
         user_input = st.session_state.pending_prompt
         st.session_state.pending_prompt = None
     
+    # Unified Logic: Determine if we have a job to run (New or Existing)
+    current_job_id = None
+    
+    # Job Status Placeholders
+    job_creation_status = st.empty()
+    
+    # 1. Handle New User Input
     if user_input:
-        # Add user message to chat
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
+        is_waiting = (st.session_state.get('job_status') == "WAITING_FOR_USER")
         
-        # Async Interaction Loop
-        with st.chat_message("assistant"):
-            status_container = st.status("🚀 Initializing...", expanded=True)
-            console_container = st.empty()
-            plan_container = st.empty()
+        if st.session_state.active_job_id and not is_waiting:
+             st.warning("⚠️ Another job is already running. Please wait.")
+        else:
+            # Display User Message
+            st.session_state.messages.append({"role": "user", "content": user_input})
+            with st.chat_message("user"):
+                st.markdown(user_input)
             
-            # 1. Start Job
-            job_data = start_job(user_input)
-            
-            if "error" in job_data:
-                status_container.update(label="❌ Failed to start", state="error")
-                st.error(job_data["error"])
-            else:
-                job_id = job_data["job_id"]
-                status_container.update(label="🔄 MATS Active", state="running")
-                
-                # 2. Poll Loop
-                final_result = None
-                processed_events = set()
-                
-                start_time = time.time()
-                while True:
-                    # Timeout safety
-                    if time.time() - start_time > 600:
-                        status_container.update(label="❌ Timeout", state="error")
-                        break
-                        
-                    status_data = poll_job(job_id)
-                    current_status = status_data.get("status", "UNKNOWN")
-                    
-                    # Update Events
-                    events = status_data.get("events", [])
-                    
-                    # Render Plan if found
-                    for evt in events:
-                        if evt["type"] == "PLAN" and "plan_rendered" not in st.session_state:
-                            plan_container.markdown(evt["message"])
-                            
-                    # Render Console Log items (Latest 20)
-                    console_text = ""
-                    for evt in events[-10:]:
-                        icon = "ℹ️"
-                        if evt["type"] == "TOOL_USE": icon = "🛠️"
-                        elif evt["type"] == "OBSERVATION": icon = "✅"
-                        elif evt["type"] == "THOUGHT": icon = "🧠"
-                        elif evt["type"] == "ERROR": icon = "❌"
-                        elif evt["type"] == "PLAN": icon = "📋"
-                        
-                        source = evt.get("source", "system").replace("mats-", "").replace("-agent", "").upper()
-                        console_text += f"{icon} **[{source}]** {evt['message']}\n\n"
-                        
-                    console_container.caption(console_text)
-                    
-                    if current_status in ["COMPLETED", "FAILED", "PARTIAL"]:
-                        final_result = status_data.get("result")
-                        if current_status == "COMPLETED":
-                            status_container.update(label="✅ Complete", state="complete", expanded=False)
-                        else:
-                            status_container.update(label=f"⚠️ {current_status}", state="error", expanded=False)
-                        break
-                        
-                    time.sleep(2)
-                
-                # 3. Render Final Response
-                if final_result:
-                    # Parse result for nicer display
-                    response_msg = ""
-                    if isinstance(final_result, dict):
-                         response_msg = final_result.get("response") or final_result.get("message") or str(final_result)
-                    else:
-                         response_msg = str(final_result)
+            # Start/Resume Job
+            with st.chat_message("assistant"):
+                 with job_creation_status.status("🚀 Initializing...", expanded=True) as status_ptr:
+                     try:
+                         # Resume Flow
+                         if is_waiting and st.session_state.active_job_id:
+                             status_ptr.update(label="🔄 Resuming...", state="running")
                          
-                    st.markdown(response_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": response_msg})
-                else:
-                     st.error("No final result received.")
+                         # Pass active_trace_id if exists (Resume), else start_job generates new
+                         # IMPORTANT: Pass session_id explicitly for Phoenix tracking
+                         job_data = start_job(
+                             user_input, 
+                             trace_id=st.session_state.active_trace_id,
+                             session_id=st.session_state.active_trace_id  # Use same ID for session tracking
+                         )
+                         
+                         if "error" in job_data:
+                             status_ptr.update(label="❌ Failed to start", state="error")
+                             st.error(job_data["error"])
+                         else:
+                             # Success - Set Current Job Context
+                             current_job_id = job_data["job_id"]
+                             # Capture new trace ID if generated
+                             if job_data.get("trace_id"):
+                                 st.session_state.active_trace_id = job_data["trace_id"]
+                                 
+                             st.session_state.active_job_id = current_job_id
+                             st.session_state.pending_prompt = None
+                             # Status will be cleared when loop starts
+                     except Exception as e:
+                         status_ptr.update(label="❌ Error", state="error")
+                         st.error(str(e))
+
+    # 2. Handle Resuming (If no new input, but active job exists)
+    elif st.session_state.active_job_id:
+        current_job_id = st.session_state.active_job_id
+
+
+    # 3. Unified Polling Loop (Runs if we found a job ID from either path)
+    if current_job_id:
+        with st.chat_message("assistant"):
+             # Use existing status if available, or create new container
+             status_container = st.status("🔄 Processing...", expanded=True)
+             console_container = st.empty()
+             plan_container = st.empty()
+             
+             final_result = None
+             start_time = time.time()
+             
+             while True:
+                # Timeout safety
+                if time.time() - start_time > 600:
+                    status_container.update(label="❌ Timeout", state="error")
+                    st.session_state.active_job_id = None
+                    break
+                    
+                status_data = poll_job(current_job_id, trace_id=st.session_state.active_trace_id)
+                current_status = status_data.get("status", "UNKNOWN")
+                st.session_state.job_status = current_status # Track status globally
+                
+                # Update Events
+                events = status_data.get("events", [])
+                
+                # Render Plan if found
+                for evt in events:
+                    if evt["type"] == "PLAN":
+                        plan_container.markdown(evt["message"])
+                        
+                # Render Console Log items (Latest 20)
+                console_text = ""
+                for evt in events[-10:]:
+                    icon = "ℹ️"
+                    if evt["type"] == "TOOL_USE": icon = "🛠️"
+                    elif evt["type"] == "OBSERVATION": icon = "✅"
+                    elif evt["type"] == "THOUGHT": icon = "🧠"
+                    elif evt["type"] == "ERROR": icon = "❌"
+                    elif evt["type"] == "PLAN": icon = "📋"
+                    
+                    source = evt.get("source", "system").replace("mats-", "").replace("-agent", "").upper()
+                    console_text += f"{icon} **[{source}]** {evt['message']}\n\n"
+                    
+                console_container.caption(console_text)
+                
+                # Check Terminal States
+                if current_status in ["COMPLETED", "FAILED", "PARTIAL", "WAITING_FOR_USER"]:
+                    final_result = status_data.get("result")
+                    
+                    if current_status == "COMPLETED":
+                        status_container.update(label="✅ Complete", state="complete", expanded=False)
+                        st.session_state.active_job_id = None
+                        st.session_state.job_status = None
+                        
+                    elif current_status == "WAITING_FOR_USER":
+                        status_container.update(label="⚠️ Waiting for Input", state="running", expanded=True)
+                        # Do NOT clear active_job_id - we need to wait for user to type
+                        
+                    else:
+                        status_container.update(label=f"⚠️ {current_status}", state="error", expanded=False)
+                        st.session_state.active_job_id = None
+                        st.session_state.job_status = None
+                    break
+                    
+                time.sleep(2)
+        
+        # 4. Render Final Response (if loop finished with a result)
+        if final_result:
+            response_msg = ""
+            if isinstance(final_result, dict):
+                 response_msg = final_result.get("response") or final_result.get("message") or str(final_result)
+            else:
+                 response_msg = str(final_result)
+            
+            # Avoid duplicate messages: check if last message is identical
+            if not st.session_state.messages or st.session_state.messages[-1]["content"] != response_msg:
+                 st.markdown(response_msg)
+                 st.session_state.messages.append({"role": "assistant", "content": response_msg})
 AVAILABLE_USERS = {
     "admin@cloudroaster.com": {
         "name": "Admin User",
@@ -230,6 +355,9 @@ def login_simulated(user_email: str):
     st.session_state.user_name = AVAILABLE_USERS[user_email]['name']
     st.session_state.auth_method = 'simulated'
     st.session_state.messages = []
+    # Auto-generate session ID on login
+    if not st.session_state.get('active_trace_id'):
+        st.session_state.active_trace_id = _generate_trace_id()
     st.success(f"Logged in as {AVAILABLE_USERS[user_email]['name']} (Simulated)")
 
 def logout():

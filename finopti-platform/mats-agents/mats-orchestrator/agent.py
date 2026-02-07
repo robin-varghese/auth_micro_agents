@@ -61,8 +61,13 @@ tracer_provider.add_span_processor(SimpleSpanProcessor(http_exporter))
 GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
 
 # Send manual test trace on startup
-from opentelemetry import trace
+from opentelemetry import trace, propagate
+from openinference.semconv.trace import SpanAttributes, OpenInferenceSpanKindValues
+
+# Get tracer for creating spans
 tracer = trace.get_tracer(__name__)
+
+# Send manual test trace on startup
 with tracer.start_as_current_span("agent-startup-check") as span:
     span.set_attribute("status", "startup_ok")
     logger.info("Sent manual startup trace to Phoenix")
@@ -363,7 +368,10 @@ async def run_investigation_async(
     project_id: str,
     repo_url: str,
     user_email: str = None,
-    job_id: str = None # New optional param
+    job_id: str = None,
+    resume_job_id: str = None, # New optional param to signal resumption
+    trace_context: Dict[str, Any] = None,
+    provided_session_id: str = None  # NEW: Session ID from UI for Phoenix tracking
 ) -> Dict[str, Any]:
     """
     Run complete investigation workflow.
@@ -379,21 +387,41 @@ async def run_investigation_async(
         gate_analysis_to_synthesis,
         GateDecision
     )
-    # Import JobManager locally to avoid circular imports if any (though cleaner to import at top if possible)
-    # Assuming job_manager is in python path or relative
+    # Import JobManager locally 
     try:
         from job_manager import JobManager
     except ImportError:
         JobManager = None
     
-    # Create session
-    session = create_session(user_email or "default", project_id, repo_url)
+    # Create session (use provided_session_id from UI if available)
+    session = await create_session(user_email or "default", project_id, repo_url, provided_session_id)
     session_id = session.session_id
     
     logger.info(f"[{session_id}] Starting investigation (Job: {job_id}): {user_request[:100]}")
+    logger.info(f"[{session_id}] Using session ID from UI: {provided_session_id is not None}")
+
+    # Set session.id on the current span (created by @trace_span decorator)
+    # This ensures Phoenix can group traces by session
+    current_span = trace.get_current_span()
+    if current_span and current_span.is_recording():
+        current_span.set_attribute(SpanAttributes.SESSION_ID, session_id)
+        current_span.set_attribute("user.email", user_email or "unknown")
+        current_span.set_attribute("session.project_id", project_id or "unknown")
+        current_span.set_attribute("session.repo_url", repo_url or "unknown")
+        current_span.set_attribute("job.id", job_id or "none")
+        logger.info(f"[{session_id}] Set session.id={session_id} on current span")
     
-    if job_id and JobManager:
+    # Inject trace context for propagation to sub-agents
+    trace_headers = {}
+    propagate.inject(trace_headers)
+    
+    # Store in session for delegation
+    session.trace_headers = trace_headers
+    logger.info(f"[{session_id}] Trace context injected with traceparent: {trace_headers.get('traceparent', 'N/A')[:50]}...")
+    
+    if job_id and JobManager and not resume_job_id:
         JobManager.add_event(job_id, "SYSTEM", f"Investigation started for session {session_id}", "orchestrator")
+
     
     # Initialize Sequential Thinking MCP
     seq_client = SequentialThinkingClient()
@@ -402,40 +430,107 @@ async def run_investigation_async(
     try:
         await seq_client.connect()
         
-        # Phase 1: PLANNING
-        session.workflow.transition_to(WorkflowPhase.PLANNING, "Generating investigation plan")
-        agent_registry = load_agent_registry()
-        plan = await generate_plan(user_request, agent_registry)
-        
-        # EMIT PLAN EVENT
-        if job_id and JobManager:
-            # Emit the raw plan or a formatted summary
-            plan_summary = f"**Investigation Plan**\n\nReasoning: {plan.get('reasoning', 'N/A')}\n\nSteps:\n"
-            for step in plan.get('steps', []):
-                plan_summary += f"{step.get('step_id')}. {step.get('ui_label')} ({step.get('assigned_lead')})\n"
+        # --- PHASE 1: PLANNING (Skip if Resuming) ---
+        if not resume_job_id:
+            session.workflow.transition_to(WorkflowPhase.PLANNING, "Generating investigation plan")
+            agent_registry = load_agent_registry()
+            plan = await generate_plan(user_request, agent_registry)
             
-            JobManager.add_event(job_id, "PLAN", plan_summary, "orchestrator")
-        
-        gate_result, reason = gate_planning_to_triage(plan, session_id)
-        if gate_result == GateDecision.FAIL:
-            session.add_blocker("E000", f"Planning failed: {reason}")
-            session.mark_completed("FAILURE")
-            return {
-                "status": "FAILURE", 
-                "error": reason,
-                "response": f"❌ **Planning Failed**\n\n{reason}"
-            }
-        
-        # Phase 2: TRIAGE (SRE)
+            # EMIT PLAN EVENT
+            if job_id and JobManager:
+                # Emit the raw plan or a formatted summary
+                plan_summary = f"**Investigation Plan**\n\nReasoning: {plan.get('reasoning', 'N/A')}\n\nSteps:\n"
+                for i, step in enumerate(plan.get('steps', []), 1):
+                    plan_summary += f"{i}. {step.get('ui_label')} ({step.get('assigned_lead')})\n"
+                
+                JobManager.add_event(job_id, "PLAN", plan_summary, "orchestrator")
+            
+            gate_result, reason = gate_planning_to_triage(plan, session_id)
+            if gate_result == GateDecision.FAIL:
+                session.add_blocker("E000", f"Planning failed: {reason}")
+                session.mark_completed("FAILURE")
+                return {
+                    "status": "FAILURE", 
+                    "error": reason,
+                    "response": f"❌ **Planning Failed**\n\n{reason}"
+                }
+        else:
+            logger.info(f"[{session_id}] Resuming job {resume_job_id}. Skipping Planning.")
+            # Restore state if possible (Mocking state restoration for now)
+            # In real system, load session from DB using job_id linkage.
+            # Here we will re-use the Job's last result if available via JobManager
+            if JobManager:
+                 prev_job = JobManager.get_job(resume_job_id)
+                 if prev_job and prev_job.get("result"):
+                     session.sre_findings = prev_job["result"].get("sre_findings")
+
+        # --- PHASE 2: TRIAGE (SRE) ---
         session.workflow.transition_to(WorkflowPhase.TRIAGE, "Analyzing logs and metrics")
         
-        # Pass job_id to sub-agents for progress reporting
-        sre_result = await delegate_to_sre(
-            f"{user_request}\n\nFocus on finding error signatures and stack traces.",
-            project_id,
-            session_id,
-            job_id=job_id # Passing job_id
-        )
+        sre_result = None
+        
+        # Determine if we call SRE fresh or Resume SRE
+        if resume_job_id and session.sre_findings:
+             # RESUME SRE
+             logger.info(f"[{session_id}] Resuming SRE with user input: {user_request}")
+             JobManager.add_event(job_id, "SYSTEM", "Resuming SRE Analysis...", "orchestrator")
+             
+             # Attempt to extract Project ID from user input (Heuristic)
+             import re
+             # Extract pattern like "project id: foo" or "project: bar"
+             patterns = [
+                 r"project\s*(?:id|name)?\s*[:=]\s*([a-z0-9-]+)",
+                 r"gcp\s*project\s*[:=]\s*([a-z0-9-]+)"
+             ]
+             for p in patterns:
+                 m = re.search(p, user_request, re.IGNORECASE)
+                 if m:
+                     new_pid = m.group(1).strip()
+                     if new_pid and new_pid.lower() != "yes":
+                        project_id = new_pid
+                        logger.info(f"[{session_id}] Extracted Project ID from user input: {project_id}")
+                        break
+
+             # Construct Resumption Prompt
+             prev_findings = session.sre_findings
+             pending_steps = prev_findings.get("pending_steps", [])
+             
+             # Context for SRE to know what it did
+             sre_resume_prompt = f"""
+             RESUMPTION INSTRUCTION:
+             You previously paused analysis.
+             User has APPROVED continuing with the following steps: {pending_steps}.
+             User Note: "{user_request}"
+             
+             PREVIOUS FINDINGS:
+             {json.dumps(prev_findings.get('evidence', {}), indent=2)}
+             
+             CRITICAL INSTRUCTION:
+             1. EXECUTE the pending steps immediately.
+             2. Do NOT ask for approval again for the same steps.
+             3. If a step yields no results (0 logs), mark it as COMPLETED and move to the next.
+             4. If you have executed 3 queries, STOP and return your findings (Success or Failure).
+             
+             GOAL: Finish the investigation or declared "ROOT_CAUSE_NOT_FOUND".
+             """
+             
+             # Pass job_id to sub-agents for progress reporting
+             sre_result = await delegate_to_sre(
+                sre_resume_prompt,
+                project_id,
+                session_id,
+                job_id=job_id
+             )
+        else:
+            # FRESH SRE CALL
+            # Pass job_id to sub-agents for progress reporting
+            sre_result = await delegate_to_sre(
+                f"{user_request}\n\nFocus on finding error signatures and stack traces.",
+                project_id,
+                session_id,
+                job_id=job_id # Passing job_id
+            )
+            
         session.sre_findings = sre_result
         session.confidence_scores['sre'] = sre_result.get('confidence', 0.0)
         
@@ -450,11 +545,10 @@ async def run_investigation_async(
                  f"The SRE Agent has completed initial checks but identified {len(pending_steps)} more potential analysis steps.\n\n"
                  f"**Completed Work**: Analyzed initial logs.\n"
                  f"**Pending Steps**:\n{steps_list}\n\n"
-                 f"Do you want to continue with these steps? (Reply 'Yes' or 'Continue')"
+                 f"**Action Required**: Check the steps above. If the agent is missing information (e.g., Project ID), please provide it.\n"
+                 f"Otherwise, reply **'Yes'** or **'Continue'** to proceed."
              )
              
-             # Save state (conceptually - simplistic for now)
-             # In a real system, we'd persist the session state. Here we return to UI.
              return {
                  "status": "WAITING_FOR_USER",
                  "sre_findings": sre_result,
@@ -463,6 +557,58 @@ async def run_investigation_async(
              }
 
         if gate_result == GateDecision.FAIL:
+            # Check if failure is actually a definitive blocker (Infra/Auth issue)
+            blockers = sre_result.get("blockers", [])
+            # Heuristic: If we have specific blockers or low confidence but specific error signature
+            infra_keywords = ["authentication", "permission", "access", "role", "limit", "quota", "iam", "policy", "forbidden", "403"]
+            is_infra_blocker = any(any(k in b.lower() for k in infra_keywords) for b in blockers)
+            
+            if is_infra_blocker:
+                logger.info(f"[{session_id}] SRE blocked by definitive Infra issue: {blockers}. Treated as Root Cause.")
+                
+                # Treat as Root Cause Found -> Go to Architect
+                session.workflow.transition_to(WorkflowPhase.SYNTHESIS, "Generating RCA (Blocked by Infra)")
+                
+                inv_result_skipped = {
+                    "status": "SKIPPED",
+                    "confidence": 1.0, 
+                    "root_cause": None,
+                    "hypothesis": f"Service blocked by Infrastructure/Auth: {'; '.join(blockers)}",
+                    "evidence": json.dumps(sre_result.get('evidence', {}))
+                }
+                
+                arch_result = await delegate_to_architect(sre_result, inv_result_skipped, session_id, user_request=user_request)
+                session.architect_output = arch_result
+                session.confidence_scores['architect'] = arch_result.get('confidence', 0.0)
+                session.rca_url = arch_result.get('rca_url')
+                
+                # Mark complete
+                overall_confidence = session.calculate_overall_confidence()
+                session.mark_completed("SUCCESS" if overall_confidence >= 0.5 else "PARTIAL_SUCCESS")
+                
+                response_msg = f"**Investigation Complete** (Confidence: {overall_confidence:.2f})\n\n"
+                if session.rca_url:
+                    response_msg += f"📄 **RCA Document**: {session.rca_url}\n\n"
+                elif arch_result.get('rca_content'):
+                     response_msg += "📄 **RCA generated** (See content below).\n\n"
+
+                response_msg += "**Summary:**\n"
+                rca_content = arch_result.get('rca_content', 'No details available.')
+                response_msg += rca_content[:1000] + ("..." if len(rca_content) > 1000 else "")
+
+                return {
+                    "status": "SUCCESS",
+                    "session_id": session_id,
+                    "response": response_msg,
+                    "confidence": overall_confidence,
+                    "rca_url": session.rca_url,
+                    "rca_content": arch_result.get('rca_content'),
+                    "warnings": session.warnings,
+                    "recommendations": arch_result.get('recommendations', []),
+                    "execution_trace": sre_result.get("execution_trace", [])
+                }
+
+            # Genuine Failure
             session.add_blocker("E001", reason)
             session.mark_completed("PARTIAL_SUCCESS")
             return {
@@ -473,7 +619,58 @@ async def run_investigation_async(
                 "execution_trace": sre_result.get("execution_trace", [])
             }
         
-        # Phase 3: CODE ANALYSIS (Investigator)
+        # --- NEW SHORTCUT LOGIC ---
+        # If SRE found the root cause (e.g., Infrastructure/IAM error), skip Investigator
+        if sre_result.get("root_cause_found"):
+            logger.info(f"[{session_id}] SRE identified root cause. Skipping Investigator phase.")
+            
+            # Phase 4: SYNTHESIS (Architect) - Direct Transition
+            session.workflow.transition_to(WorkflowPhase.SYNTHESIS, "Generating RCA (Infra Root Cause)")
+            
+            # Create a dummy investigator result for the Architect
+            inv_result_skipped = {
+                "status": "SKIPPED",
+                "confidence": 1.0, 
+                "root_cause": None,
+                "hypothesis": "Root cause identified by SRE (Infrastructure/Config)",
+                "evidence": "See SRE Report"
+            }
+            
+            arch_result = await delegate_to_architect(sre_result, inv_result_skipped, session_id)
+            session.architect_output = arch_result
+            session.confidence_scores['architect'] = arch_result.get('confidence', 0.0)
+            session.rca_url = arch_result.get('rca_url')
+            
+            # Mark complete
+            overall_confidence = session.calculate_overall_confidence()
+            session.mark_completed("SUCCESS" if overall_confidence >= 0.5 else "PARTIAL_SUCCESS")
+            
+            logger.info(f"[{session_id}] Investigation complete (Shortcut), confidence={overall_confidence:.2f}")
+            
+            # Helper to format response (Duplicated for now, should be refactored)
+            response_msg = f"**Investigation Complete** (Confidence: {overall_confidence:.2f})\n\n"
+            if session.rca_url:
+                response_msg += f"📄 **RCA Document**: {session.rca_url}\n\n"
+            elif arch_result.get('rca_content'):
+                 response_msg += "📄 **RCA generated** (See content below).\n\n"
+
+            response_msg += "**Summary:**\n"
+            rca_content = arch_result.get('rca_content', 'No details available.')
+            response_msg += rca_content[:1000] + ("..." if len(rca_content) > 1000 else "")
+
+            return {
+                "status": "SUCCESS",
+                "session_id": session_id,
+                "response": response_msg,
+                "confidence": overall_confidence,
+                "rca_url": session.rca_url,
+                "rca_content": arch_result.get('rca_content'),
+                "warnings": session.warnings,
+                "recommendations": arch_result.get('recommendations', []),
+                "execution_trace": sre_result.get("execution_trace", [])
+            }
+
+        # Phase 3: CODE ANALYSIS (Investigator) - Normal Flow
         session.workflow.transition_to(WorkflowPhase.CODE_ANALYSIS, "Investigating code")
         sre_context = json.dumps(sre_result.get('evidence', {}), indent=2)
         inv_result = await delegate_to_investigator(
@@ -506,7 +703,7 @@ async def run_investigation_async(
         
         # Phase 4: SYNTHESIS (Architect)
         session.workflow.transition_to(WorkflowPhase.SYNTHESIS, "Generating RCA")
-        arch_result = await delegate_to_architect(sre_result, inv_result, session_id)
+        arch_result = await delegate_to_architect(sre_result, inv_result, session_id, user_request=user_request)
         session.architect_output = arch_result
         session.confidence_scores['architect'] = arch_result.get('confidence', 0.0)
         session.rca_url = arch_result.get('rca_url')
@@ -525,9 +722,38 @@ async def run_investigation_async(
              response_msg += "📄 **RCA generated** (See content below).\n\n"
 
         response_msg += "**Summary:**\n"
-        # Extract summary from Architect if possible (or truncate rca_content if very long)
+        # Extract summary from Architect response
         rca_content = arch_result.get('rca_content', 'No details available.')
-        response_msg += rca_content[:1000] + ("..." if len(rca_content) > 1000 else "")
+        
+        # Smart Summary Extraction
+        # Smart Summary Extraction
+        summary_text = rca_content
+        
+        # Try to find Executive Summary section
+        if "## 1. Executive Summary" in rca_content:
+             parts = rca_content.split("## 1. Executive Summary")
+             if len(parts) > 1:
+                 # Take content after header, stop at next header
+                 summary_text = parts[1].split("##")[0].strip()
+        elif "Executive Summary" in rca_content:
+             parts = rca_content.split("Executive Summary")
+             if len(parts) > 1:
+                 # If using standard markdown headers, split on next header
+                 if "##" in parts[1]:
+                    summary_text = parts[1].split("##")[0].strip()
+                 else:
+                    # Fallback for plain text, take first 2 paragraphs
+                    paragraphs = parts[1].strip().split("\n\n")
+                    summary_text = "\n\n".join(paragraphs[:2])
+
+        # Truncate for UI safety (Increased from 500 to 2000)
+        if len(summary_text) > 2000:
+            summary_text = summary_text[:1997] + "..."
+            
+        response_msg += summary_text
+        
+        if session.rca_url:
+             response_msg += f"\n\n[View Full RCA Document]({session.rca_url})"
 
         return {
             "status": "SUCCESS",

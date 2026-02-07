@@ -6,6 +6,7 @@ import os
 import sys
 import asyncio
 import logging
+from typing import Any
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.plugins import ReflectAndRetryToolPlugin
@@ -43,7 +44,7 @@ if config.GOOGLE_API_KEY:
 # -------------------------------------------------------------------------
 import requests
 
-def upload_rca_to_gcs(filename: str, content: str, bucket_name: str = "finopti-reports") -> str:
+def upload_rca_to_gcs(filename: str, content: str, bucket_name: str = "rca-reports-mats") -> str:
     """
     Uploads the RCA document to Google Cloud Storage via the Storage Agent.
     
@@ -58,6 +59,8 @@ def upload_rca_to_gcs(filename: str, content: str, bucket_name: str = "finopti-r
     try:
         # Route via APISIX to Storage Agent
         url = f"{config.APISIX_URL}/agent/storage/execute"
+        logger.info(f"Initiating RCA Upload to {bucket_name}/{filename} via {url}")
+
         
         # Robust prompt for Storage Agent
         prompt = (
@@ -69,16 +72,36 @@ def upload_rca_to_gcs(filename: str, content: str, bucket_name: str = "finopti-r
             "prompt": prompt,
             "user_email": "mats-architect@system.local" 
         }
-        
-        # In a real scenario, we might call the specific upload endpoint if exposed, 
-        # but the agent interface uses natural language or structured tools. 
-        # For direct tool usage we can fallback to HTTP call to the storage agent service.
+
+        # Inject Trace Headers
+        try:
+            from common.observability import FinOptiObservability
+            headers = {}
+            FinOptiObservability.inject_trace_to_headers(headers)
+            payload["headers"] = headers
+        except ImportError:
+            pass
         
         response = requests.post(url, json=payload, timeout=30)
         response.raise_for_status()
         return f"Upload requested. Response: {response.json()}"
     except Exception as e:
         return f"Failed to upload RCA: {e}"
+
+def write_object(bucket: str, path: str, content: str) -> str:
+    """
+    Shim for legacy/hallucinated write_object calls. Redirects to upload_rca_to_gcs.
+    """
+    logging.warning("LLM called write_object (shim). Redirecting to upload_rca_to_gcs.")
+    # Map arguments
+    return upload_rca_to_gcs(filename=path, content=content, bucket_name=bucket)
+
+def update_bucket_labels(bucket_name: str, labels: dict) -> str:
+    """
+    Shim for hallucinated update_bucket_labels calls.
+    """
+    logging.warning(f"LLM called update_bucket_labels (shim) for {bucket_name}. Ignoring.")
+    return "Bucket labels updated (shim)."
 
 architect_agent = Agent(
     name="mats_architect_agent",
@@ -88,65 +111,151 @@ architect_agent = Agent(
     You are a Principal Software Architect.
     Your job is to synthesize technical investigations into a formal Root Cause Analysis (RCA) document and recommend robust fixes.
     
-    INPUTS:SRE Findings (Logs) + Investigator Findings (Code).
+    INPUTS: SRE Findings (Logs) + Investigator Findings (Code).
     
-    OUTPUT FORMAT (Markdown):
-    1. **Executive Summary**: One sentence description.
-    2. **Timeline & Detection**: Timestamp and metric context.
-    3. **Root Cause**: Deep technical explanation.
-    4. **Resolution**: The recommended code fix (CODE BLOCK).
-    5. **Prevention Plan**: Test cases or architectural changes.
-    
-    IMPORTANT: Once you generate the RCA, you MUST Use the `upload_rca_to_gcs` tool to save it.
+    OUTPUT FORMAT (Strictly Follow this Template):
+    # Root Cause Analysis: [[Incident Title]]
 
-    AVAILABLE SUB-AGENT CAPABILITIES (For Context Only):
-    - Google Cloud Storage Specialist: list_objects, read_object_metadata, read_object_content, delete_object, write_object, update_object_metadata, copy_object, move_object, upload_object, download_object, list_buckets, create_bucket, delete_bucket, get_bucket_metadata, update_bucket_labels, get_bucket_location, view_iam_policy, check_iam_permissions, get_metadata_table_schema, execute_insights_query, list_insights_configs
-    - Code Execution Specialist: execute_python_code, solve_math_problems, process_data, generate_text_programmatically
-    - Database Specialist: postgres_execute_sql, postgres_list_tables, postgres_list_indexes, postgres_database_overview, postgres_list_active_queries, query_agent_analytics
+    ## 1. Executive Summary
+    [[One-sentence description of the outage and root cause.]]
+
+    ## 2. Technical Context & Impact
+    - **Affected Service**: [[service_name]]
+    - **Impact Duration**: [[start_time]] to [[end_time]]
+    - **User Impact**: [[describe_user_experience_failures]]
+
+    ## 3. Timeline & Detection
+    - **Detection Timestamp**: [[timestamp]]
+    - **Detection Method**: [[how_was_it_found]]
+    - **Affected Version**: [[version_hash]]
+    - **Timeline**:
+      - [[time]]: [[event]]
+      - [[time]]: [[event]]
+
+    ## 4. Root Cause (Technical Deep Dive)
+    [[detailed_explanation_of_the_failure_mechanism]]
+
+    ## 5. Remediation (Short Term)
+    - **Action Taken**: [[what_fixed_it]]
+    - **Code Fix**:
+    ```[[language]]
+    [[code_snippet]]
+    ```
+
+    ## 6. Prevention (Long Term)
+    - **Architectural Change**: [[describe_structural_fix]]
+    - **Testing**: [[new_test_case_to_prevent_regression]]
+    - **Monitoring**: [[new_alert_rule]]
+
+    ## 7. Agent Confidence Score
+    - **Confidence Score**: [[0-100]]%
+    - **Reasoning**: [[why_you_chose_this_score]]
+    
+    CRITICAL INSTRUCTIONS: 
+    1. **UPLOAD FIRST**: Use `upload_rca_to_gcs` to save the file.
+       - Filename: `MATS-RCA-[[service_name]]-[[timestamp]].md`
+       - Bucket: `rca-reports-mats`
+       - **DO NOT USE `write_object`**. Use ONLY `upload_rca_to_gcs`.
+    
+    2. **SHORT SUMMARY ONLY**: After uploading, your final response to the user MUST BE LESS THAN 10 LINES.
+       - Output ONLY the "Executive Summary" and the GCS Link.
+       - **ABSOLUTELY NO FULL RCA TEXT IN CHAT**. The system will truncate logic if you print the full text.
+       - If you print the full RCA, the workflow fails.
     """,
-    tools=[upload_rca_to_gcs] 
+    tools=[upload_rca_to_gcs, write_object, update_bucket_labels] 
 )
 
 
 # -------------------------------------------------------------------------
 # RUNNER
 # -------------------------------------------------------------------------
-async def process_request(prompt: str):
-    # Ensure API Key is in environment
-    if config.GOOGLE_API_KEY:
-        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+async def process_request(prompt_or_payload: Any):
+    # Handle Payload - extract prompt first
+    prompt = ""
+    if isinstance(prompt_or_payload, dict):
+        prompt = prompt_or_payload.get("message", "")
+    else:
+        prompt = str(prompt_or_payload)
+        try:
+             d = json.loads(prompt)
+             if isinstance(d, dict):
+                 prompt = d.get("message", prompt)
+        except: pass
     
-    bq_plugin = BigQueryAgentAnalyticsPlugin(
-        project_id=os.getenv("GCP_PROJECT_ID"),
-        dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-        table_id=config.BQ_ANALYTICS_TABLE,
-        config=BigQueryLoggerConfig(
-            enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+    # --- Trace Context Extraction ---
+    trace_context = {}
+    if isinstance(prompt_or_payload, dict):
+        trace_context = prompt_or_payload.get("headers", {})
+    elif isinstance(prompt_or_payload, str):
+         try:
+             d = json.loads(prompt_or_payload)
+             if isinstance(d, dict):
+                 trace_context = d.get("headers", {})
+         except: pass
+
+    # Extract parent trace context for span linking
+    from opentelemetry import propagate, trace
+    from openinference.semconv.trace import SpanAttributes, OpenInferenceSpanKindValues
+    
+    parent_ctx = propagate.extract(trace_context) if trace_context else None
+    tracer = trace.get_tracer(__name__)
+    
+    # Create child span linked to orchestrator's root span
+    span_context = {"context": parent_ctx} if parent_ctx else {}
+    
+    with tracer.start_as_current_span(
+        "architect_synthesis",
+        **span_context,
+        attributes={
+            SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.CHAIN.value,
+            "agent.name": "mats-architect",
+            "agent.type": "synthesis"
+        }
+    ):
+        # Initialize Observability (legacy FinOptiObservability still called for compatibility)
+        try:
+            from common.observability import FinOptiObservability
+            FinOptiObservability.setup("mats-architect-agent")
+            if trace_context:
+                FinOptiObservability.middleware_extract_trace(trace_context)
+        except ImportError:
+             pass
+
+        # Ensure API Key is in environment
+        if config.GOOGLE_API_KEY:
+            os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+        
+        bq_plugin = BigQueryAgentAnalyticsPlugin(
+            project_id=os.getenv("GCP_PROJECT_ID"),
+            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+            table_id=config.BQ_ANALYTICS_TABLE,
+            config=BigQueryLoggerConfig(
+                enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+            )
         )
-    )
 
-    app_instance = App(
-        name="mats_architect_app",
-        root_agent=architect_agent,
-        plugins=[
-            ReflectAndRetryToolPlugin(),
-            bq_plugin
-        ]
-    )
+        app_instance = App(
+            name="mats_architect_app",
+            root_agent=architect_agent,
+            plugins=[
+                ReflectAndRetryToolPlugin(),
+                bq_plugin
+            ]
+        )
 
-    response_text = ""
-    try:
-        async with InMemoryRunner(app=app_instance) as runner:
-            sid = "default"
-            await runner.session_service.create_session(session_id=sid, user_id="user", app_name="mats_architect_app")
-            msg = types.Content(parts=[types.Part(text=prompt)])
-            
-            async for event in runner.run_async(user_id="user", session_id=sid, new_message=msg):
-                if hasattr(event, 'content') and event.content:
-                    for part in event.content.parts:
-                        if part.text:
-                            response_text += part.text
-    except Exception as e:
-        response_text = f"Error: {e}"
-    
-    return response_text
+        response_text = ""
+        try:
+            async with InMemoryRunner(app=app_instance) as runner:
+                sid = "default"
+                await runner.session_service.create_session(session_id=sid, user_id="user", app_name="mats_architect_app")
+                msg = types.Content(parts=[types.Part(text=prompt)])
+                
+                async for event in runner.run_async(user_id="user", session_id=sid, new_message=msg):
+                    if hasattr(event, 'content') and event.content:
+                        for part in event.content.parts:
+                            if part.text:
+                                response_text += part.text
+        except Exception as e:
+            response_text = f"Error: {e}"
+        
+        return response_text

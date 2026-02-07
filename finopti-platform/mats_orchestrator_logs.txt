@@ -1,0 +1,16 @@
+🔭 OpenTelemetry Tracing Details 🔭
+|  Phoenix Project: finoptiagents-MATS
+|  Span Processor: SimpleSpanProcessor
+|  Collector Endpoint: http://phoenix:6006/v1/traces
+|  Transport: HTTP + protobuf
+|  Transport Headers: {}
+|  
+|  Using a default SpanProcessor. `add_span_processor` will overwrite this default.
+|  
+|  ⚠️ WARNING: It is strongly advised to use a BatchSpanProcessor in production environments.
+|  
+|  `register` has set this TracerProvider as the global OpenTelemetry default.
+|  To disable this behavior, call `register` with `set_global_tracer_provider=False`.
+
+ * Serving Flask app 'main'
+ * Debug mode: off

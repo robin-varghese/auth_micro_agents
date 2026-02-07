@@ -102,9 +102,22 @@ Please analyze the logs and metrics. Return your findings in the following JSON 
         payload = {"message": prompt}
         if job_id:
             payload["job_id"] = job_id
-            payload["orchestrator_url"] = "http://mats-orchestrator:8084" # Hardcoded internal service name for now
+            payload["orchestrator_url"] = "http://mats-orchestrator:8084" 
+        
+        # Explicitly pass project_id for context setting
+        if project_id:
+            payload["project_id"] = project_id
             
-        result = await _http_post(SRE_AGENT_URL, payload, timeout=300)
+        # Inject Trace Headers
+        try:
+            from common.observability import FinOptiObservability
+            headers = {}
+            FinOptiObservability.inject_trace_to_headers(headers)
+            payload["headers"] = headers
+        except ImportError:
+            pass
+
+        result = await _http_post(SRE_AGENT_URL, payload, timeout=600)
         response_text = result.get("response", "")
         
         # Try to parse JSON from response
@@ -197,6 +210,15 @@ Please investigate the code and return findings in this JSON format:
             payload["job_id"] = job_id
             payload["orchestrator_url"] = "http://mats-orchestrator:8084" 
             
+        # Inject Trace Headers
+        try:
+            from common.observability import FinOptiObservability
+            headers = {}
+            FinOptiObservability.inject_trace_to_headers(headers)
+            payload["headers"] = headers
+        except ImportError:
+            pass
+            
         result = await _http_post(INVESTIGATOR_AGENT_URL, payload)
         response_text = result.get("response", "")
         
@@ -230,7 +252,8 @@ Please investigate the code and return findings in this JSON format:
 async def delegate_to_architect(
     sre_findings: Dict[str, Any],
     investigator_findings: Dict[str, Any],
-    session_id: str = "unknown"
+    session_id: str = "unknown",
+    user_request: str = ""
 ) -> Dict[str, Any]:
     """
     Delegate RCA synthesis to Architect Agent.
@@ -239,6 +262,7 @@ async def delegate_to_architect(
         sre_findings: SRE output
         investigator_findings: Investigator output
         session_id: Investigation session ID
+        user_request: Original user query (for context extraction)
         
     Returns:
         ArchitectOutput schema dict
@@ -247,6 +271,9 @@ async def delegate_to_architect(
     
     prompt = f"""
 Please synthesize the following investigation reports into a formal Root Cause Analysis document.
+
+[ORIGINAL USER REQUEST]
+{user_request}
 
 [SRE REPORT]
 {json.dumps(sre_findings, indent=2)}
@@ -274,7 +301,18 @@ Also return your response in this JSON format:
     
     async def _call():
         logger.info(f"[{session_id}] Delegating to Architect for RCA synthesis")
-        result = await _http_post(ARCHITECT_AGENT_URL, {"message": prompt})
+        payload = {"message": prompt}
+        
+        # Inject Trace Headers
+        try:
+            from common.observability import FinOptiObservability
+            headers = {}
+            FinOptiObservability.inject_trace_to_headers(headers)
+            payload["headers"] = headers
+        except ImportError:
+            pass
+
+        result = await _http_post(ARCHITECT_AGENT_URL, payload)
         response_text = result.get("response", "")
         
         import json

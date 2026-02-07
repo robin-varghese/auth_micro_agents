@@ -177,8 +177,9 @@ def _fetch_config(secret_id: str, env_var: Optional[str] = None, default: Option
     env_var = env_var or secret_id
     
     # Priority 1: Environment variable (allows override)
+    # Note: Treat empty strings as unset to allow Secret Manager fallback
     value = os.getenv(env_var)
-    if value:
+    if value and value.strip():  # Only use if non-empty
         logger.info(f"Using environment variable for {env_var}")
         return value
 
