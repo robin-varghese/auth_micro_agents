@@ -67,17 +67,65 @@ def get_agent_by_id(agent_id: str) -> Optional[Dict[str, Any]]:
 def detect_intent(prompt: str) -> str:
     """
     Dynamic intent detection based on Master Agent Registry keywords.
+    
+    Priority:
+    1. Simple CRUD operations → route to appropriate agent (bypass MATS)
+    2. Troubleshooting requests → route to MATS
+    3. Keyword-based scoring → find best matching agent
+    4. Default fallback → gcloud
     """
+    import re
+    import logging
+    
+    logger = logging.getLogger(__name__)
     registry = load_registry()
     prompt_lower = prompt.lower()
     
-    best_agent_id = "gcloud_infrastructure_specialist" # Default
-    max_score = 0
+    # 0. Detect simple CRUD operations (highest priority - bypass MATS)
+    simple_operations = [
+        r'\blist\s+(all|my|the)?\s*',
+        r'\bshow\s+(all|my|the)?\s*',
+        r'\bget\s+(all|my|the)?\s*',
+        r'\bcreate\s+a?\s*',
+        r'\bdelete\s+a?\s*',
+        r'\bupdate\s+a?\s*',
+        r'\bdescribe\s+',
+        r'\bfind\s+',
+    ]
     
-    # 1. Check for explicit MATS triggers (highest priority)
-    if "troubleshoot" in prompt_lower or "debug" in prompt_lower or "fix" in prompt_lower or "investigate" in prompt_lower:
-        return "mats-orchestrator"
+    is_simple_operation = any(re.search(pattern, prompt_lower) for pattern in simple_operations)
+    
+    # 1. Check for explicit MATS triggers (only if NOT a simple operation)
+    if not is_simple_operation:
+        # MATS triggers - require clear troubleshooting intent with multi-word phrases
+        mats_triggers = [
+            "troubleshoot",
+            "root cause",
+            "rca",
+            "why is",
+            "why did",
+            "why does",
+            "what caused",
+            "find the bug",
+            "find the issue",
+            "investigate the failure",
+            "investigate the error",
+            "investigate the crash",
+            "investigate the issue",
+            "investigate the problem",
+            "fix the issue",
+            "fix the bug",
+            "fix the problem",
+            "diagnose the",
+            "debug the"
+        ]
         
+        # Check for MATS triggers
+        for trigger in mats_triggers:
+            if trigger in prompt_lower:
+                logger.info(f"Routing to MATS: matched trigger '{trigger}'")
+                return "mats-orchestrator"
+    
     # 2. Score based on keywords in registry
     # We prioritize longer matches and exact word matches
     scores = {}
@@ -88,28 +136,37 @@ def detect_intent(prompt: str) -> str:
         score = 0
         
         for k in keywords:
-            k = k.lower()
-            # Exact word match for short keywords (len <= 3)
-            if len(k) <= 3:
-                # Naive tokenization
-                if k in prompt_lower.split():
+            k_lower = k.lower()
+            # Use word boundary matching for better accuracy
+            if len(k_lower) <= 3:
+                # Short keywords need exact word match
+                if re.search(r'\b' + re.escape(k_lower) + r'\b', prompt_lower):
                     score += 2
             else:
-                if k in prompt_lower:
+                # Longer keywords can match as substring
+                if k_lower in prompt_lower:
                     score += 1
-                    # Bonus for finding multi-word concepts ("cloud run")
-                    if ' ' in k:
+                    # Bonus for multi-word concepts ("cloud run", "google cloud")
+                    if ' ' in k_lower:
                         score += 2
                         
         scores[agent_id] = score
-        
-    # Find winner
+    
+    # Debug logging if enabled
+    if os.getenv("DEBUG_ROUTING", "false").lower() == "true":
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:3]
+        logger.info(f"Routing scores for '{prompt[:50]}...': {sorted_scores}")
+    
+    # Find winner - require minimum score
     if scores:
         best_agent_id = max(scores, key=scores.get)
-        if scores[best_agent_id] == 0:
-            return "gcloud_infrastructure_specialist" # Fallback
-            
-    return best_agent_id
+        if scores[best_agent_id] >= 1:  # At least 1 keyword match required
+            logger.info(f"Routing to {best_agent_id} (score: {scores[best_agent_id]})")
+            return best_agent_id
+    
+    # Default fallback
+    logger.info(f"Routing to default: gcloud_infrastructure_specialist")
+    return "gcloud_infrastructure_specialist"
 
 
 def check_opa_authorization(user_email: str, target_agent: str) -> dict:
@@ -336,11 +393,19 @@ orchestrator_agent = Agent(
     **Code Execution Agent**:
     - "Calculate fibonacci", "Run python script", "Solve math problem"
     
-    **MATS Orchestrator** - Use for troubleshooting and debugging:
-    - "Troubleshoot this failure", "Why did the build fail?"
-    - "Debug this error", "Find the root cause of..."
-    - "Investigate this crash", "Fix my code"
-    - "RCA for the last incident"
+    **MATS Orchestrator** - Use ONLY for complex troubleshooting and root cause analysis:
+    - "Why did X fail?" (causality questions)
+    - "Debug this error in Y" (specific error investigation)
+    - "Find the root cause of the crash" (explicit RCA)
+    - "Troubleshoot the deployment failure" (multi-step diagnosis)
+    - "What caused the outage?" (incident analysis)
+    - "Investigate the failure/error/crash" (specific problem investigation)
+    
+    **DO NOT use MATS for simple operations**:
+    - ❌ "List VMs", "Show buckets", "Get logs" → Use specific agents instead
+    - ❌ "Create instance", "Delete bucket" → Use gcloud/storage agents
+    - ❌ "What are my resources?" → Use gcloud agent
+    - ❌ Generic "investigate" without failure context → Use appropriate agent
     
     **Key Rules:**
     1. "operations in GCP/cloud/project" → **gcloud** (NEVER github)

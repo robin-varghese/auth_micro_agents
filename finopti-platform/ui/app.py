@@ -63,6 +63,8 @@ if 'job_status' not in st.session_state:
     st.session_state.job_status = None
 if 'active_trace_id' not in st.session_state:
     st.session_state.active_trace_id = None
+if 'active_session_id' not in st.session_state:
+    st.session_state.active_session_id = None
 
 # ... (Configuration)
 APISIX_URL = "http://apisix:9080"
@@ -96,16 +98,15 @@ def start_job(prompt: str, trace_id: str = None, session_id: str = None) -> dict
         headers = oauth_helper.get_auth_headers()
         
         # 1. Trace Propagation Logic
-        # Use existing trace_id if provided (Resume), else generate new
-        if not trace_id:
-            trace_id = _generate_trace_id()
+        # ALWAYS generate a new trace_id for each request (don't reuse)
+        trace_id = _generate_trace_id()
             
         span_id = uuid.uuid4().hex[:16]
         traceparent = _get_trace_header(trace_id, span_id)
         
         # Inject into headers
         headers["traceparent"] = traceparent
-        # Optional: Pass custom session ID if provided, otherwise Orchestrator generates
+        # CRITICAL: Pass session ID for Phoenix session grouping
         if session_id:
             headers["X-Session-ID"] = session_id
 
@@ -168,16 +169,17 @@ else:
     with col_session:
         st.title("MATS Chat 💬")
         # Auto-generate session if not exists
-        if not st.session_state.get('active_trace_id'):
-            st.session_state.active_trace_id = _generate_trace_id()
+        if not st.session_state.get('active_session_id'):
+            st.session_state.active_session_id = _generate_trace_id()
         
         # Display Session ID prominently
-        st.info(f"📋 **Session ID:** `{st.session_state.active_trace_id}`")
+        st.info(f"📋 **Session ID:** `{st.session_state.active_session_id}`")
         st.caption("Use this Session ID for troubleshooting in Phoenix: http://localhost:6006")
     
     with col_new:
         if st.button("➕ New Investigation", help="Start a fresh investigation with new session ID"):
-            st.session_state.active_trace_id = _generate_trace_id()
+            # Reset session ID to start new investigation session
+            st.session_state.active_session_id = _generate_trace_id()
             st.session_state.active_job_id = None
             st.session_state.messages = []
             st.rerun()
@@ -220,12 +222,12 @@ else:
                          if is_waiting and st.session_state.active_job_id:
                              status_ptr.update(label="🔄 Resuming...", state="running")
                          
-                         # Pass active_trace_id if exists (Resume), else start_job generates new
-                         # IMPORTANT: Pass session_id explicitly for Phoenix tracking
+                         # CRITICAL: Pass session_id (persistent) but NOT trace_id (per-request)
+                         # start_job will generate a NEW trace_id for each request
                          job_data = start_job(
                              user_input, 
-                             trace_id=st.session_state.active_trace_id,
-                             session_id=st.session_state.active_trace_id  # Use same ID for session tracking
+                             trace_id=None,  # Let start_job generate new trace_id
+                             session_id=st.session_state.active_session_id  # Session persists across requests
                          )
                          
                          if "error" in job_data:
@@ -234,9 +236,7 @@ else:
                          else:
                              # Success - Set Current Job Context
                              current_job_id = job_data["job_id"]
-                             # Capture new trace ID if generated
-                             if job_data.get("trace_id"):
-                                 st.session_state.active_trace_id = job_data["trace_id"]
+                             # Note: trace_id is generated per-request now, not stored in session
                                  
                              st.session_state.active_job_id = current_job_id
                              st.session_state.pending_prompt = None
@@ -268,7 +268,8 @@ else:
                     st.session_state.active_job_id = None
                     break
                     
-                status_data = poll_job(current_job_id, trace_id=st.session_state.active_trace_id)
+                # Note: Polling doesn't need trace_id anymore
+                status_data = poll_job(current_job_id, trace_id=None)
                 current_status = status_data.get("status", "UNKNOWN")
                 st.session_state.job_status = current_status # Track status globally
                 
@@ -356,8 +357,8 @@ def login_simulated(user_email: str):
     st.session_state.auth_method = 'simulated'
     st.session_state.messages = []
     # Auto-generate session ID on login
-    if not st.session_state.get('active_trace_id'):
-        st.session_state.active_trace_id = _generate_trace_id()
+    if not st.session_state.get('active_session_id'):
+        st.session_state.active_session_id = _generate_trace_id()
     st.success(f"Logged in as {AVAILABLE_USERS[user_email]['name']} (Simulated)")
 
 def logout():

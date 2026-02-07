@@ -21,9 +21,9 @@ from google.genai import types
 from phoenix.otel import register
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
-# Initialize tracing
+# Initialize tracing - Use same project as orchestrator for session grouping
 tracer_provider = register(
-    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-mats-architect",
+    project_name="finoptiagents-MATS",  # MUST match orchestrator for proper session grouping
     endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
     set_global_tracer_provider=True
 )
@@ -200,6 +200,11 @@ async def process_request(prompt_or_payload: Any):
     parent_ctx = propagate.extract(trace_context) if trace_context else None
     tracer = trace.get_tracer(__name__)
     
+    # Extract session_id from payload for Phoenix session grouping
+    session_id = None
+    if isinstance(prompt_or_payload, dict):
+        session_id = prompt_or_payload.get("session_id")
+    
     # Create child span linked to orchestrator's root span
     span_context = {"context": parent_ctx} if parent_ctx else {}
     
@@ -211,7 +216,11 @@ async def process_request(prompt_or_payload: Any):
             "agent.name": "mats-architect",
             "agent.type": "synthesis"
         }
-    ):
+    ) as span:
+        # Set session.id for Phoenix session grouping
+        if session_id and span and span.is_recording():
+            span.set_attribute(SpanAttributes.SESSION_ID, session_id)
+            logger.info(f"[{session_id}] Architect: Set session.id on span")
         # Initialize Observability (legacy FinOptiObservability still called for compatibility)
         try:
             from common.observability import FinOptiObservability

@@ -400,6 +400,54 @@ async def run_investigation_async(
     logger.info(f"[{session_id}] Starting investigation (Job: {job_id}): {user_request[:100]}")
     logger.info(f"[{session_id}] Using session ID from UI: {provided_session_id is not None}")
 
+    # --- REQUEST VALIDATION: Guard against simple operations ---
+    import re
+    request_lower = user_request.lower()
+    
+    # Detect if this is a simple CRUD operation (should not be routed to MATS!)
+    simple_patterns = [
+        r'\blist\s+(all|my|the)?\s*(vms?|instances?|buckets?|services?|projects?|resources?)',
+        r'\bshow\s+(all|my|the)?\s*(vms?|instances?|buckets?|services?|projects?|resources?)',
+        r'\bget\s+(all|my|the)?\s*(vms?|instances?|buckets?|services?|projects?|resources?)',
+        r'\bcreate\s+a?\s*(vm|instance|bucket|service|resource)',
+        r'\bdelete\s+a?\s*(vm|instance|bucket|service|resource)',
+        r'\bdescribe\s+(the|my|a)?\s*(vm|instance|bucket|service|resource)',
+    ]
+    
+    for pattern in simple_patterns:
+        if re.search(pattern, request_lower):
+            error_msg = (
+                f"This appears to be a simple operation, not a troubleshooting request. "
+                f"MATS is designed for root cause analysis and complex debugging. "
+                f"For simple operations like listing resources, please use the appropriate agent directly "
+                f"(e.g., gcloud agent for 'list VMs')."
+            )
+            logger.warning(f"[{session_id}] MATS received simple request (misrouted): {user_request[:100]}")
+            logger.warning(f"[{session_id}] Matched pattern: {pattern}")
+            
+            # Return error response instead of proceeding
+            return {
+                "status": "MISROUTED",
+                "error": error_msg,
+                "suggestion": "Please rephrase your request to focus on troubleshooting, or use the specific agent for this operation."
+            }
+    
+    # Detect troubleshooting indicators - log warning if missing
+    troubleshooting_indicators = [
+        "why", "root cause", "rca", "failed", "failure", "error", "crash", "crashed",
+        "broken", "not working", "issue", "problem", "debug", "troubleshoot",
+        "diagnose", "what caused"
+    ]
+    
+    has_troubleshooting_intent = any(indicator in request_lower for indicator in troubleshooting_indicators)
+    
+    if not has_troubleshooting_intent:
+        logger.warning(f"[{session_id}] Ambiguous request - no clear troubleshooting indicators found: {user_request[:100]}")
+        logger.warning(f"[{session_id}] Proceeding with caution. This may not be a genuine troubleshooting request.")
+    
+    # --- END REQUEST VALIDATION ---
+
+
     # Set session.id on the current span (created by @trace_span decorator)
     # This ensures Phoenix can group traces by session
     current_span = trace.get_current_span()

@@ -318,6 +318,11 @@ async def process_request(prompt_or_payload: Any):
     parent_ctx = propagate.extract(trace_context) if trace_context else None
     tracer = trace.get_tracer(__name__)
     
+    # Extract session_id from payload for Phoenix session grouping
+    session_id = None
+    if isinstance(prompt_or_payload, dict):
+        session_id = prompt_or_payload.get("session_id")
+    
     # Create child span linked to orchestrator's root span
     span_context = {"context": parent_ctx} if parent_ctx else {}
     
@@ -329,7 +334,11 @@ async def process_request(prompt_or_payload: Any):
             "agent.name": "mats-sre",
             "agent.type": "triage"
         }
-    ):
+    ) as span:
+        # Set session.id for Phoenix session grouping
+        if session_id and span and span.is_recording():
+            span.set_attribute(SpanAttributes.SESSION_ID, session_id)
+            logger.info(f"[{session_id}] SRE: Set session.id on span")
         # Plugins (BQ Disabled due to stability issues)
         # bq_plugin = BigQueryAgentAnalyticsPlugin(...)
 

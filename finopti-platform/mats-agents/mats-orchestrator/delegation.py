@@ -99,7 +99,7 @@ Please analyze the logs and metrics. Return your findings in the following JSON 
     async def _call():
         logger.info(f"[{session_id}] Delegating to SRE: {task_description[:100]}")
         # Use 300s for SRE as it does heavy lifting
-        payload = {"message": prompt}
+        payload = {"message": prompt, "session_id": session_id}  # Pass session_id for Phoenix grouping
         if job_id:
             payload["job_id"] = job_id
             payload["orchestrator_url"] = "http://mats-orchestrator:8084" 
@@ -205,7 +205,7 @@ Please investigate the code and return findings in this JSON format:
     
     async def _call():
         logger.info(f"[{session_id}] Delegating to Investigator")
-        payload = {"message": prompt}
+        payload = {"message": prompt, "session_id": session_id}  # Pass session_id for Phoenix grouping
         if job_id:
             payload["job_id"] = job_id
             payload["orchestrator_url"] = "http://mats-orchestrator:8084" 
@@ -301,7 +301,7 @@ Also return your response in this JSON format:
     
     async def _call():
         logger.info(f"[{session_id}] Delegating to Architect for RCA synthesis")
-        payload = {"message": prompt}
+        payload = {"message": prompt, "session_id": session_id}  # Pass session_id for Phoenix grouping
         
         # Inject Trace Headers
         try:
