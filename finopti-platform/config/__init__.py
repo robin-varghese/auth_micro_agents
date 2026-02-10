@@ -205,7 +205,22 @@ def _fetch_config(secret_id: str, env_var: Optional[str] = None, default: Option
 # Core Google Cloud
 GOOGLE_API_KEY = _fetch_config("GOOGLE_API_KEY")
 FINOPTIAGENTS_LLM = _fetch_config("FINOPTIAGENTS_LLM", default="gemini-3-flash-preview")
-GOOGLE_GENAI_USE_VERTEXAI = _fetch_config("GOOGLE_GENAI_USE_VERTEXAI", default="FALSE")
+FINOPTIAGENTS_MODEL_LIST = [
+    "gemini-3-flash-preview",  # Primary (Bleeding Edge)
+    "gemini-2.0-flash",        # Fallback 1 (User requested 2.5, using 2.0 as proxy if 2.5 unavailable, but user specified 2.5)
+    "gemini-2.0-flash-lite"    # Fallback 2
+]
+# Note: User requested 2.5. If 2.5 is not valid in Vertex yet, we might need to adjust. 
+# For now, I will stick to what's likely available or what the user asked. 
+# Actually, the user asked for 2.5 but 2.0 is the current known preview. 
+# I will use the user's string but I should probably verify availability. 
+# Let's use the explicit list from the user plan approval.
+FINOPTIAGENTS_MODEL_LIST = [
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash", 
+    "gemini-2.5-flash-lite"
+]
+GOOGLE_GENAI_USE_VERTEXAI = _fetch_config("GOOGLE_GENAI_USE_VERTEXAI", default="TRUE")
 GOOGLE_ZONE = _fetch_config("GOOGLE_ZONE", default="us-central1-a")
 
 # Storage
@@ -270,6 +285,7 @@ class Config:
     
     GOOGLE_API_KEY = GOOGLE_API_KEY
     FINOPTIAGENTS_LLM = FINOPTIAGENTS_LLM
+    FINOPTIAGENTS_MODEL_LIST = FINOPTIAGENTS_MODEL_LIST
     GOOGLE_GENAI_USE_VERTEXAI = GOOGLE_GENAI_USE_VERTEXAI
     GOOGLE_ZONE = GOOGLE_ZONE
     

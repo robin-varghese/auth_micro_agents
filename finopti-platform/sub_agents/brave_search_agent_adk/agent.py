@@ -189,30 +189,44 @@ if config.GOOGLE_API_KEY:
     os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
 # 2. ADK Agent
-brave_agent = Agent(
-    name=manifest.get("agent_id", "brave_search_specialist"),
-    model=config.FINOPTIAGENTS_LLM,
-    description=manifest.get("description", "Web and Local Search Specialist using Brave Search."),
-    instruction=instruction_str,
-    tools=[
-        brave_web_search, 
-        brave_local_search,
-        brave_news_search,
-        brave_video_search,
-        brave_image_search
-    ]
-)
+
+# -------------------------------------------------------------------------
+# IMPORT COMMON UTILS
+# -------------------------------------------------------------------------
+from common.model_resilience import run_with_model_fallback
+
+# 2. ADK Agent
+def create_brave_agent(model_name: str = None) -> Agent:
+    model_to_use = model_name or config.FINOPTIAGENTS_LLM
+    
+    return Agent(
+        name=manifest.get("agent_id", "brave_search_specialist"),
+        model=model_to_use,
+        description=manifest.get("description", "Web and Local Search Specialist using Brave Search."),
+        instruction=instruction_str,
+        tools=[
+            brave_web_search, 
+            brave_local_search,
+            brave_news_search,
+            brave_video_search,
+            brave_image_search
+        ]
+    )
 
 # 3. App with Plugins
 
-def create_app():
+
+def create_app(model_name: str = None):
     # Ensure API Key is in environment
     if config.GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
+    # Create agent instance
+    agent_instance = create_brave_agent(model_name)
+
     return App(
         name="finopti_brave_agent",
-        root_agent=brave_agent,
+        root_agent=agent_instance,
         plugins=[
             ReflectAndRetryToolPlugin(max_retries=3),
             BigQueryAgentAnalyticsPlugin(
@@ -231,16 +245,24 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
         if project_id:
             prompt = f"Project ID: {project_id}\n{prompt}"
             
-        app = create_app()
-        async with InMemoryRunner(app=app) as runner:
-            await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_brave_agent")
-            message = types.Content(parts=[types.Part(text=prompt)])
+        # Define run_once for fallback logic
+        async def _run_once(app_instance):
             response_text = ""
-            async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
-                if hasattr(event, 'content') and event.content:
-                    for part in event.content.parts:
-                        if part.text: response_text += part.text
+            async with InMemoryRunner(app=app_instance) as runner:
+                await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_brave_agent")
+                message = types.Content(parts=[types.Part(text=prompt)])
+                
+                async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
+                    if hasattr(event, 'content') and event.content:
+                        for part in event.content.parts:
+                            if part.text: response_text += part.text
             return response_text
+
+        return await run_with_model_fallback(
+            create_app_func=create_app,
+            run_func=_run_once,
+            context_name="Brave Search Agent"
+        )
     finally:
         if _mcp:
             await _mcp.close()

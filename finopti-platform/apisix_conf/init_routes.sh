@@ -27,9 +27,9 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/1" \
         "orchestrator:5000": 1
       },
       "timeout": {
-        "connect": 6,
-        "send": 600,
-        "read": 600
+        "connect": 10,
+        "send": 1800,
+        "read": 1800
       }
     },
     "plugins": {
@@ -390,9 +390,9 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/14" \
         "mats-orchestrator:8084": 1
       },
       "timeout": {
-        "connect": 6,
-        "send": 300,
-        "read": 300
+        "connect": 10,
+        "send": 1800,
+        "read": 1800
       }
     },
     "plugins": {

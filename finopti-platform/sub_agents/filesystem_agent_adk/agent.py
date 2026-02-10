@@ -86,8 +86,10 @@ class FilesystemMCPClient:
         self.exit_stack = AsyncExitStack()
         
         try:
-            # Enter stdio_client context
-            read, write = await self.exit_stack.enter_async_context(stdio_client(server_params))
+            # Enter stdio_client context with larger buffer (10MB)
+            read, write = await self.exit_stack.enter_async_context(
+                stdio_client(server_params)
+            )
             # Enter ClientSession context
             self.session = await self.exit_stack.enter_async_context(ClientSession(read, write))
             await self.session.initialize()
@@ -110,10 +112,9 @@ class FilesystemMCPClient:
             await self.connect()
             
         try:
+            # Note: We use the mcp library's session.call_tool which handles JSON
             result = await self.session.call_tool(tool_name, arguments=arguments)
             
-            # Formatting result for ADK
-            # MCP returns a list of content items (TextContent, ImageContent, etc.)
             output_text = ""
             for content in result.content:
                 if content.type == "text":
@@ -130,7 +131,10 @@ class FilesystemMCPClient:
     async def close(self):
         logger.info("Closing MCP connection...")
         if self.exit_stack:
-            await self.exit_stack.aclose()
+            try:
+                await self.exit_stack.aclose()
+            except Exception as e:
+                logger.warning(f"Error during exit_stack close: {e}")
         self.session = None
         self.exit_stack = None
 
@@ -220,45 +224,57 @@ else:
 if config.GOOGLE_API_KEY:
     os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
-fs_agent = Agent(
-    name=manifest.get("agent_id", "filesystem_specialist"),
-    model=config.FINOPTIAGENTS_LLM,
-    description=manifest.get("description", "Local Filesystem Specialist."),
-    instruction=instruction_str,
-    tools=[
-        read_text_file,
-        read_media_file,
-        read_multiple_files,
-        write_file,
-        edit_file,
-        create_directory,
-        list_directory,
-        list_directory_with_sizes,
-        move_file,
-        search_files,
-        directory_tree,
-        get_file_info,
-        list_allowed_directories
-    ]
-)
+
+# -------------------------------------------------------------------------
+# IMPORT COMMON UTILS
+# -------------------------------------------------------------------------
+from common.model_resilience import run_with_model_fallback
+
+def create_fs_agent(model_name: str = None) -> Agent:
+    model_to_use = model_name or config.FINOPTIAGENTS_LLM
+
+    return Agent(
+        name=manifest.get("agent_id", "filesystem_specialist"),
+        model=model_to_use,
+        description=manifest.get("description", "Local Filesystem Specialist."),
+        instruction=instruction_str,
+        tools=[
+            read_text_file,
+            read_media_file,
+            read_multiple_files,
+            write_file,
+            edit_file,
+            create_directory,
+            list_directory,
+            list_directory_with_sizes,
+            move_file,
+            search_files,
+            directory_tree,
+            get_file_info,
+            list_allowed_directories
+        ]
+    )
 
 
-def create_app():
+def create_app(model_name: str = None):
     # Ensure API Key is in environment
     if config.GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
+    # Create agent instance
+    agent_instance = create_fs_agent(model_name)
+
     return App(
         name="finopti_filesystem_agent",
-        root_agent=fs_agent,
+        root_agent=agent_instance,
         plugins=[
             ReflectAndRetryToolPlugin(max_retries=3),
-            BigQueryAgentAnalyticsPlugin(
-                project_id=config.GCP_PROJECT_ID,
-                dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-                table_id=config.BQ_ANALYTICS_TABLE,
-                config=BigQueryLoggerConfig(enabled=True)
-            )
+            # BigQueryAgentAnalyticsPlugin(
+            #     project_id=config.GCP_PROJECT_ID,
+            #     dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+            #     table_id=config.BQ_ANALYTICS_TABLE,
+            #     config=BigQueryLoggerConfig(enabled=True)
+            # )
         ]
     )
 
@@ -274,16 +290,24 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
         if project_id:
             prompt = f"Project ID: {project_id}\n{prompt}"
 
-        app = create_app()
-        async with InMemoryRunner(app=app) as runner:
-            await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_filesystem_agent")
-            message = types.Content(parts=[types.Part(text=prompt)])
+        # Define run_once for fallback logic
+        async def _run_once(app_instance):
             response_text = ""
-            async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
-                if hasattr(event, 'content') and event.content:
-                    for part in event.content.parts:
-                        if part.text: response_text += part.text
+            async with InMemoryRunner(app=app_instance) as runner:
+                await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_filesystem_agent")
+                message = types.Content(parts=[types.Part(text=prompt)])
+                
+                async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
+                    if hasattr(event, 'content') and event.content:
+                        for part in event.content.parts:
+                            if part.text: response_text += part.text
             return response_text
+
+        return await run_with_model_fallback(
+            create_app_func=create_app,
+            run_func=_run_once,
+            context_name="Filesystem Agent"
+        )
     finally:
         await mcp.close()
         _mcp_ctx.reset(token_reset)

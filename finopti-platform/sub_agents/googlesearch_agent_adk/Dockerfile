@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY sub_agents/googlesearch_agent_adk/*.py .
+COPY common /app/common
 COPY config /app/config
 
 # Expose port

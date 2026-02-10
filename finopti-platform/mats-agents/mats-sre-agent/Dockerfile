@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY config/ config/
 COPY mats-agents/common/ common/
+COPY common/ common/
 COPY mats-agents/mats-sre-agent/ .
 
 # Set unbuffered output for logs to appear in Loki

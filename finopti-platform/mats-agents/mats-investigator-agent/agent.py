@@ -38,8 +38,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 from config import config
-if config.GOOGLE_API_KEY:
+if config.GOOGLE_API_KEY and not (config.GOOGLE_GENAI_USE_VERTEXAI and config.GOOGLE_GENAI_USE_VERTEXAI.upper() == "TRUE"):
     os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    logger.info("Using API Key for authentication (Vertex AI disabled)")
+else:
+    if "GOOGLE_API_KEY" in os.environ:
+        del os.environ["GOOGLE_API_KEY"]
+    logger.info("Using ADC/Service Account for authentication (Vertex AI enabled)")
 
 # -------------------------------------------------------------------------
 # PROGRESS HELPER (ASYNC)
@@ -234,11 +239,23 @@ async def search_code(query: str, owner: str, repo: str) -> Dict[str, Any]:
 # -------------------------------------------------------------------------
 # AGENT DEFINITION
 # -------------------------------------------------------------------------
-investigator_agent = Agent(
-    name="mats_investigator_agent",
-    model=config.FINOPTIAGENTS_LLM,
-    description="Code Investigator.",
-    instruction="""
+
+# -------------------------------------------------------------------------
+# IMPORT COMMON UTILS
+# -------------------------------------------------------------------------
+from common.model_resilience import run_with_model_fallback
+
+# -------------------------------------------------------------------------
+# AGENT DEFINITION
+# -------------------------------------------------------------------------
+def create_investigator_agent(model_name: str = None) -> Agent:
+    model_to_use = model_name or config.FINOPTIAGENTS_LLM
+    
+    return Agent(
+        name="mats_investigator_agent",
+        model=model_to_use,
+        description="Code Investigator.",
+        instruction="""
     You are a Senior Backend Developer (Investigator).
     Your goal is to use the SRE's findings to locate the bug in the code.
     
@@ -258,16 +275,24 @@ investigator_agent = Agent(
     - GCloud Specialist: run_gcloud_command
     """,
     tools=[read_file, search_code] 
-)
+    )
 
 
 # -------------------------------------------------------------------------
 # RUNNER
 # -------------------------------------------------------------------------
 async def process_request(prompt_or_payload: Any):
-    # Ensure API Key is in environment
-    if config.GOOGLE_API_KEY:
+    # Ensure API Key state is consistent
+    if config.GOOGLE_API_KEY and not (config.GOOGLE_GENAI_USE_VERTEXAI and config.GOOGLE_GENAI_USE_VERTEXAI.upper() == "TRUE"):
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    else:
+        if "GOOGLE_API_KEY" in os.environ:
+            del os.environ["GOOGLE_API_KEY"]
+            
+    # Force project ID into environment for Vertex AI auto-detection
+    if config.GCP_PROJECT_ID:
+        os.environ['GOOGLE_CLOUD_PROJECT'] = config.GCP_PROJECT_ID
+        os.environ['GCP_PROJECT_ID'] = config.GCP_PROJECT_ID
         
     # Handle Dict or JSON stirng payload
     prompt = ""
@@ -347,41 +372,69 @@ async def process_request(prompt_or_payload: Any):
         except ImportError:
              logger.warning("Common Observability lib missing")
 
-        bq_plugin = BigQueryAgentAnalyticsPlugin(
-            project_id=os.getenv("GCP_PROJECT_ID"),
-            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            table_id=config.BQ_ANALYTICS_TABLE,
-            config=BigQueryLoggerConfig(
-                enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+
+        # Define helpers for fallback
+        def _create_app(model_name: str):
+            investigator_agent_instance = create_investigator_agent(model_name)
+            
+            # Recreate plugin per app instance
+            bq_plugin = BigQueryAgentAnalyticsPlugin(
+                project_id=os.getenv("GCP_PROJECT_ID"),
+                dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+                table_id=config.BQ_ANALYTICS_TABLE,
+                config=BigQueryLoggerConfig(
+                    enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+                )
             )
+            
+            return App(
+                name="mats_investigator_app",
+                root_agent=investigator_agent_instance,
+                plugins=[
+                    ReflectAndRetryToolPlugin(),
+                    bq_plugin
+                ]
+            )
+            
+        async def _run_once(app_instance):
+            response_text = ""
+            try:
+                async with InMemoryRunner(app=app_instance) as runner:
+                    sid = "default"
+                    await runner.session_service.create_session(session_id=sid, user_id="user", app_name="mats_investigator_app")
+                    msg = types.Content(parts=[types.Part(text=prompt)])
+                    
+                    async for event in runner.run_async(user_id="user", session_id=sid, new_message=msg):
+                        if hasattr(event, 'content') and event.content:
+                            for part in event.content.parts:
+                                if part.text:
+                                    response_text += part.text
+                                    # Report thought to UI
+                                    if job_id:
+                                        await _report_progress(part.text[:200], "THOUGHT")
+            except Exception as e:
+                err_msg = str(e)
+                logger.error(f"Runner failed: {err_msg}")
+                # Return valid JSON even on error
+                error_response = json.dumps({
+                    "status": "INSUFFICIENT_DATA",
+                    "confidence": 0.0,
+                    "hypothesis": f"Investigator internal error: {err_msg}",
+                    "blockers": ["Agent internal error during analysis"]
+                })
+                response_text = error_response
+                if "429" in err_msg or "Resource exhausted" in err_msg:
+                    raise e
+            
+             # Check for soft 429 in response text
+            if "429 Too Many Requests" in response_text or "Resource exhausted" in response_text:
+                 raise RuntimeError(f"soft_429: {response_text}")
+
+            return response_text
+
+        # Execute with fallback logic
+        return await run_with_model_fallback(
+            create_app_func=_create_app,
+            run_func=_run_once,
+            context_name="MATS Investigator Agent"
         )
-
-        app_instance = App(
-            name="mats_investigator_app",
-            root_agent=investigator_agent,
-            plugins=[
-                ReflectAndRetryToolPlugin(),
-                bq_plugin
-            ]
-        )
-
-        response_text = ""
-        try:
-            async with InMemoryRunner(app=app_instance) as runner:
-                sid = "default"
-                await runner.session_service.create_session(session_id=sid, user_id="user", app_name="mats_investigator_app")
-                msg = types.Content(parts=[types.Part(text=prompt)])
-                
-                async for event in runner.run_async(user_id="user", session_id=sid, new_message=msg):
-                    if hasattr(event, 'content') and event.content:
-                        for part in event.content.parts:
-                            if part.text:
-                                response_text += part.text
-                                # Report thought to UI
-                                if job_id:
-                                    await _report_progress(part.text[:200], "THOUGHT")
-
-        except Exception as e:
-            response_text = f"Error: {e}"
-        
-        return response_text

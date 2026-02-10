@@ -6,6 +6,7 @@ import os
 import sys
 import asyncio
 import logging
+import json
 from typing import Any
 from google.adk.agents import Agent
 from google.adk.apps import App
@@ -35,8 +36,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 from config import config
-if config.GOOGLE_API_KEY:
+if config.GOOGLE_API_KEY and not (config.GOOGLE_GENAI_USE_VERTEXAI and config.GOOGLE_GENAI_USE_VERTEXAI.upper() == "TRUE"):
     os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    logger.info("Using API Key for authentication (Vertex AI disabled)")
+else:
+    if "GOOGLE_API_KEY" in os.environ:
+        del os.environ["GOOGLE_API_KEY"]
+    logger.info("Using ADC/Service Account for authentication (Vertex AI enabled)")
 
 
 # -------------------------------------------------------------------------
@@ -82,9 +88,22 @@ def upload_rca_to_gcs(filename: str, content: str, bucket_name: str = "rca-repor
         except ImportError:
             pass
         
-        response = requests.post(url, json=payload, timeout=30)
+        response = requests.post(url, json=payload, timeout=300)
         response.raise_for_status()
-        return f"Upload requested. Response: {response.json()}"
+        data = response.json()
+        
+        # Extract response text if nested (ADK pattern)
+        if isinstance(data, dict) and "response" in data:
+            try:
+                # The prompt execution might return a JSON string in 'response'
+                inner_data = json.loads(data["response"])
+                if isinstance(inner_data, dict) and "signed_url" in inner_data:
+                    return f"RCA Uploaded. Secure Link: {inner_data['signed_url']}"
+            except:
+                pass
+            return f"RCA Uploaded. Details: {data['response']}"
+            
+        return f"Upload requested. Response: {data}"
     except Exception as e:
         return f"Failed to upload RCA: {e}"
 
@@ -103,67 +122,74 @@ def update_bucket_labels(bucket_name: str, labels: dict) -> str:
     logging.warning(f"LLM called update_bucket_labels (shim) for {bucket_name}. Ignoring.")
     return "Bucket labels updated (shim)."
 
-architect_agent = Agent(
-    name="mats_architect_agent",
-    model=config.FINOPTIAGENTS_LLM,
-    description="Principal Software Architect.",
-    instruction="""
-    You are a Principal Software Architect.
-    Your job is to synthesize technical investigations into a formal Root Cause Analysis (RCA) document and recommend robust fixes.
+
+# -------------------------------------------------------------------------
+# IMPORT COMMON UTILS
+# -------------------------------------------------------------------------
+from common.model_resilience import run_with_model_fallback
+
+# -------------------------------------------------------------------------
+# AGENT DEFINITION
+# -------------------------------------------------------------------------
+def create_architect_agent(model_name: str = None) -> Agent:
+    model_to_use = model_name or config.FINOPTIAGENTS_LLM
+    
+    return Agent(
+        name="mats_architect_agent",
+        model=model_to_use,
+        description="Principal Software Architect.",
+        instruction="""
+    Your job is to synthesize technical investigations into a formal Root Cause Analysis (RCA) document following the **RCA-Template-V1**.
     
     INPUTS: SRE Findings (Logs) + Investigator Findings (Code).
     
-    OUTPUT FORMAT (Strictly Follow this Template):
-    # Root Cause Analysis: [[Incident Title]]
-
-    ## 1. Executive Summary
-    [[One-sentence description of the outage and root cause.]]
-
-    ## 2. Technical Context & Impact
-    - **Affected Service**: [[service_name]]
-    - **Impact Duration**: [[start_time]] to [[end_time]]
-    - **User Impact**: [[describe_user_experience_failures]]
-
-    ## 3. Timeline & Detection
-    - **Detection Timestamp**: [[timestamp]]
-    - **Detection Method**: [[how_was_it_found]]
-    - **Affected Version**: [[version_hash]]
-    - **Timeline**:
-      - [[time]]: [[event]]
-      - [[time]]: [[event]]
-
-    ## 4. Root Cause (Technical Deep Dive)
-    [[detailed_explanation_of_the_failure_mechanism]]
-
-    ## 5. Remediation (Short Term)
-    - **Action Taken**: [[what_fixed_it]]
-    - **Code Fix**:
-    ```[[language]]
-    [[code_snippet]]
-    ```
-
-    ## 6. Prevention (Long Term)
-    - **Architectural Change**: [[describe_structural_fix]]
-    - **Testing**: [[new_test_case_to_prevent_regression]]
-    - **Monitoring**: [[new_alert_rule]]
-
-    ## 7. Agent Confidence Score
-    - **Confidence Score**: [[0-100]]%
-    - **Reasoning**: [[why_you_chose_this_score]]
+    ### RCA STRUCTURE (STRICT ADHERENCE REQUIRED):
     
-    CRITICAL INSTRUCTIONS: 
+    [Incident ID] - Autonomous Root Cause Analysis
+    
+    **Metadata (Auto-Generated)**
+    - Incident ID: {{incident_id}}
+    - Primary System: {{impacted_service_name}}
+    - Detection Source: Google Cloud Observability
+    - Agent Version: MATS-v1.0
+    - Status: Pending Human Review
+    
+    **1. Executive Summary**
+    *Directive: Summarize in <150 words. Focus on Primary Trigger and Ultimate Resolution.*
+    
+    **2. Impact & Scope Analysis**
+    *Directive: Identify hard numbers from the investigation (error rates, resources affected).*
+    
+    **3. Autonomous Troubleshooting Timeline (UTC)**
+    *Directive: Reconstruct timeline using ISO 8601. Map alert -> diagnosis -> action.*
+    
+    **4. Root Cause Analysis (The 5 Whys)**
+    *Directive: Use logical chaining. Final Root Cause MUST be systemic (e.g. missing policy, leak).*
+    
+    **5. Technical Evidence & Logs**
+    *Directive: Attach specific log snippets or trace IDs that confirmed the hypothesis.*
+    
+    **6. Autonomous Mitigation vs. Permanent Fixes**
+    *Directive: Differentiate between Agent mitigation and Recommended Permanent Surgery.*
+    
+    **7. Agent Confidence Score & Reasoning**
+    *Directive: Self-assess accuracy. If <80%, flag specific unknowns/assumptions.*
+    
+    ### CRITICAL INSTRUCTIONS: 
     1. **UPLOAD FIRST**: Use `upload_rca_to_gcs` to save the file.
        - Filename: `MATS-RCA-[[service_name]]-[[timestamp]].md`
        - Bucket: `rca-reports-mats`
-       - **DO NOT USE `write_object`**. Use ONLY `upload_rca_to_gcs`.
     
-    2. **SHORT SUMMARY ONLY**: After uploading, your final response to the user MUST BE LESS THAN 10 LINES.
-       - Output ONLY the "Executive Summary" and the GCS Link.
-       - **ABSOLUTELY NO FULL RCA TEXT IN CHAT**. The system will truncate logic if you print the full text.
-       - If you print the full RCA, the workflow fails.
+    2. **JSON OUTPUT REQUIRED**: Your final response must be a JSON object containing:
+       - `status`: SUCCESS
+       - `confidence`: your score (0.0-1.0)
+       - `rca_content`: the full markdown text following Template-V1
+       - `rca_url`: the secure link returned by `upload_rca_to_gcs`
+       - `limitations`: list
+       - `recommendations`: list
     """,
     tools=[upload_rca_to_gcs, write_object, update_bucket_labels] 
-)
+    )
 
 
 # -------------------------------------------------------------------------
@@ -230,41 +256,76 @@ async def process_request(prompt_or_payload: Any):
         except ImportError:
              pass
 
-        # Ensure API Key is in environment
-        if config.GOOGLE_API_KEY:
+        if config.GOOGLE_API_KEY and not (config.GOOGLE_GENAI_USE_VERTEXAI and config.GOOGLE_GENAI_USE_VERTEXAI.upper() == "TRUE"):
             os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+        else:
+            if "GOOGLE_API_KEY" in os.environ:
+                del os.environ["GOOGLE_API_KEY"]
+
+        # Force project ID into environment for Vertex AI auto-detection
+        if config.GCP_PROJECT_ID:
+            os.environ['GOOGLE_CLOUD_PROJECT'] = config.GCP_PROJECT_ID
+            os.environ['GCP_PROJECT_ID'] = config.GCP_PROJECT_ID
         
-        bq_plugin = BigQueryAgentAnalyticsPlugin(
-            project_id=os.getenv("GCP_PROJECT_ID"),
-            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            table_id=config.BQ_ANALYTICS_TABLE,
-            config=BigQueryLoggerConfig(
-                enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+
+        # Define helpers for fallback
+        def _create_app(model_name: str):
+            architect_agent_instance = create_architect_agent(model_name)
+            
+            bq_plugin = BigQueryAgentAnalyticsPlugin(
+                project_id=os.getenv("GCP_PROJECT_ID"),
+                dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+                table_id=config.BQ_ANALYTICS_TABLE,
+                config=BigQueryLoggerConfig(
+                    enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+                )
             )
-        )
+            
+            return App(
+                name="mats_architect_app",
+                root_agent=architect_agent_instance,
+                plugins=[
+                    ReflectAndRetryToolPlugin(),
+                    bq_plugin
+                ]
+            )
+            
+        async def _run_once(app_instance):
+            response_text = ""
+            try:
+                async with InMemoryRunner(app=app_instance) as runner:
+                    sid = "default"
+                    await runner.session_service.create_session(session_id=sid, user_id="user", app_name="mats_architect_app")
+                    msg = types.Content(parts=[types.Part(text=prompt)])
+                    
+                    async for event in runner.run_async(user_id="user", session_id=sid, new_message=msg):
+                        if hasattr(event, 'content') and event.content:
+                            for part in event.content.parts:
+                                if part.text:
+                                    response_text += part.text
+            except Exception as e:
+                err_msg = str(e)
+                logger.error(f"Runner failed: {err_msg}")
+                # Return valid JSON even on error
+                error_response = json.dumps({
+                    "status": "FAILURE",
+                    "confidence": 0.0,
+                    "rca_content": f"Architect internal error: {err_msg}",
+                    "limitations": ["Agent internal error during synthesis"]
+                })
+                response_text = error_response
+                if "429" in err_msg or "Resource exhausted" in err_msg:
+                    raise e
+            
+             # Check for soft 429 in response text
+            if "429 Too Many Requests" in response_text or "Resource exhausted" in response_text:
+                 raise RuntimeError(f"soft_429: {response_text}")
 
-        app_instance = App(
-            name="mats_architect_app",
-            root_agent=architect_agent,
-            plugins=[
-                ReflectAndRetryToolPlugin(),
-                bq_plugin
-            ]
-        )
+            return response_text
 
-        response_text = ""
-        try:
-            async with InMemoryRunner(app=app_instance) as runner:
-                sid = "default"
-                await runner.session_service.create_session(session_id=sid, user_id="user", app_name="mats_architect_app")
-                msg = types.Content(parts=[types.Part(text=prompt)])
-                
-                async for event in runner.run_async(user_id="user", session_id=sid, new_message=msg):
-                    if hasattr(event, 'content') and event.content:
-                        for part in event.content.parts:
-                            if part.text:
-                                response_text += part.text
-        except Exception as e:
-            response_text = f"Error: {e}"
-        
-        return response_text
+        # Execute with fallback logic
+        return await run_with_model_fallback(
+            create_app_func=_create_app,
+            run_func=_run_once,
+            context_name="MATS Architect Agent"
+        )

@@ -73,9 +73,16 @@ with tracer.start_as_current_span("agent-startup-check") as span:
     logger.info("Sent manual startup trace to Phoenix")
 
 
-# Set API key
-if config.GOOGLE_API_KEY:
+# Ensure API Key is in environment ONLY if not using Vertex AI
+# Vertex AI requires ADC/OAuth tokens. API keys can cause 401 conflicts.
+if config.GOOGLE_API_KEY and not (config.GOOGLE_GENAI_USE_VERTEXAI and config.GOOGLE_GENAI_USE_VERTEXAI.upper() == "TRUE"):
     os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    logger.info("Using API Key for authentication (Vertex AI disabled)")
+else:
+    # Ensure it's NOT in env to force ADC for Vertex
+    if "GOOGLE_API_KEY" in os.environ:
+        del os.environ["GOOGLE_API_KEY"]
+    logger.info("Using ADC/Service Account for authentication (Vertex AI enabled)")
 
 # --- CONTEXT ISOLATION (Rule 1) ---
 _sequential_thinking_ctx: ContextVar["SequentialThinkingClient"] = ContextVar("seq_thinking_client", default=None)
@@ -231,14 +238,46 @@ async def generate_plan(user_request: str, agent_registry: list) -> Dict[str, An
     
     try:
         from google import genai
-        client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+        # Re-verify API key availability for this client
+        api_key = None
+        if config.GOOGLE_API_KEY and not (config.GOOGLE_GENAI_USE_VERTEXAI and config.GOOGLE_GENAI_USE_VERTEXAI.upper() == "TRUE"):
+            api_key = config.GOOGLE_API_KEY
+            
+        client = genai.Client(api_key=api_key)
         
-        logger.info(f"Generating plan using model: {config.FINOPTIAGENTS_LLM}")
-        response = client.models.generate_content(
-            model=config.FINOPTIAGENTS_LLM,
-            contents=prompt,
-            config={"response_mime_type": "application/json"}
-        )
+
+        logger.info(f"Generating plan. Primary model: {config.FINOPTIAGENTS_LLM}")
+        
+        response = None
+        last_error = None
+        
+        # Use fallback list or default to single model if list missing
+        model_list = getattr(config, "FINOPTIAGENTS_MODEL_LIST", [config.FINOPTIAGENTS_LLM])
+        
+        for model_name in model_list:
+            try:
+                logger.info(f"Attempting plan generation with model: {model_name}")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config={"response_mime_type": "application/json"}
+                )
+                logger.info(f"Plan generation successful with model: {model_name}")
+                break # Success
+            except Exception as e:
+                err_msg = str(e)
+                if "429" in err_msg or "Resource exhausted" in err_msg or "Too Many Requests" in err_msg:
+                    logger.warning(f"Model {model_name} quota exhausted. Switching to next model...")
+                    last_error = e
+                    continue
+                else:
+                    # For other errors, we might strictly fail, but for planning let's try others too just in case
+                    logger.warning(f"Model {model_name} failed with error: {e}. Retrying with next...")
+                    last_error = e
+                    continue
+        
+        if not response:
+             raise last_error or RuntimeError("All models failed plan generation")
         
         if not response.parsed:
              # Fallback parsing if needed
@@ -580,7 +619,8 @@ async def run_investigation_async(
             )
             
         session.sre_findings = sre_result
-        session.confidence_scores['sre'] = sre_result.get('confidence', 0.0)
+        conf = sre_result.get('confidence')
+        session.confidence_scores['sre'] = conf if conf is not None else 0.0
         
         gate_result, reason = gate_triage_to_analysis(sre_result, session_id)
         
@@ -627,7 +667,8 @@ async def run_investigation_async(
                 
                 arch_result = await delegate_to_architect(sre_result, inv_result_skipped, session_id, user_request=user_request)
                 session.architect_output = arch_result
-                session.confidence_scores['architect'] = arch_result.get('confidence', 0.0)
+                arch_conf = arch_result.get('confidence')
+                session.confidence_scores['architect'] = arch_conf if arch_conf is not None else 0.0
                 session.rca_url = arch_result.get('rca_url')
                 
                 # Mark complete
@@ -686,7 +727,8 @@ async def run_investigation_async(
             
             arch_result = await delegate_to_architect(sre_result, inv_result_skipped, session_id)
             session.architect_output = arch_result
-            session.confidence_scores['architect'] = arch_result.get('confidence', 0.0)
+            arch_conf = arch_result.get('confidence')
+            session.confidence_scores['architect'] = arch_conf if arch_conf is not None else 0.0
             session.rca_url = arch_result.get('rca_url')
             
             # Mark complete
@@ -728,13 +770,15 @@ async def run_investigation_async(
             session_id
         )
         session.investigator_findings = inv_result
-        session.confidence_scores['investigator'] = inv_result.get('confidence', 0.0)
+        inv_conf = inv_result.get('confidence')
+        session.confidence_scores['investigator'] = inv_conf if inv_conf is not None else 0.0
         
         gate_result, reason = gate_analysis_to_synthesis(inv_result, session_id)
         gate_result, reason = gate_analysis_to_synthesis(inv_result, session_id)
         if gate_result == GateDecision.FAIL:
             # Smart Fallback: If SRE was very confident (e.g. found deletion/infra issue), proceed to RCA anyway
-            sre_confidence = sre_result.get('confidence', 0.0)
+            sre_raw_conf = sre_result.get('confidence')
+            sre_confidence = sre_raw_conf if sre_raw_conf is not None else 0.0
             if sre_confidence > 0.7:
                  logger.warning(f"[{session_id}] Investigator failed ({reason}) but SRE confidence high ({sre_confidence}). Proceeding to RCA.")
             else:
@@ -753,7 +797,8 @@ async def run_investigation_async(
         session.workflow.transition_to(WorkflowPhase.SYNTHESIS, "Generating RCA")
         arch_result = await delegate_to_architect(sre_result, inv_result, session_id, user_request=user_request)
         session.architect_output = arch_result
-        session.confidence_scores['architect'] = arch_result.get('confidence', 0.0)
+        arch_conf = arch_result.get('confidence')
+        session.confidence_scores['architect'] = arch_conf if arch_conf is not None else 0.0
         session.rca_url = arch_result.get('rca_url')
         
         # Mark complete

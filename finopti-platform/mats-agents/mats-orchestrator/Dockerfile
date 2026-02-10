@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy shared config directory
 COPY config/ config/
 COPY mats-agents/common/ common/
+COPY common/ common/
 
 # Copy all orchestrator code
 COPY mats-agents/mats-orchestrator/ .

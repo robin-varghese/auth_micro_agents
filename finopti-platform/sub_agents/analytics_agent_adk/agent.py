@@ -162,29 +162,45 @@ if instructions_path.exists():
 else:
     instruction_str = "Analyze web traffic using available tools."
 
-ga_agent = Agent(
-    name=manifest.get("agent_id", "analytics_specialist"),
-    model=config.FINOPTIAGENTS_LLM,
-    description=manifest.get("description", "Google Analytics 4 Specialist."),
-    instruction=instruction_str,
-    tools=[
-        run_report, 
-        run_realtime_report, 
-        get_account_summaries, 
-        get_property_details, 
-        get_custom_dimensions_and_metrics
-    ]
-)
+
+# -------------------------------------------------------------------------
+# IMPORT COMMON UTILS
+# -------------------------------------------------------------------------
+from common.model_resilience import run_with_model_fallback
+
+# -------------------------------------------------------------------------
+# AGENT DEFINITION
+# -------------------------------------------------------------------------
+def create_analytics_agent(model_name: str = None) -> Agent:
+    model_to_use = model_name or config.FINOPTIAGENTS_LLM
+    
+    return Agent(
+        name=manifest.get("agent_id", "analytics_specialist"),
+        model=model_to_use,
+        description=manifest.get("description", "Google Analytics 4 Specialist."),
+        instruction=instruction_str,
+        tools=[
+            run_report, 
+            run_realtime_report, 
+            get_account_summaries, 
+            get_property_details, 
+            get_custom_dimensions_and_metrics
+        ]
+    )
 
 
-def create_app():
+
+def create_app(model_name: str = None):
     # Ensure API Key is in environment
     if config.GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    
+    # Create agent instance
+    agent_instance = create_analytics_agent(model_name)
 
     return App(
         name="finopti_analytics_agent",
-        root_agent=ga_agent,
+        root_agent=agent_instance,
         plugins=[
             ReflectAndRetryToolPlugin(max_retries=3),
             BigQueryAgentAnalyticsPlugin(
@@ -207,16 +223,24 @@ async def send_message_async(prompt: str, user_email: str = None, token: str = N
         else:
             return "Error: No OAuth Token provided."
         
-        app = create_app()
-        async with InMemoryRunner(app=app) as runner:
-            await runner.session_service.create_session("default", "default", "ga_app")
-            message = types.Content(parts=[types.Part(text=prompt)])
+        # Define run_once for fallback logic
+        async def _run_once(app_instance):
             response_text = ""
-            async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
-                if hasattr(event, 'content') and event.content:
-                    for part in event.content.parts:
-                        if part.text: response_text += part.text
+            async with InMemoryRunner(app=app_instance) as runner:
+                await runner.session_service.create_session("default", "default", "ga_app")
+                message = types.Content(parts=[types.Part(text=prompt)])
+                
+                async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
+                    if hasattr(event, 'content') and event.content:
+                        for part in event.content.parts:
+                            if part.text: response_text += part.text
             return response_text
+
+        return await run_with_model_fallback(
+            create_app_func=create_app,
+            run_func=_run_once,
+            context_name="Analytics Agent"
+        )
     finally:
         await mcp.close()
         _mcp_ctx.reset(token_reset)

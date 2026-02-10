@@ -15,6 +15,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy all Python files
 COPY sub_agents/filesystem_agent_adk/*.py .
 
+# Copy common utils
+COPY common /app/common
+
 # Copy config
 COPY config /app/config
 

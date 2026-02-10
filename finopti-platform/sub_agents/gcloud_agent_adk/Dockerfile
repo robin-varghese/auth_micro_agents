@@ -12,8 +12,12 @@ RUN apt-get update && apt-get install -y \
 COPY sub_agents/gcloud_agent_adk/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+
 # Copy all Python files
 COPY sub_agents/gcloud_agent_adk/*.py .
+
+# Copy common utils
+COPY common /app/common
 
 # Copy config
 COPY config /app/config

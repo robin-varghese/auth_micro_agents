@@ -201,19 +201,31 @@ else:
 if config.GOOGLE_API_KEY:
     os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
-agent = Agent(
-    name=manifest.get("agent_id", "cloud_monitoring_specialist"),
-    model=config.FINOPTIAGENTS_LLM,
-    description=manifest.get("description", "Monitoring Specialist."),
-    instruction=instruction_str,
-    tools=[
-        query_logs, list_metrics, query_time_series
-    ]
-)
+
+# -------------------------------------------------------------------------
+# IMPORT COMMON UTILS
+# -------------------------------------------------------------------------
+from common.model_resilience import run_with_model_fallback
+
+# -------------------------------------------------------------------------
+# AGENT DEFINITION
+# -------------------------------------------------------------------------
+def create_monitoring_agent(model_name: str = None) -> Agent:
+    model_to_use = model_name or config.FINOPTIAGENTS_LLM
+
+    return Agent(
+        name=manifest.get("agent_id", "cloud_monitoring_specialist"),
+        model=model_to_use,
+        description=manifest.get("description", "Monitoring Specialist."),
+        instruction=instruction_str,
+        tools=[
+            query_logs, list_metrics, query_time_series
+        ]
+    )
 
 
 # Helper to create app per request
-def create_app():
+def create_app(model_name: str = None):
     # Ensure API Key is in environment
     if config.GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
@@ -228,10 +240,13 @@ def create_app():
         table_id=config.BQ_ANALYTICS_TABLE,
         config=bq_config
     )
+    
+    # Create agent instance
+    agent_instance = create_monitoring_agent(model_name)
 
     return App(
         name="finopti_monitoring_agent",
-        root_agent=agent,
+        root_agent=agent_instance,
         plugins=[
             ReflectAndRetryToolPlugin(),
             bq_plugin
@@ -247,22 +262,28 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
     try:
         await mcp.connect()
         
-        # Create app per request
-        app = create_app()
-
         # Prepend project context if provided
         if project_id:
             prompt = f"Project ID: {project_id}\n{prompt}"
             
-        async with InMemoryRunner(app=app) as runner:
-            await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_monitoring_agent")
-            message = types.Content(parts=[types.Part(text=prompt)])
+        # Define run_once for fallback logic
+        async def _run_once(app_instance):
             response_text = ""
-            async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
-                if hasattr(event, 'content') and event.content:
-                    for part in event.content.parts:
-                        if part.text: response_text += part.text
+            async with InMemoryRunner(app=app_instance) as runner:
+                await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_monitoring_agent")
+                message = types.Content(parts=[types.Part(text=prompt)])
+                
+                async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
+                    if hasattr(event, 'content') and event.content:
+                        for part in event.content.parts:
+                            if part.text: response_text += part.text
             return response_text
+
+        return await run_with_model_fallback(
+            create_app_func=create_app,
+            run_func=_run_once,
+            context_name="Monitoring Agent"
+        )
     finally:
         await mcp.close()
         _mcp_ctx.reset(token_reset)

@@ -173,20 +173,32 @@ else:
 if hasattr(config, "GOOGLE_API_KEY") and config.GOOGLE_API_KEY:
     os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
-cloud_run_agent = Agent(
-    name=manifest.get("agent_id", "cloud_run_specialist"),
-    model=config.FINOPTIAGENTS_LLM,
-    description=manifest.get("description", "Google Cloud Run specialist."),
-    instruction=instruction_str,
-    tools=[
-        list_services,
-        get_service,
-        get_service_log,
-        list_projects,
-        create_project,
-        deploy_file_contents
-    ]
-)
+
+# -------------------------------------------------------------------------
+# IMPORT COMMON UTILS
+# -------------------------------------------------------------------------
+from common.model_resilience import run_with_model_fallback
+
+# -------------------------------------------------------------------------
+# AGENT DEFINITION
+# -------------------------------------------------------------------------
+def create_cloud_run_agent(model_name: str = None) -> Agent:
+    model_to_use = model_name or config.FINOPTIAGENTS_LLM
+    
+    return Agent(
+        name=manifest.get("agent_id", "cloud_run_specialist"),
+        model=model_to_use,
+        description=manifest.get("description", "Google Cloud Run specialist."),
+        instruction=instruction_str,
+        tools=[
+            list_services,
+            get_service,
+            get_service_log,
+            list_projects,
+            create_project,
+            deploy_file_contents
+        ]
+    )
 
 
 # Helper to create and configure the BQ plugin
@@ -202,14 +214,18 @@ def create_bq_plugin():
         config=bq_config
     )
 
-def create_app():
+# Helper to create app per request
+def create_app(model_name: str = None):
     # Ensure API Key is in environment
     if config.GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
     
+    # Create agent instance
+    agent_instance = create_cloud_run_agent(model_name)
+
     return App(
         name="finopti_cloud_run_agent",
-        root_agent=cloud_run_agent,
+        root_agent=agent_instance,
         plugins=[
             ReflectAndRetryToolPlugin(max_retries=3),
             create_bq_plugin()
@@ -225,50 +241,54 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
         mcp = CloudRunMCPClient()
         token_reset = _mcp_ctx.set(mcp)
         
-        # Keep track of BQ plugin for cleanup
-        bq_plugin = None
-        
         try:
             await mcp.connect()
             
-            # Create app per request
-            app = create_app()
-            
-            # Find BQ plugin to ensure cleanup
-            for p in app.plugins:
-                if isinstance(p, BigQueryAgentAnalyticsPlugin):
-                    bq_plugin = p
-                    break
+            # Define run_once for fallback logic
+            async def _run_once(app_instance):
+                bq_plugin = None
+                # Find BQ plugin for later cleanup
+                for p in app_instance.plugins:
+                    if isinstance(p, BigQueryAgentAnalyticsPlugin):
+                        bq_plugin = p
+                        break
+                
+                try:
+                    async with InMemoryRunner(app=app_instance) as runner:
+                        await runner.session_service.create_session(
+                            app_name="finopti_cloud_run_agent",
+                            user_id="default",
+                            session_id="default"
+                        )
+                        message = types.Content(parts=[types.Part(text=prompt)])
+                        response_text = ""
+                        async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
+                            if hasattr(event, 'content') and event.content:
+                                for part in event.content.parts:
+                                    if part.text: response_text += part.text
+                        return response_text
+                finally:
+                    # Clean up BQ Plugin (Critical for preventing BookingIOError/Resource Exhaustion)
+                    if bq_plugin:
+                        try:
+                            # Attempt to close the client if it exists (standard google cloud client pattern)
+                            if hasattr(bq_plugin, 'client') and hasattr(bq_plugin.client, 'close'):
+                                bq_plugin.client.close()
+                            # Also check for private _client attribute just in case
+                            elif hasattr(bq_plugin, '_client') and hasattr(bq_plugin._client, 'close'):
+                                bq_plugin._client.close()
+                        except Exception as e:
+                            logging.error(f"Error closing BQ plugin client: {e}")
 
-            async with InMemoryRunner(app=app) as runner:
-                await runner.session_service.create_session(
-                    app_name="finopti_cloud_run_agent",
-                    user_id="default",
-                    session_id="default"
-                )
-                message = types.Content(parts=[types.Part(text=prompt)])
-                response_text = ""
-                async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
-                    if hasattr(event, 'content') and event.content:
-                        for part in event.content.parts:
-                            if part.text: response_text += part.text
-                return response_text
+            return await run_with_model_fallback(
+                create_app_func=create_app,
+                run_func=_run_once,
+                context_name="Cloud Run Agent"
+            )
         finally:
             # Clean up MCP
             await mcp.close()
             _mcp_ctx.reset(token_reset)
-            
-            # Clean up BQ Plugin (Critical for preventing BookingIOError/Resource Exhaustion)
-            if bq_plugin:
-                try:
-                    # Attempt to close the client if it exists (standard google cloud client pattern)
-                    if hasattr(bq_plugin, 'client') and hasattr(bq_plugin.client, 'close'):
-                        bq_plugin.client.close()
-                    # Also check for private _client attribute just in case
-                    elif hasattr(bq_plugin, '_client') and hasattr(bq_plugin._client, 'close'):
-                        bq_plugin._client.close()
-                except Exception as e:
-                    logging.error(f"Error closing BQ plugin client: {e}")
 
 def send_message(prompt: str, user_email: str = None) -> str:
     return asyncio.run(send_message_async(prompt, user_email))

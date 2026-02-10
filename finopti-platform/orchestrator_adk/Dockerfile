@@ -29,4 +29,4 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
   CMD curl -f http://localhost:5000/health || exit 1
 
 # Run the Flask app
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "600", "main:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "1800", "main:app"]

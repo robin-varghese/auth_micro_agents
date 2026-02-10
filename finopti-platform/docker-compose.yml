@@ -119,7 +119,7 @@ services:
   orchestrator:
     build:
       context: .
-      dockerfile: mats-agents/mats-orchestrator/Dockerfile
+      dockerfile: orchestrator_adk/Dockerfile  # CHANGED: Use routing orchestrator, not MATS
     container_name: finopti-orchestrator
     # ports:
     #   - "8080:8080" # Exposed for deployment script verification
@@ -135,6 +135,7 @@ services:
       GCP_PROJECT_ID: "${GCP_PROJECT_ID:-}"
       OPA_URL: "http://opa:8181"
       APISIX_URL: "http://apisix:9080"
+      MATS_ORCHESTRATOR_URL: "http://mats-orchestrator:8084"  # NEW: URL for MATS delegation
       BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED:-}"
       BQ_ANALYTICS_DATASET: "${BQ_ANALYTICS_DATASET:-}"
       BQ_ANALYTICS_TABLE: "${BQ_ANALYTICS_TABLE:-}"
@@ -142,9 +143,8 @@ services:
       REFLECT_RETRY_THROW_ON_FAIL: "${REFLECT_RETRY_THROW_ON_FAIL:-}"
       USE_SECRET_MANAGER: "true"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
-      REDIS_HOST: "redis_session_store"
-      REDIS_PORT: "6379"
-      REDIS_DB: "0"
+      GOOGLE_GENAI_USE_VERTEXAI: "TRUE"  # Enable Vertex AI (no API key needed)
+      PHOENIX_COLLECTOR_ENDPOINT: "http://phoenix:6006/v1/traces"  # NEW: Phoenix tracing
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 10s
@@ -180,6 +180,7 @@ services:
       REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS:-}"
       REFLECT_RETRY_THROW_ON_FAIL: "${REFLECT_RETRY_THROW_ON_FAIL:-}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      GOOGLE_GENAI_USE_VERTEXAI: "TRUE"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
       interval: 10s
@@ -214,6 +215,7 @@ services:
       REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS:-}"
       REFLECT_RETRY_THROW_ON_FAIL: "${REFLECT_RETRY_THROW_ON_FAIL:-}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      GOOGLE_GENAI_USE_VERTEXAI: "TRUE"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
       interval: 10s
@@ -473,6 +475,7 @@ services:
       BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED:-}"
       REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS:-}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      GOOGLE_GENAI_USE_VERTEXAI: "TRUE"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
@@ -512,9 +515,11 @@ services:
       APISIX_URL: "http://apisix:9080"
       BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED:-}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      GOOGLE_GENAI_USE_VERTEXAI: "TRUE"
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - finopti-agent-shared-data:/projects
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5004/health"]
       interval: 10s
@@ -550,6 +555,7 @@ services:
       APISIX_URL: "http://apisix:9080"
       BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED:-}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      GOOGLE_GENAI_USE_VERTEXAI: "TRUE"
       DB_MCP_TOOLBOX_URL: "http://db_mcp_toolbox:5000/mcp"
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro
@@ -615,6 +621,7 @@ services:
       APISIX_URL: "http://apisix:9080"
       BQ_ANALYTICS_ENABLED: "${BQ_ANALYTICS_ENABLED:-}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      GOOGLE_GENAI_USE_VERTEXAI: "TRUE"
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro
       - /var/run/docker.sock:/var/run/docker.sock
@@ -639,6 +646,7 @@ services:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - APISIX_URL=http://apisix:9080
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GOOGLE_GENAI_USE_VERTEXAI=TRUE
       - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
       # Brave API Key handled by Secret Manager logic in agent, but passing env just in case we switch
     volumes:
@@ -665,14 +673,15 @@ services:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - APISIX_URL=http://apisix:9080
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GOOGLE_GENAI_USE_VERTEXAI=TRUE
       - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
       - FILESYSTEM_MCP_IMAGE=finopti-filesystem-mcp
-      - FILESYSTEM_ROOT=/tmp/agent_filesystem
+      - FILESYSTEM_ROOT=finopti-agent-shared-data
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
       # Bind mount for the safe fs operation
-      - /tmp/agent_filesystem:/tmp/agent_filesystem
+      - finopti-agent-shared-data:/projects
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5007/health"]
       interval: 10s
@@ -706,6 +715,7 @@ services:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - APISIX_URL=http://apisix:9080
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GOOGLE_GENAI_USE_VERTEXAI=TRUE
       - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -731,10 +741,12 @@ services:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - APISIX_URL=http://apisix:9080
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GOOGLE_GENAI_USE_VERTEXAI=TRUE
       - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
+      - finopti-agent-shared-data:/projects
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5009/health"]
       interval: 10s
@@ -784,6 +796,7 @@ services:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - APISIX_URL=http://apisix:9080
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GOOGLE_GENAI_USE_VERTEXAI=TRUE
       - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -809,6 +822,7 @@ services:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - APISIX_URL=http://apisix:9080
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GOOGLE_GENAI_USE_VERTEXAI=TRUE
       - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
       - BQ_ANALYTICS_TABLE=${BQ_ANALYTICS_TABLE:-}
     volumes:
@@ -835,6 +849,7 @@ services:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - APISIX_URL=http://apisix:9080
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GOOGLE_GENAI_USE_VERTEXAI=TRUE
       - FINOPTIAGENTS_LLM=${FINOPTIAGENTS_LLM:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -868,6 +883,7 @@ services:
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
+      - GOOGLE_GENAI_USE_VERTEXAI=TRUE
 
       - GCLOUD_MCP_DOCKER_IMAGE=finopti-gcloud-mcp
       - MONITORING_MCP_DOCKER_IMAGE=finopti-monitoring-mcp
@@ -896,6 +912,7 @@ services:
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
+      - GOOGLE_GENAI_USE_VERTEXAI=TRUE
 
       - GITHUB_MCP_DOCKER_IMAGE=finopti-github-mcp-server
       - BQ_ANALYTICS_ENABLED=false
@@ -922,6 +939,7 @@ services:
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
+      - GOOGLE_GENAI_USE_VERTEXAI=TRUE
 
       - BQ_ANALYTICS_ENABLED=false
       - PYTHONUNBUFFERED=1
@@ -947,6 +965,7 @@ services:
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
+      - GOOGLE_GENAI_USE_VERTEXAI=TRUE
       - PYTHONUNBUFFERED=1
       - PORT=8084
       # Observability
@@ -1015,6 +1034,8 @@ services:
 volumes:
   postgres-data:
     name: finopti-postgres-data
+  finopti-agent-shared-data:
+    name: finopti-agent-shared-data
   loki-data:
     name: finopti-loki-data
   grafana-data:

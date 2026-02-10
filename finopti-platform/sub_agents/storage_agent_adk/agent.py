@@ -12,6 +12,8 @@ import json
 import logging
 from pathlib import Path
 from typing import Dict, Any, List
+from datetime import timedelta
+from google.cloud import storage
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -134,8 +136,30 @@ async def delete_object(bucket_name: str, object_name: str) -> Dict[str, Any]:
 
 async def write_object(bucket_name: str, object_name: str, content: str) -> Dict[str, Any]:
     client = await ensure_mcp()
-    # MCP server has write_object_safe
-    return await client.call_tool("write_object_safe", {"bucket_name": bucket_name, "object_name": object_name, "content": content})
+    # 1. Write the object via MCP
+    res = await client.call_tool("write_object_safe", {"bucket_name": bucket_name, "object_name": object_name, "content": content})
+    if "error" in res:
+        return res
+    
+    # 2. Generate Signed URL for immediate access
+    try:
+        def _get_signed_url():
+             storage_client = storage.Client()
+             bucket = storage_client.bucket(bucket_name)
+             blob = bucket.blob(object_name)
+             try:
+                 return blob.generate_signed_url(version="v4", expiration=timedelta(minutes=60), method="GET")
+             except:
+                 return f"https://storage.cloud.google.com/{bucket_name}/{object_name}"
+        
+        signed_url = await asyncio.to_thread(_get_signed_url)
+        return {
+            "result": f"Object '{object_name}' written to bucket '{bucket_name}'.",
+            "gcs_uri": f"gs://{bucket_name}/{object_name}",
+            "signed_url": signed_url
+        }
+    except Exception as e:
+        return {"result": f"Object written, but signed URL failed: {e}", "gcs_uri": f"gs://{bucket_name}/{object_name}"}
 
 async def update_object_metadata(bucket_name: str, object_name: str, metadata: dict) -> Dict[str, Any]:
     client = await ensure_mcp()
@@ -205,6 +229,37 @@ async def list_insights_configs(project: str) -> Dict[str, Any]:
     client = await ensure_mcp()
     return await client.call_tool("list_insights_configs", {"project": project})
 
+async def upload_file_from_local(bucket_name: str, source_file_path: str, destination_blob_name: str) -> Dict[str, Any]:
+    """Uploads a file from the local filesystem to GCS and returns a Signed URL."""
+    try:
+        if not os.path.exists(source_file_path):
+             return {"error": f"Source file not found: {source_file_path}"}
+        
+        def _upload_and_sign():
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(bucket_name)
+            blob = bucket.blob(destination_blob_name)
+            blob.upload_from_filename(source_file_path)
+            
+            try:
+                # Use v4 signing
+                return blob.generate_signed_url(version="v4", expiration=timedelta(minutes=60), method="GET")
+            except:
+                # Fallback to Console URL (requires login)
+                return f"https://storage.cloud.google.com/{bucket_name}/{destination_blob_name}"
+
+        signed_url = await asyncio.to_thread(_upload_and_sign)
+        gcs_uri = f"gs://{bucket_name}/{destination_blob_name}"
+        
+        return {
+            "result": f"Successfully uploaded {source_file_path} to {gcs_uri}.",
+            "gcs_uri": gcs_uri,
+            "signed_url": signed_url
+        }
+    except Exception as e:
+        logger.error(f"Failed to upload file: {e}")
+        return {"error": str(e)}
+
 # Load Manifest
 manifest_path = Path(__file__).parent / "manifest.json"
 manifest = {}
@@ -225,34 +280,49 @@ else:
 if hasattr(config, "GOOGLE_API_KEY") and config.GOOGLE_API_KEY:
     os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
-agent = Agent(
-    name=manifest.get("agent_id", "storage_specialist"),
-    model=config.FINOPTIAGENTS_LLM,
-    description=manifest.get("description", "Storage Specialist."),
-    instruction=instruction_str,
-    tools=[
-        list_objects, read_object_metadata, read_object_content, delete_object, 
-        write_object, update_object_metadata, copy_object, move_object, 
-        upload_object, download_object, list_buckets, create_bucket, 
-        delete_bucket, get_bucket_metadata, update_bucket_labels, 
-        get_bucket_location, view_iam_policy, check_iam_permissions, 
-        get_metadata_table_schema, execute_insights_query, list_insights_configs
-    ]
-)
 
-app = App(
-    name="finopti_storage_agent",
-    root_agent=agent,
-    plugins=[
-        ReflectAndRetryToolPlugin(max_retries=3),
-        BigQueryAgentAnalyticsPlugin(
-            project_id=config.GCP_PROJECT_ID,
-            dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            table_id=config.BQ_ANALYTICS_TABLE,
-            config=BigQueryLoggerConfig(enabled=True)
-        )
-    ]
-)
+# -------------------------------------------------------------------------
+# IMPORT COMMON UTILS
+# -------------------------------------------------------------------------
+from common.model_resilience import run_with_model_fallback
+
+def create_storage_agent(model_name: str = None) -> Agent:
+    model_to_use = model_name or config.FINOPTIAGENTS_LLM
+    
+    return Agent(
+        name=manifest.get("agent_id", "storage_specialist"),
+        model=model_to_use,
+        description=manifest.get("description", "Storage Specialist."),
+        instruction=instruction_str,
+        tools=[
+            list_objects, read_object_metadata, read_object_content, delete_object, 
+            write_object, update_object_metadata, copy_object, move_object, 
+            upload_object, download_object, list_buckets, create_bucket, 
+            delete_bucket, get_bucket_metadata, update_bucket_labels, 
+            get_bucket_location, view_iam_policy, check_iam_permissions, 
+            get_metadata_table_schema, execute_insights_query, list_insights_configs,
+            upload_file_from_local
+        ]
+    )
+
+def create_app(model_name: str = None):
+    # Retrieve or create agent
+    agent_instance = create_storage_agent(model_name)
+    
+    return App(
+        name="finopti_storage_agent",
+        root_agent=agent_instance,
+        plugins=[
+            ReflectAndRetryToolPlugin(max_retries=3),
+            # BigQueryAgentAnalyticsPlugin(
+            #     project_id=config.GCP_PROJECT_ID,
+            #     dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+            #     table_id=config.BQ_ANALYTICS_TABLE,
+            #     config=BigQueryLoggerConfig(enabled=True)
+            # )
+        ]
+    )
+
 
 async def send_message_async(prompt: str, user_email: str = None) -> str:
     # Create new client for this request (and this event loop)
@@ -262,19 +332,28 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
     try:
         await mcp.connect()
 
-        async with InMemoryRunner(app=app) as runner:
-            await runner.session_service.create_session(
-                session_id="default",
-                user_id="default",
-                app_name="finopti_storage_agent"
-            )
-            message = types.Content(parts=[types.Part(text=prompt)])
+        # Define run_once for fallback logic
+        async def _run_once(app_instance):
             response_text = ""
-            async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
-                 if hasattr(event, 'content') and event.content:
-                     for part in event.content.parts:
-                         if part.text: response_text += part.text
+            async with InMemoryRunner(app=app_instance) as runner:
+                await runner.session_service.create_session(
+                    session_id="default",
+                    user_id="default",
+                    app_name="finopti_storage_agent"
+                )
+                message = types.Content(parts=[types.Part(text=prompt)])
+                
+                async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
+                     if hasattr(event, 'content') and event.content:
+                         for part in event.content.parts:
+                             if part.text: response_text += part.text
             return response_text
+
+        return await run_with_model_fallback(
+            create_app_func=create_app,
+            run_func=_run_once,
+            context_name="Storage Agent"
+        )
     finally:
         await mcp.close()
         _mcp_ctx.reset(token_reset)

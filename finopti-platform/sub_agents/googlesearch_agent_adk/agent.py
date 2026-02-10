@@ -78,28 +78,40 @@ if instructions_path.exists():
 else:
     instruction_str = "You are a Google Search Specialist."
 
+
 from google.adk.tools import google_search
+
+# -------------------------------------------------------------------------
+# IMPORT COMMON UTILS
+# -------------------------------------------------------------------------
+from common.model_resilience import run_with_model_fallback
 
 # Agent Definition
 # Uses ADK's native GoogleSearchTool
-agent = Agent(
-    name=manifest.get("agent_id", "google_search_specialist"),
-    model=config.FINOPTIAGENTS_LLM,
-    description=manifest.get("description", "Google Search Specialist."),
-    instruction=instruction_str,
-    tools=[google_search]
-)
+def create_googlesearch_agent(model_name: str = None) -> Agent:
+    model_to_use = model_name or config.FINOPTIAGENTS_LLM
+    
+    return Agent(
+        name=manifest.get("agent_id", "google_search_specialist"),
+        model=model_to_use,
+        description=manifest.get("description", "Google Search Specialist."),
+        instruction=instruction_str,
+        tools=[google_search]
+    )
 
 # App Definition
 
-def create_app():
+def create_app(model_name: str = None):
     # Ensure API Key is in environment
     if config.GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    
+    # Create agent instance
+    agent_instance = create_googlesearch_agent(model_name)
 
     return App(
         name="finopti_googlesearch_agent",
-        root_agent=agent,
+        root_agent=agent_instance,
         plugins=[
             ReflectAndRetryToolPlugin(max_retries=3),
             BigQueryAgentAnalyticsPlugin(
@@ -117,25 +129,33 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
         if project_id:
             prompt = f"Project ID: {project_id}\n{prompt}"
             
-        app = create_app()
-        async with InMemoryRunner(app=app) as runner:
-            # Use dynamic user_id if provided
-            session_uid = user_email if user_email else "default"
-            await runner.session_service.create_session(session_id="default", user_id=session_uid, app_name=app.name)
-            message = types.Content(parts=[types.Part(text=prompt)])
+        # Define run_once for fallback logic
+        async def _run_once(app_instance):
             response_text = ""
-            async for event in runner.run_async(session_id="default", user_id=session_uid, new_message=message):
-                 # logging.info(f"Event received: {event}")
-                 if hasattr(event, 'content') and event.content:
-                     if event.content.parts:
-                        for part in event.content.parts:
-                            if part.text: 
-                                response_text += part.text
+            async with InMemoryRunner(app=app_instance) as runner:
+                # Use dynamic user_id if provided
+                session_uid = user_email if user_email else "default"
+                await runner.session_service.create_session(session_id="default", user_id=session_uid, app_name=app_instance.name)
+                message = types.Content(parts=[types.Part(text=prompt)])
+                
+                async for event in runner.run_async(session_id="default", user_id=session_uid, new_message=message):
+                     # logging.info(f"Event received: {event}")
+                     if hasattr(event, 'content') and event.content:
+                         if event.content.parts:
+                            for part in event.content.parts:
+                                if part.text: 
+                                    response_text += part.text
             
             if not response_text:
                 return "Analysis completed but no textual summary was generated. Debug: Tool executed but no final text response."
             
             return response_text
+
+        return await run_with_model_fallback(
+            create_app_func=create_app,
+            run_func=_run_once,
+            context_name="Google Search Agent"
+        )
     except Exception as e:
         return f"Error: {str(e)}"
 

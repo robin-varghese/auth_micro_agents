@@ -256,7 +256,7 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
                 "error": f"Could not determine endpoint for agent: {target_agent}"
             }
         
-        # Call sub-agent via APISIX/Internal
+        # Call sub-agent via APISIX/Internal with retry logic
         headers = {"Content-Type": "application/json"}
         headers = propagate_request_id(headers)
 
@@ -266,9 +266,57 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
             headers['Authorization'] = auth_token
         # ----------------------------
         
-        # Increase timeout for all agents to support long-running operations (e.g. Broken Deployment)
-        timeout = 600
-        response = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
+        # Retry configuration
+        max_retries = 3
+        base_delay = 2  # Base delay in seconds
+        timeout = 1800
+        
+        # Retry loop with exponential backoff
+        for attempt in range(max_retries + 1):
+            try:
+                response =requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
+                
+                # If we get a 429, extract retry delay and implement backoff
+                if response.status_code == 429:
+                    if attempt < max_retries:
+                        # Try to extract retry delay from error response
+                        retry_delay = base_delay * (2 ** attempt)  # Exponential: 2s, 4s, 8s
+                        
+                        try:
+                            error_data = response.json()
+                            error_message = error_data.get('error', {}).get('message', '')
+                            
+                            # Extract "Please retry in X.XXs" from error message
+                            import re
+                            match = re.search(r'Please retry in ([\d.]+)s', error_message)
+                            if match:
+                                retry_delay = float(match.group(1))
+                                print(f"[Retry {attempt + 1}/{max_retries}] 429 Rate Limit - Waiting {retry_delay:.2f}s as suggested by API...")
+                            else:
+                                print(f"[Retry {attempt + 1}/{max_retries}] 429 Rate Limit - Using exponential backoff: {retry_delay}s")
+                        except:
+                            print(f"[Retry {attempt + 1}/{max_retries}] 429 Rate Limit - Using exponential backoff: {retry_delay}s")
+                        
+                        import time
+                        time.sleep(retry_delay)
+                        continue  # Retry the request
+                    else:
+                        # Max retries reached, raise the error
+                        response.raise_for_status()
+                else:
+                    # Success or non-429 error, break out of retry loop
+                    break
+                    
+            except requests.exceptions.Timeout:
+                if attempt < max_retries:
+                    retry_delay = base_delay * (2 ** attempt)
+                    print(f"[Retry {attempt + 1}/{max_retries}] Timeout - Retrying in {retry_delay}s...")
+                    import time
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    raise
+        
         
         try:
             response.raise_for_status()
@@ -293,6 +341,57 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
              return {
                 "success": False,
                 "error": f"Invalid JSON response from agent: {response.text[:200]}",
+                "agent": target_agent
+            }
+
+        # Special handling for MATS async job responses
+        if target_agent == "mats-orchestrator" and "job_id" in data:
+            import time
+            job_id = data["job_id"]
+            poll_endpoint = f"http://mats-orchestrator:8084/jobs/{job_id}"
+            
+            # Poll for completion (max 30 minutes)
+            max_polls = 360  # 360 * 5s = 30 minutes
+            poll_count = 0
+            
+            while poll_count < max_polls:
+                time.sleep(5)  # Poll every 5 seconds
+                poll_count += 1
+                
+                try:
+                    poll_response = requests.get(poll_endpoint, headers=headers, timeout=10)
+                    poll_response.raise_for_status()
+                    poll_data = poll_response.json()
+                    
+                    status = poll_data.get("status", "UNKNOWN")
+                    
+                    if status in ["COMPLETED", "FAILED", "PARTIAL"]:
+                        # Job finished - return final result
+                        result = poll_data.get("result", {})
+                        
+                        if status == "COMPLETED":
+                            return {
+                                "success": True,
+                                "data": result,
+                                "agent": target_agent
+                            }
+                        else:
+                            error_msg = result.get("error", f"MATS job failed with status: {status}")
+                            return {
+                                "success": False,
+                                "error": error_msg,
+                                "agent": target_agent
+                            }
+                    
+                except Exception as poll_error:
+                    # Polling error - continue trying
+                    logger.warning(f"MATS job polling error: {str(poll_error)}")
+                    continue
+            
+            # Timeout after max polls
+            return {
+                "success": False,
+                "error": f"MATS job timed out after {max_polls * 5} seconds",
                 "agent": target_agent
             }
 
@@ -515,15 +614,63 @@ async def process_request_async(
 
         response_data = agent_response.get('data', {})
 
-        # Add orchestrator metadata
+        # Extract the actual agent response text if it's nested
+        agent_text_response = response_data
+        if isinstance(response_data, dict):
+            # Try to extract nested response text
+            if 'response' in response_data:
+                agent_text_response = response_data['response']
+                # Handle nested response.response structure
+                if isinstance(agent_text_response, dict) and 'response' in agent_text_response:
+                    agent_text_response = agent_text_response['response']
+
+        # Return human-readable response with minimal metadata
+        final_response = agent_text_response
+
+        # --- AUTOMATIC SCREENSHOT UPLOAD CHAINING ---
+        if target_agent == "browser_automation_specialist" and "File Name:" in str(final_response):
+            try:
+                import re
+                filename_match = re.search(r"File Name:\s*([a-zA-Z0-9_.-]+\.png)", str(final_response))
+                if filename_match:
+                    filename = filename_match.group(1)
+                    # Explicitly mention bucket and request links
+                    bucket_name = "finoptiagents_puppeteer_screenshots"
+                    upload_prompt = f"Upload /projects/{filename} to bucket {bucket_name} as screenshots/{filename}. Please provide a secure HTTPS access URL in your response."
+                    print(f"[Orchestrator] Auto-uploading screenshot {filename} to GCS bucket {bucket_name}...")
+                    
+                    upload_response = await route_to_agent(
+                        target_agent="storage_specialist",
+                        prompt=upload_prompt,
+                        user_email=user_email,
+                        project_id=project_id or config.GCP_PROJECT_ID,
+                        auth_token=auth_token
+                    )
+                    
+                    if upload_response.get("success"):
+                        upload_data = upload_response.get("data", {})
+                        # Support both direct text and structured data
+                        upload_text = upload_data.get("response", str(upload_data)) if isinstance(upload_data, dict) else str(upload_data)
+                        
+                        # Structured extraction for the Secure Access Link (Signed URL)
+                        links_text = ""
+                        if isinstance(upload_data, dict):
+                             signed_url = upload_data.get("signed_url")
+                             if signed_url:
+                                 links_text = f"\n\n**Secure Access Link (Valid for 60m):**\n[View Screenshot]({signed_url})"
+                        
+                        final_response = f"{final_response}\n\n---\n**GCS Upload Status:**\n{upload_text}{links_text}"
+                    else:
+                        final_response = f"{final_response}\n\n---\n**GCS Upload Warning:** Failed to auto-upload to GCS: {upload_response.get('error')}"
+            except Exception as chain_err:
+                print(f"[Orchestrator] Error in screenshot chaining: {chain_err}")
+        # --------------------------------------------
+
         return {
             "success": True,
-            "response": response_data,
+            "response": final_response,
             "orchestrator": {
-                "user_email": user_email,
-                "target_agent": target_agent,
-                "authorization": authz_result.get('reason', ''),
-                "authorized": True
+                "target_agent": target_agent
             }
         }
     

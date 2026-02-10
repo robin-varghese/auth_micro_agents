@@ -232,41 +232,55 @@ if instructions_path.exists():
 else:
     instruction_str = "You are a Database Specialist."
 
-db_agent = Agent(
-    name=manifest.get("agent_id", "database_specialist"),
-    model=config.FINOPTIAGENTS_LLM,
-    description=manifest.get("description", "Database specialist."),
-    instruction=instruction_str,
-    tools=[
-        postgres_execute_sql,
-        postgres_list_tables,
-        postgres_list_indexes,
-        postgres_database_overview,
-        postgres_list_active_queries,
-        query_agent_analytics
-    ]
-)
 
-# Configure BigQuery Plugin
-bq_plugin = BigQueryAgentAnalyticsPlugin(
-    project_id=config.GCP_PROJECT_ID,
-    dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-    table_id=config.BQ_ANALYTICS_TABLE,
-    config=BigQueryLoggerConfig(
-        enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-        batch_size=1
-    ),
-    location="US"
-)
+# -------------------------------------------------------------------------
+# IMPORT COMMON UTILS
+# -------------------------------------------------------------------------
+from common.model_resilience import run_with_model_fallback
 
-app = App(
-    name="finopti_db_agent",
-    root_agent=db_agent,
-    plugins=[
-        ReflectAndRetryToolPlugin(max_retries=3),
-        bq_plugin
-    ]
-)
+def create_db_agent(model_name: str = None) -> Agent:
+    model_to_use = model_name or config.FINOPTIAGENTS_LLM
+    
+    return Agent(
+        name=manifest.get("agent_id", "database_specialist"),
+        model=model_to_use,
+        description=manifest.get("description", "Database specialist."),
+        instruction=instruction_str,
+        tools=[
+            postgres_execute_sql,
+            postgres_list_tables,
+            postgres_list_indexes,
+            postgres_database_overview,
+            postgres_list_active_queries,
+            query_agent_analytics
+        ]
+    )
+
+
+def create_app(model_name: str = None):
+    # Retrieve or create agent
+    agent_instance = create_db_agent(model_name)
+    
+    # Configure BigQuery Plugin
+    bq_plugin = BigQueryAgentAnalyticsPlugin(
+        project_id=config.GCP_PROJECT_ID,
+        dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+        table_id=config.BQ_ANALYTICS_TABLE,
+        config=BigQueryLoggerConfig(
+            enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+            batch_size=1
+        ),
+        location="US"
+    )
+
+    return App(
+        name="finopti_db_agent",
+        root_agent=agent_instance,
+        plugins=[
+            ReflectAndRetryToolPlugin(max_retries=3),
+            bq_plugin
+        ]
+    )
 
 # --------------------------------------------------------------------------------
 # MSG HANDLING
@@ -284,18 +298,27 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
         # Prepend project context if provided
         if project_id:
             prompt = f"Project ID: {project_id}\n{prompt}"
-            
-        async with InMemoryRunner(app=app) as runner:
-            session_uid = user_email if user_email else "default"
-            await runner.session_service.create_session(session_id="default", user_id=session_uid, app_name=app.name)
-            message = types.Content(parts=[types.Part(text=prompt)])
+        
+        # Define run_once for fallback logic
+        async def _run_once(app_instance):
             response_text = ""
-            async for event in runner.run_async(session_id="default", user_id=session_uid, new_message=message):
-                 if hasattr(event, 'content') and event.content and event.content.parts:
-                     for part in event.content.parts:
-                         if part.text:
-                             response_text += part.text
+            async with InMemoryRunner(app=app_instance) as runner:
+                session_uid = user_email if user_email else "default"
+                await runner.session_service.create_session(session_id="default", user_id=session_uid, app_name=app_instance.name)
+                message = types.Content(parts=[types.Part(text=prompt)])
+                
+                async for event in runner.run_async(session_id="default", user_id=session_uid, new_message=message):
+                     if hasattr(event, 'content') and event.content and event.content.parts:
+                         for part in event.content.parts:
+                             if part.text:
+                                 response_text += part.text
             return response_text if response_text else "No response generated."
+
+        return await run_with_model_fallback(
+            create_app_func=create_app,
+            run_func=_run_once,
+            context_name="DB Agent"
+        )
     except Exception as e:
         logger.error(f"Error processing request: {e}", exc_info=True)
         return f"Error: {str(e)}"

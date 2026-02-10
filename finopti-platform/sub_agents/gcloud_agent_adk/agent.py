@@ -269,15 +269,18 @@ else:
 
 
 # Helper function to create agent/app per request
-def create_app():
+def create_app(model_name: str = None):
     # Ensure API Key is in environment for GenAI library
     if config.GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    
+    # Use provided model or default from config
+    model_to_use = model_name or config.FINOPTIAGENTS_LLM
 
     # Create ADK Agent
     gcloud_agent = Agent(
         name=manifest.get("agent_id", "gcloud_infrastructure_specialist"),
-        model=config.FINOPTIAGENTS_LLM,
+        model=model_to_use,
         description=manifest.get("description", "Google Cloud Platform infrastructure management specialist."),
         instruction=instruction_str,
         tools=[execute_gcloud_command]
@@ -315,16 +318,12 @@ def create_app():
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 
+
+from common.model_resilience import run_with_model_fallback
+
 async def send_message_async(prompt: str, user_email: str = None) -> str:
     """
-    Send a message to the GCloud agent
-    
-    Args:
-        prompt: User's natural language request
-        user_email: Optional user email for logging
-    
-    Returns:
-        Agent's response as string
+    Send a message to the GCloud agent with Model Fallback
     """
     try:
         # Initialize MCP client if needed
@@ -333,33 +332,44 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
             _mcp_client = GCloudMCPClient()
             await _mcp_client.connect()
         
-        # Create App instance for this request (ensures fresh event loop binding for plugins)
-        app = create_app()
+        # Define the execution logic for a specific app/model
+        async def _run_once(app_instance):
+            # Use InMemoryRunner to execute the app
+            async with InMemoryRunner(app=app_instance) as runner:
+                sid = "default"
+                uid = "default"
+                await runner.session_service.create_session(
+                    session_id=sid, 
+                    user_id=uid,
+                    app_name="finopti_gcloud_agent"
+                )
+                
+                message = types.Content(parts=[types.Part(text=prompt)])
+                response_text = ""
+                async for event in runner.run_async(
+                    user_id=uid,
+                    session_id=sid,
+                    new_message=message
+                ):
+                     # Accumulate text content from events
+                     if hasattr(event, 'content') and event.content and event.content.parts:
+                         for part in event.content.parts:
+                             if part.text:
+                                 response_text += part.text
+                
+                return response_text if response_text else "No response generated."
 
-        # Use InMemoryRunner to execute the app
-        async with InMemoryRunner(app=app) as runner:
-            sid = "default"
-            uid = "default"
-            await runner.session_service.create_session(
-                session_id=sid, 
-                user_id=uid,
-                app_name="finopti_gcloud_agent"
-            )
-            
-            message = types.Content(parts=[types.Part(text=prompt)])
-            response_text = ""
-            async for event in runner.run_async(
-                user_id=uid,
-                session_id=sid,
-                new_message=message
-            ):
-                 # Accumulate text content from events
-                 if hasattr(event, 'content') and event.content and event.content.parts:
-                     for part in event.content.parts:
-                         if part.text:
-                             response_text += part.text
-            
-            return response_text if response_text else "No response generated."
+        # Wrapper for create_app to adapt signature if needed, or modify create_app
+        # We need to modify create_app to accept model_name. 
+        # Since I can't modify create_app definition in this chunk easily without context,
+        # I will rely on a lambda that modifies the global or passes it if create_app is updated.
+        # WAIT: I need to update create_app signature too.
+        
+        return await run_with_model_fallback(
+            create_app_func=create_app, # execute_gcloud_command needs update too? No, tool is independent.
+            run_func=_run_once,
+            context_name="GCloud Agent"
+        )
 
     except Exception as e:
         return f"Error processing request: {str(e)}"

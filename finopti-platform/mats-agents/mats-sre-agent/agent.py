@@ -49,9 +49,16 @@ GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Ensure API Key is in environment
-if config.GOOGLE_API_KEY:
+# Ensure API Key is in environment ONLY if not using Vertex AI
+# Vertex AI requires ADC/OAuth tokens. API keys can cause 401 conflicts.
+if config.GOOGLE_API_KEY and not (config.GOOGLE_GENAI_USE_VERTEXAI and config.GOOGLE_GENAI_USE_VERTEXAI.upper() == "TRUE"):
     os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    logger.info("Using API Key for authentication (Vertex AI disabled)")
+else:
+    # Ensure it's NOT in env to force ADC for Vertex
+    if "GOOGLE_API_KEY" in os.environ:
+        del os.environ["GOOGLE_API_KEY"]
+    logger.info("Using ADC/Service Account for authentication (Vertex AI enabled)")
 
 
 # -------------------------------------------------------------------------
@@ -217,11 +224,23 @@ async def read_logs(project_id: str, filter_str: str, hours_ago: int = 1) -> Dic
 # -------------------------------------------------------------------------
 # AGENT DEFINITION
 # -------------------------------------------------------------------------
-sre_agent = Agent(
-    name="mats_sre_agent",
-    model=config.FINOPTIAGENTS_LLM,
-    description="Senior SRE responsible for triaging production incidents.",
-    instruction="""
+
+# -------------------------------------------------------------------------
+# IMPORT COMMON UTILS
+# -------------------------------------------------------------------------
+from common.model_resilience import run_with_model_fallback
+
+# -------------------------------------------------------------------------
+# AGENT DEFINITION
+# -------------------------------------------------------------------------
+def create_sre_agent(model_name: str = None) -> Agent:
+    model_to_use = model_name or config.FINOPTIAGENTS_LLM
+    
+    return Agent(
+        name="mats_sre_agent",
+        model=model_to_use,
+        description="Senior SRE responsible for triaging production incidents.",
+        instruction="""
     You are a Senior Site Reliability Engineer (SRE).
     
     OPERATIONAL RULES:
@@ -253,16 +272,24 @@ sre_agent = Agent(
     - Cloud Run Specialist: list_services, get_service, get_service_log, deploy_file_contents, deploy_local_folder, list_projects, create_project
     """,
     tools=[read_logs] 
-)
+    )
 
 
 # -------------------------------------------------------------------------
 # RUNNER
 # -------------------------------------------------------------------------
 async def process_request(prompt_or_payload: Any):
-    # Ensure API Key is in environment
-    if config.GOOGLE_API_KEY:
+    # Ensure API Key state is consistent
+    if config.GOOGLE_API_KEY and not (config.GOOGLE_GENAI_USE_VERTEXAI and config.GOOGLE_GENAI_USE_VERTEXAI.upper() == "TRUE"):
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    else:
+        if "GOOGLE_API_KEY" in os.environ:
+            del os.environ["GOOGLE_API_KEY"]
+            
+    # Force project ID into environment for Vertex AI auto-detection
+    if config.GCP_PROJECT_ID:
+        os.environ['GOOGLE_CLOUD_PROJECT'] = config.GCP_PROJECT_ID
+        os.environ['GCP_PROJECT_ID'] = config.GCP_PROJECT_ID
     
     # Handle Dict or JSON string payload
     prompt = ""
@@ -342,77 +369,112 @@ async def process_request(prompt_or_payload: Any):
         # Plugins (BQ Disabled due to stability issues)
         # bq_plugin = BigQueryAgentAnalyticsPlugin(...)
 
-        app_instance = App(
-            name="mats_sre_agent_app",
-            root_agent=sre_agent,
-            plugins=[
-                ReflectAndRetryToolPlugin()
-                # bq_plugin
-            ]
-        )
 
-        response_text = ""
-        execution_trace = []
-        
-        try:
-            async with InMemoryRunner(app=app_instance) as runner:
-                sid = "default"
-                await runner.session_service.create_session(session_id=sid, user_id="user", app_name="mats_sre_agent_app")
-                msg = types.Content(parts=[types.Part(text=prompt)])
-                
-                async for event in runner.run_async(user_id="user", session_id=sid, new_message=msg):
-                    # Capture Trace Events
-                    # Note: The structure of 'event' depends on Google ADK version, assuming standard patterns
+        # Plugins (BQ Disabled due to stability issues)
+        # bq_plugin = BigQueryAgentAnalyticsPlugin(...)
+
+        # Define helpers for fallback
+        def _create_app(model_name: str):
+            sre_agent_instance = create_sre_agent(model_name)
+            return App(
+                name="mats_sre_agent_app",
+                root_agent=sre_agent_instance,
+                plugins=[
+                    ReflectAndRetryToolPlugin()
+                    # bq_plugin
+                ]
+            )
+            
+        async def _run_once(app_instance):
+            response_text = ""
+            execution_trace = []
+            try:
+                async with InMemoryRunner(app=app_instance) as runner:
+                    sid = "default"
+                    await runner.session_service.create_session(session_id=sid, user_id="user", app_name="mats_sre_agent_app")
+                    msg = types.Content(parts=[types.Part(text=prompt)])
                     
-                    # 1. Thought (Model generating plan) - often mapped to 'model_response' before tool calls
-                    if hasattr(event, 'content') and event.content:
-                         for part in event.content.parts:
-                            if part.text:
-                                response_text += part.text
-                                execution_trace.append({
-                                    "type": "thought",
-                                    "content": part.text[:200] + "..." if len(part.text) > 200 else part.text
-                                })
-                                # Also report thought to UI
-                                if job_id:
-                                    await _report_progress(part.text[:200], "THOUGHT")
-                                
-                    # 2. Tool Calls
-                    if hasattr(event, 'tool_calls') and event.tool_calls:
-                        for tc in event.tool_calls:
-                             execution_trace.append({
-                                 "type": "tool_call",
-                                 "tool": tc.function_name,
-                                 "args": tc.args,
-                                 "content": f"Calling {tc.function_name}"
-                             })
-                             
-                    # Break infinite loops
-                    execution_trace_count = len([e for e in execution_trace if e.get("type") in ["tool_call", "thought"]])
-                    if execution_trace_count > 10:
-                        logger.warning(f"Max turns exceeded ({execution_trace_count}). Forcing stop.")
-                        response_text += "\\n[SYSTEM] Max execution turns exceeded. Stopping validation."
-                        break
+                    async for event in runner.run_async(user_id="user", session_id=sid, new_message=msg):
+                        # Capture Trace Events
+                        # Note: The structure of 'event' depends on Google ADK version, assuming standard patterns
+                        
+                        # 1. Thought (Model generating plan) - often mapped to 'model_response' before tool calls
+                        if hasattr(event, 'content') and event.content:
+                             for part in event.content.parts:
+                                if part.text:
+                                    response_text += part.text
+                                    execution_trace.append({
+                                        "type": "thought",
+                                        "content": part.text[:200] + "..." if len(part.text) > 200 else part.text
+                                    })
+                                    # Also report thought to UI
+                                    if job_id:
+                                        await _report_progress(part.text[:200], "THOUGHT")
+                                    
+                        # 2. Tool Calls
+                        if hasattr(event, 'tool_calls') and event.tool_calls:
+                            for tc in event.tool_calls:
+                                 execution_trace.append({
+                                     "type": "tool_call",
+                                     "tool": tc.function_name,
+                                     "args": tc.args,
+                                     "content": f"Calling {tc.function_name}"
+                                 })
+                                 
+                        # Break infinite loops
+                        execution_trace_count = len([e for e in execution_trace if e.get("type") in ["tool_call", "thought"]])
+                        if execution_trace_count > 10:
+                            logger.warning(f"Max turns exceeded ({execution_trace_count}). Forcing stop.")
+                            response_text += "\\n[SYSTEM] Max execution turns exceeded. Stopping validation."
+                            break
+    
+                        # 3. Tool Outputs
+                        if hasattr(event, 'tool_outputs') and event.tool_outputs:
+                             for to in event.tool_outputs:
+                                 execution_trace.append({
+                                     "type": "observation",
+                                     "tool": to.function_name,
+                                     "content": str(to.text_content)[:500]
+                                 })
+    
+            except Exception as e:
+                err_msg = str(e)
+                logger.error(f"Runner failed: {err_msg}")
+                
+                # Construct a JSON-friendly error response so Orchestrator doesn't crash on parsing
+                error_json_response = json.dumps({
+                    "status": "FAILURE",
+                    "confidence": 0.0,
+                    "evidence": {
+                        "timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "error_signature": "System Error",
+                        "stack_trace": err_msg
+                    },
+                    "recommendations": ["Check agent logs for authentication or quota issues."]
+                })
+                response_text = error_json_response
+                execution_trace.append({"type": "error", "content": err_msg})
+                
+                # Reraise 429 errors to trigger fallback
+                if "429" in err_msg or "Resource exhausted" in err_msg:
+                    raise e
+            
+            # check soft errors in response text
+            if "429 Too Many Requests" in response_text or "Resource exhausted" in response_text:
+                 raise RuntimeError(f"soft_429: {response_text}")
 
-                    # 3. Tool Outputs
-                    if hasattr(event, 'tool_outputs') and event.tool_outputs:
-                         for to in event.tool_outputs:
-                             execution_trace.append({
-                                 "type": "observation",
-                                 "tool": to.function_name,
-                                 "content": str(to.text_content)[:500]
-                             })
+            # Fallback if empty
+            if not response_text:
+                response_text = "Analysis completed but no textual summary was generated. Check logs."
+    
+            return {
+                "response": response_text,
+                "execution_trace": execution_trace
+            }
 
-        except Exception as e:
-            response_text = f"Error: {e}"
-            logger.error(f"Runner failed: {e}")
-            execution_trace.append({"type": "error", "content": str(e)})
-        
-        # Fallback if empty
-        if not response_text:
-            response_text = "Analysis completed but no textual summary was generated. Check logs."
-
-        return {
-            "response": response_text,
-            "execution_trace": execution_trace
-        }
+        # Execute with fallback logic
+        return await run_with_model_fallback(
+            create_app_func=_create_app,
+            run_func=_run_once,
+            context_name="MATS SRE Agent"
+        )

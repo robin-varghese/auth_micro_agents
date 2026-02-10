@@ -237,17 +237,18 @@ if instructions_path.exists():
 else:
     instruction_str = "You are a GitHub Specialist."
 
-def create_app():
-    # Ensure API Key is in environment
-    if config.GOOGLE_API_KEY:
-        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
-    if config.GCP_PROJECT_ID:
-        os.environ["GOOGLE_CLOUD_PROJECT"] = config.GCP_PROJECT_ID
-        os.environ["GCP_PROJECT_ID"] = config.GCP_PROJECT_ID
 
-    agent = Agent(
+# -------------------------------------------------------------------------
+# IMPORT COMMON UTILS
+# -------------------------------------------------------------------------
+from common.model_resilience import run_with_model_fallback
+
+def create_github_agent(model_name: str = None) -> Agent:
+    model_to_use = model_name or config.FINOPTIAGENTS_LLM
+    
+    return Agent(
         name=manifest.get("agent_id", "github_specialist"),
-        model=config.FINOPTIAGENTS_LLM,
+        model=model_to_use,
         description=manifest.get("description", "GitHub Specialist."),
         instruction=instruction_str,
         tools=[
@@ -257,6 +258,16 @@ def create_app():
             create_branch, list_branches, get_commit, search_code, search_issues
         ]
     )
+
+def create_app(model_name: str = None):
+    # Ensure API Key is in environment
+    if config.GOOGLE_API_KEY:
+        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    if config.GCP_PROJECT_ID:
+        os.environ["GOOGLE_CLOUD_PROJECT"] = config.GCP_PROJECT_ID
+        os.environ["GCP_PROJECT_ID"] = config.GCP_PROJECT_ID
+
+    agent = create_github_agent(model_name)
 
     return App(
         name="finopti_github_agent",
@@ -274,16 +285,24 @@ def create_app():
 
 async def send_message_async(prompt: str, user_email: str = None) -> str:
     try:
-        app = create_app()
-        async with InMemoryRunner(app=app) as runner:
-            await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_github_agent")
-            message = types.Content(parts=[types.Part(text=prompt)])
+        # Define run_once for fallback logic
+        async def _run_once(app_instance):
             response_text = ""
-            async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
-                 if hasattr(event, 'content') and event.content:
-                     for part in event.content.parts:
-                         if part.text: response_text += part.text
+            async with InMemoryRunner(app=app_instance) as runner:
+                await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_github_agent")
+                message = types.Content(parts=[types.Part(text=prompt)])
+                
+                async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
+                     if hasattr(event, 'content') and event.content:
+                         for part in event.content.parts:
+                             if part.text: response_text += part.text
             return response_text
+
+        return await run_with_model_fallback(
+            create_app_func=create_app,
+            run_func=_run_once,
+            context_name="GitHub Agent"
+        )
     except Exception as e:
         return f"Error: {str(e)}"
 

@@ -69,9 +69,9 @@ def gate_triage_to_analysis(
         return (GateDecision.RETRY, "No error signature found, retry with expanded window")
     
     # Check confidence
-    confidence = sre.confidence if sre.confidence is not None else 0.0
-    if confidence < 0.3:
-        return (GateDecision.RETRY, f"Low SRE confidence ({sre.confidence})")
+    sre_conf = sre.confidence if sre.confidence is not None else 0.0
+    if sre_conf < 0.3:
+        return (GateDecision.RETRY, f"Low SRE confidence ({sre_conf})")
     
     logger.info(f"[{session_id}] Triage gate PASSED - confidence={sre.confidence}")
     return (GateDecision.PASS, "Sufficient evidence for analysis")
@@ -99,8 +99,9 @@ def gate_analysis_to_synthesis(
         return (GateDecision.RETRY, "Insufficient data for root cause")
     
     # Even hypothesis is acceptable if confidence > 0.3
-    if inv.confidence < 0.3:
-        return (GateDecision.FAIL, f"Very low confidence ({inv.confidence}), cannot proceed")
+    inv_conf = inv.confidence if inv.confidence is not None else 0.0
+    if inv_conf < 0.3:
+        return (GateDecision.FAIL, f"Very low confidence ({inv_conf}), cannot proceed")
     
     # Prefer definitive root cause, but accept hypothesis
     if inv.status == "HYPOTHESIS":

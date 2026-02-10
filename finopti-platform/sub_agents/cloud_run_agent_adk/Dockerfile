@@ -22,6 +22,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY sub_agents/cloud_run_agent_adk/ .
 COPY sub_agents/cloud_run_agent_adk/agent.py .
+
+# Copy common utils
+COPY common /app/common
+
 COPY config/ config/
 
 EXPOSE 5006

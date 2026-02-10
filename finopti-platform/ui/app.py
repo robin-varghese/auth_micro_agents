@@ -68,7 +68,8 @@ if 'active_session_id' not in st.session_state:
 
 # ... (Configuration)
 APISIX_URL = "http://apisix:9080"
-ORCHESTRATOR_JOBS = f"{APISIX_URL}/agent/mats/jobs"
+ORCHESTRATOR_ASK = f"{APISIX_URL}/orchestrator/ask"  # CHANGED: Use routing orchestrator, not direct MATS
+MATS_JOBS = f"{APISIX_URL}/agent/mats/jobs"  # Keep for troubleshooting-specific flows if needed
 
 # ... (Auth and Helpers)
 
@@ -93,7 +94,7 @@ def _get_trace_header(trace_id: str, span_id: str = None):
     return f"00-{trace_id}-{span_id}-01"
 
 def start_job(prompt: str, trace_id: str = None, session_id: str = None) -> dict:
-    """Start an async troubleshooting job with Trace Context"""
+    """Send request to orchestrator for intelligent routing"""
     try:
         headers = oauth_helper.get_auth_headers()
         
@@ -112,20 +113,21 @@ def start_job(prompt: str, trace_id: str = None, session_id: str = None) -> dict
 
         payload = {"prompt": prompt}
         
+        # CHANGED: Use orchestrator/ask instead of direct MATS
         response = requests.post(
-            ORCHESTRATOR_JOBS,
+            ORCHESTRATOR_ASK,
             headers=headers,
             json=payload,
-            timeout=10
+            timeout=1800  # 30 minutes for MATS investigations
         )
         
-        if response.status_code == 202:
+        if response.status_code == 200:
             data = response.json()
             # Store trace_id in response for UI tracking if needed
             data["trace_id"] = trace_id 
             return data
         else:
-            return {"error": f"Failed to start job: {response.text}"}
+            return {"error": f"Failed to process request: {response.text}"}
             
     except Exception as e:
         return {"error": str(e)}
@@ -202,133 +204,103 @@ else:
     # Job Status Placeholders
     job_creation_status = st.empty()
     
+    # Check if we have a pending message to process (from previous rerun)
+    if "processing_message" in st.session_state:
+        # Second pass: Process the message and get response
+        processing_msg = st.session_state.processing_message
+        del st.session_state.processing_message  # Clear flag immediately
+        
+        # Start/Resume Job
+        with st.chat_message("assistant"):
+             with job_creation_status.status("🚀 Initializing...", expanded=True) as status_ptr:
+                 try:
+                      # CRITICAL: Pass session_id (persistent) but NOT trace_id (per-request)
+                      # start_job will generate a NEW trace_id for each request
+                      response_data = start_job(
+                          processing_msg, 
+                          trace_id=None,  # Let start_job generate new trace_id
+                          session_id=st.session_state.active_session_id  # Session persists across requests
+                      )
+                      
+                      if "error" in response_data:
+                          status_ptr.update(label="❌ Error", state="error")
+                          error_msg = response_data["error"]
+                          st.error(error_msg)
+                          # Add error to message history
+                          st.session_state.messages.append({"role": "assistant", "content": f"❌ Error: {error_msg}"})
+                      else:
+                          # SUCCESS - Display response immediately (synchronous)
+                          status_ptr.update(label="✅ Complete", state="complete")
+                          
+                          response_text = ""
+                          
+                          # Check if this was routed to MATS (which returns status/error format)
+                          if "status" in response_data:
+                              # MATS response format
+                              if response_data.get("status") == "MISROUTED":
+                                  error_text = response_data.get("error", "Request was misrouted")
+                                  st.error(error_text)
+                                  response_text = f"❌ {error_text}"
+                                  if "suggestion" in response_data:
+                                      suggestion = response_data["suggestion"]
+                                      st.info(suggestion)
+                                      response_text += f"\n\n💡 {suggestion}"
+                              else:
+                                  st.write(response_data)
+                                  response_text = str(response_data)
+                          # Check for orchestrator routing response
+                          elif "orchestrator" in response_data:
+                              # Display routing info
+                              orchestrator_info = response_data.get("orchestrator", {})
+                              if "target_agent" in orchestrator_info:
+                                  routing_info = f"🎯 Routed to: **{orchestrator_info['target_agent']}**"
+                                  st.info(routing_info)
+                                  response_text = routing_info + "\n\n"
+                              
+                              # Display agent response
+                              if "response" in response_data:
+                                  agent_resp = response_data["response"]
+                                  st.write(agent_resp)
+                                  response_text += str(agent_resp)
+                              elif "data" in response_data:
+                                  agent_resp = response_data["data"]
+                                  st.write(agent_resp)
+                                  response_text += str(agent_resp)
+                              else:
+                                  st.write(response_data)
+                                  response_text += str(response_data)
+                          else:
+                              # Generic response
+                              st.write(response_data)
+                              response_text = str(response_data)
+                          
+                          # Add response to message history
+                          st.session_state.messages.append({"role": "assistant", "content": response_text})
+                          
+                          # Clear pending prompt
+                          st.session_state.pending_prompt = None
+                          st.session_state.active_job_id = None  # No job polling needed
+                          
+                 except Exception as e:
+                      status_ptr.update(label="❌ Error", state="error")
+                      error_msg = str(e)
+                      st.error(error_msg)
+                      st.session_state.messages.append({"role": "assistant", "content": f"❌ Error: {error_msg}"})
+    
     # 1. Handle New User Input
-    if user_input:
+    elif user_input:
         is_waiting = (st.session_state.get('job_status') == "WAITING_FOR_USER")
         
         if st.session_state.active_job_id and not is_waiting:
              st.warning("⚠️ Another job is already running. Please wait.")
         else:
-            # Display User Message
+            # First pass: Add user message to history and trigger rerun for processing
             st.session_state.messages.append({"role": "user", "content": user_input})
-            with st.chat_message("user"):
-                st.markdown(user_input)
-            
-            # Start/Resume Job
-            with st.chat_message("assistant"):
-                 with job_creation_status.status("🚀 Initializing...", expanded=True) as status_ptr:
-                     try:
-                         # Resume Flow
-                         if is_waiting and st.session_state.active_job_id:
-                             status_ptr.update(label="🔄 Resuming...", state="running")
-                         
-                         # CRITICAL: Pass session_id (persistent) but NOT trace_id (per-request)
-                         # start_job will generate a NEW trace_id for each request
-                         job_data = start_job(
-                             user_input, 
-                             trace_id=None,  # Let start_job generate new trace_id
-                             session_id=st.session_state.active_session_id  # Session persists across requests
-                         )
-                         
-                         if "error" in job_data:
-                             status_ptr.update(label="❌ Failed to start", state="error")
-                             st.error(job_data["error"])
-                         else:
-                             # Success - Set Current Job Context
-                             current_job_id = job_data["job_id"]
-                             # Note: trace_id is generated per-request now, not stored in session
-                                 
-                             st.session_state.active_job_id = current_job_id
-                             st.session_state.pending_prompt = None
-                             # Status will be cleared when loop starts
-                     except Exception as e:
-                         status_ptr.update(label="❌ Error", state="error")
-                         st.error(str(e))
-
-    # 2. Handle Resuming (If no new input, but active job exists)
-    elif st.session_state.active_job_id:
-        current_job_id = st.session_state.active_job_id
+            st.session_state.processing_message = user_input
+            st.rerun()
 
 
-    # 3. Unified Polling Loop (Runs if we found a job ID from either path)
-    if current_job_id:
-        with st.chat_message("assistant"):
-             # Use existing status if available, or create new container
-             status_container = st.status("🔄 Processing...", expanded=True)
-             console_container = st.empty()
-             plan_container = st.empty()
-             
-             final_result = None
-             start_time = time.time()
-             
-             while True:
-                # Timeout safety
-                if time.time() - start_time > 600:
-                    status_container.update(label="❌ Timeout", state="error")
-                    st.session_state.active_job_id = None
-                    break
-                    
-                # Note: Polling doesn't need trace_id anymore
-                status_data = poll_job(current_job_id, trace_id=None)
-                current_status = status_data.get("status", "UNKNOWN")
-                st.session_state.job_status = current_status # Track status globally
-                
-                # Update Events
-                events = status_data.get("events", [])
-                
-                # Render Plan if found
-                for evt in events:
-                    if evt["type"] == "PLAN":
-                        plan_container.markdown(evt["message"])
-                        
-                # Render Console Log items (Latest 20)
-                console_text = ""
-                for evt in events[-10:]:
-                    icon = "ℹ️"
-                    if evt["type"] == "TOOL_USE": icon = "🛠️"
-                    elif evt["type"] == "OBSERVATION": icon = "✅"
-                    elif evt["type"] == "THOUGHT": icon = "🧠"
-                    elif evt["type"] == "ERROR": icon = "❌"
-                    elif evt["type"] == "PLAN": icon = "📋"
-                    
-                    source = evt.get("source", "system").replace("mats-", "").replace("-agent", "").upper()
-                    console_text += f"{icon} **[{source}]** {evt['message']}\n\n"
-                    
-                console_container.caption(console_text)
-                
-                # Check Terminal States
-                if current_status in ["COMPLETED", "FAILED", "PARTIAL", "WAITING_FOR_USER"]:
-                    final_result = status_data.get("result")
-                    
-                    if current_status == "COMPLETED":
-                        status_container.update(label="✅ Complete", state="complete", expanded=False)
-                        st.session_state.active_job_id = None
-                        st.session_state.job_status = None
-                        
-                    elif current_status == "WAITING_FOR_USER":
-                        status_container.update(label="⚠️ Waiting for Input", state="running", expanded=True)
-                        # Do NOT clear active_job_id - we need to wait for user to type
-                        
-                    else:
-                        status_container.update(label=f"⚠️ {current_status}", state="error", expanded=False)
-                        st.session_state.active_job_id = None
-                        st.session_state.job_status = None
-                    break
-                    
-                time.sleep(2)
-        
-        # 4. Render Final Response (if loop finished with a result)
-        if final_result:
-            response_msg = ""
-            if isinstance(final_result, dict):
-                 response_msg = final_result.get("response") or final_result.get("message") or str(final_result)
-            else:
-                 response_msg = str(final_result)
-            
-            # Avoid duplicate messages: check if last message is identical
-            if not st.session_state.messages or st.session_state.messages[-1]["content"] != response_msg:
-                 st.markdown(response_msg)
-                 st.session_state.messages.append({"role": "assistant", "content": response_msg})
+# User profiles for simulated login
 AVAILABLE_USERS = {
     "admin@cloudroaster.com": {
         "name": "Admin User",
@@ -388,7 +360,7 @@ def send_message(prompt: str) -> dict:
             ORCHESTRATOR_ENDPOINT,
             headers=headers,
             json=payload,
-            timeout=600
+            timeout=1800
         )
         
         if response.status_code == 200:
@@ -444,7 +416,7 @@ def send_message(prompt: str) -> dict:
         return {
             "success": False,
             "error": "Timeout",
-            "message": "Request timed out (execution took > 600s). The agent is likely still working in the background."
+            "message": "Request timed out (execution took > 1800s). The agent is likely still working in the background."
         }
     except requests.exceptions.ConnectionError:
         return {
@@ -595,10 +567,6 @@ with st.sidebar:
 
         if st.button("Puppeteer Screenshot", use_container_width=True):
             set_prompt("Take a screenshot of https://www.google.com")
-            st.rerun()
-
-        if st.button("Sequential Planning", use_container_width=True):
-            set_prompt("Plan a 3-day itinerary for a trip to Tokyo step-by-step")
             st.rerun()
 
         st.markdown("**Troubleshooting (MATS)**")

@@ -47,7 +47,7 @@ class RootCause(BaseModel):
 class InvestigatorOutput(BaseModel):
     """Expected output schema from Investigator Agent"""
     status: str = Field(..., description="ROOT_CAUSE_FOUND|HYPOTHESIS|INSUFFICIENT_DATA")
-    confidence: float = Field(..., ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(0.0, ge=0.0, le=1.0)
     
     root_cause: Optional[RootCause] = None
     dependency_chain: List[str] = Field(default_factory=list, description="Call stack")
@@ -65,13 +65,14 @@ class InvestigatorOutput(BaseModel):
     
     def is_valid_evidence(self) -> bool:
         """Check if we have actionable findings"""
-        return self.status in ["ROOT_CAUSE_FOUND", "HYPOTHESIS"] and self.confidence >= 0.3
+        conf = self.confidence if self.confidence is not None else 0.0
+        return self.status in ["ROOT_CAUSE_FOUND", "HYPOTHESIS"] and conf >= 0.3
 
 
 class ArchitectOutput(BaseModel):
     """Expected output schema from Architect Agent"""
     status: str = Field(..., description="SUCCESS|PARTIAL|FAILURE")
-    confidence: float = Field(..., ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(0.0, ge=0.0, le=1.0)
     
     rca_content: str = Field(..., description="Full RCA markdown content")
     rca_url: Optional[str] = Field(None, description="GCS URL to RCA document")

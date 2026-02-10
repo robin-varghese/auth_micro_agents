@@ -15,6 +15,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy all Python files
 COPY sub_agents/sequential_thinking_agent_adk/*.py .
 
+# Copy common utils
+COPY common /app/common
+
 # Copy config
 COPY config /app/config
 

@@ -23,7 +23,7 @@ INVESTIGATOR_AGENT_URL = os.getenv("INVESTIGATOR_AGENT_URL", "http://mats-invest
 ARCHITECT_AGENT_URL = os.getenv("ARCHITECT_AGENT_URL", "http://mats-architect-agent:8083")
 
 
-async def _http_post(url: str, data: Dict[str, Any], timeout: int = 200) -> Dict[str, Any]:
+async def _http_post(url: str, data: Dict[str, Any], timeout: int = 900) -> Dict[str, Any]:
     """
     Make HTTP POST request with error handling.
     
@@ -145,8 +145,19 @@ Please analyze the logs and metrics. Return your findings in the following JSON 
             return final_output
             
         except (json.JSONDecodeError, ValidationError) as e:
-            logger.error(f"[{session_id}] SRE output invalid: {e}")
-            raise NonRetryableError(f"SRE returned invalid output: {e}")
+            logger.error(f"[{session_id}] SRE output invalid or not JSON: {e}")
+            logger.error(f"[{session_id}] Raw SRE response: {response_text[:1000] if response_text else 'EMPTY'}")
+            return {
+                "status": "FAILURE",
+                "confidence": 0.0,
+                "evidence": {
+                    "timestamp": "N/A",
+                    "error_signature": "Invalid Agent Output",
+                    "stack_trace": response_text[:500] if response_text else str(e)
+                },
+                "blockers": ["Agent returned non-JSON response"],
+                "recommendations": ["Review agent logs for internal crashes."]
+            }
     
     return await retry_async(
         _call,
@@ -219,7 +230,7 @@ Please investigate the code and return findings in this JSON format:
         except ImportError:
             pass
             
-        result = await _http_post(INVESTIGATOR_AGENT_URL, payload)
+        result = await _http_post(INVESTIGATOR_AGENT_URL, payload, timeout=900)
         response_text = result.get("response", "")
         
         import json
@@ -237,8 +248,16 @@ Please investigate the code and return findings in this JSON format:
             return inv_output.dict()
             
         except (json.JSONDecodeError, ValidationError) as e:
-            logger.error(f"[{session_id}] Investigator output invalid: {e}")
-            raise NonRetryableError(f"Investigator returned invalid output: {e}")
+            logger.error(f"[{session_id}] Investigator output invalid or not JSON: {e}")
+            logger.error(f"[{session_id}] Raw Investigator response: {response_text[:1000] if response_text else 'EMPTY'}")
+            return {
+                "status": "INSUFFICIENT_DATA",
+                "confidence": 0.0,
+                "root_cause": None,
+                "hypothesis": f"Investigator returned invalid output: {response_text[:500] if response_text else str(e)}",
+                "blockers": ["Agent returned non-JSON response"],
+                "recommendations": ["Check investigator logs for internal errors."]
+            }
     
     return await retry_async(
         _call,
@@ -282,18 +301,19 @@ Please synthesize the following investigation reports into a formal Root Cause A
 {json.dumps(investigator_findings, indent=2)}
 
 Generate a complete RCA markdown document with these sections:
-1. Executive Summary
-2. Timeline & Detection
-3. Root Cause
-4. Recommended Fix
-5. Prevention Plan
-6. Known Limitations
+## 1. Executive Summary
+## 2. Timeline & Detection
+## 3. Root Cause
+## 4. Recommended Fix
+## 5. Prevention Plan
+## 6. Known Limitations
 
 Also return your response in this JSON format:
 {{
     "status": "SUCCESS|PARTIAL|FAILURE",
     "confidence": 0.0-1.0,
     "rca_content": "full markdown content",
+    "rca_url": "The link returned by upload_rca_to_gcs",
     "limitations": [],
     "recommendations": []
 }}
@@ -312,7 +332,7 @@ Also return your response in this JSON format:
         except ImportError:
             pass
 
-        result = await _http_post(ARCHITECT_AGENT_URL, payload)
+        result = await _http_post(ARCHITECT_AGENT_URL, payload, timeout=900)
         response_text = result.get("response", "")
         
         import json
@@ -330,14 +350,15 @@ Also return your response in this JSON format:
             return arch_output.dict()
             
         except (json.JSONDecodeError, ValidationError) as e:
-            logger.error(f"[{session_id}] Architect output invalid: {e}")
+            logger.error(f"[{session_id}] Architect output invalid or not JSON: {e}")
+            logger.error(f"[{session_id}] Raw Architect response: {response_text[:1000] if response_text else 'EMPTY'}")
             # If parsing fails, try to extract markdown content directly
             return {
                 "status": "PARTIAL",
                 "confidence": 0.5,
-                "rca_content": response_text,
+                "rca_content": response_text if response_text else f"Parsing error: {str(e)}",
                 "limitations": ["Output parsing failed, using raw response"],
-                "recommendations": []
+                "recommendations": ["Check architect logs for internal errors."]
             }
     
     return await retry_async(

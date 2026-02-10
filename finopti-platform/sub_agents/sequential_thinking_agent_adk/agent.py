@@ -130,13 +130,21 @@ class SequentialMCPClient:
         self.session = None
         self.exit_stack = None
 
-_mcp = None
+from contextvars import ContextVar
+
+# ContextVar to store the MCP client for the current request
+_mcp_ctx: ContextVar["SequentialMCPClient"] = ContextVar("mcp_client", default=None)
+
 async def ensure_mcp():
-    global _mcp
-    if not _mcp:
-        _mcp = SequentialMCPClient()
-        await _mcp.connect()
-    return _mcp
+    """Retrieve the client for the CURRENT context."""
+    client = _mcp_ctx.get()
+    if not client:
+        # If not in context (shouldn't happen with correct cleanup, but for safety in single-script)
+        # In strict agent mode, we expect send_message_async to set it.
+        # But if called outside, we might need a fallback?
+        # Better to enforce usage via send_message_async.
+        raise RuntimeError("MCP Client not initialized for this context")
+    return client
 
 # --- Tool Request Wrappers ---
 
@@ -180,23 +188,35 @@ else:
 if config.GOOGLE_API_KEY:
     os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
-agent = Agent(
-    name=manifest.get("agent_id", "sequential_thinking_specialist"),
-    model=config.FINOPTIAGENTS_LLM,
-    description=manifest.get("description", "Advanced reasoning specialist."),
-    instruction=instruction_str,
-    tools=[sequentialthinking]
-)
+
+# -------------------------------------------------------------------------
+# IMPORT COMMON UTILS
+# -------------------------------------------------------------------------
+from common.model_resilience import run_with_model_fallback
+
+def create_sequential_agent(model_name: str = None) -> Agent:
+    model_to_use = model_name or config.FINOPTIAGENTS_LLM
+
+    return Agent(
+        name=manifest.get("agent_id", "sequential_thinking_specialist"),
+        model=model_to_use,
+        description=manifest.get("description", "Advanced reasoning specialist."),
+        instruction=instruction_str,
+        tools=[sequentialthinking]
+    )
 
 
-def create_app():
+def create_app(model_name: str = None):
     # Ensure API Key is in environment
     if config.GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
+    # Create agent instance
+    agent_instance = create_sequential_agent(model_name)
+
     return App(
         name="finopti_sequential_agent",
-        root_agent=agent,
+        root_agent=agent_instance,
         plugins=[
             ReflectAndRetryToolPlugin(max_retries=5),
             BigQueryAgentAnalyticsPlugin(
@@ -209,26 +229,38 @@ def create_app():
     )
 
 async def send_message_async(prompt: str, user_email: str = None, project_id: str = None) -> str:
-    global _mcp
+    # Create new client for this request (and this event loop)
+    mcp = SequentialMCPClient()
+    token_reset = _mcp_ctx.set(mcp)
+    
     try:
+        await mcp.connect()
+
         # Prepend project context if provided
         if project_id:
             prompt = f"Project ID: {project_id}\n{prompt}"
-
-        app = create_app()
-        async with InMemoryRunner(app=app) as runner:
-            await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_sequential_agent")
-            message = types.Content(parts=[types.Part(text=prompt)])
+        
+        # Define run_once for fallback logic
+        async def _run_once(app_instance):
             response_text = ""
-            async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
-                if hasattr(event, 'content') and event.content:
-                    for part in event.content.parts:
-                        if part.text: response_text += part.text
+            async with InMemoryRunner(app=app_instance) as runner:
+                await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_sequential_agent")
+                message = types.Content(parts=[types.Part(text=prompt)])
+                
+                async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
+                    if hasattr(event, 'content') and event.content:
+                        for part in event.content.parts:
+                            if part.text: response_text += part.text
             return response_text
+
+        return await run_with_model_fallback(
+            create_app_func=create_app,
+            run_func=_run_once,
+            context_name="Sequential Thinking Agent"
+        )
     finally:
-        # Keep connection open for reuse ideally, but close strictly if needed.
-        # pass
-         if _mcp: await _mcp.close(); _mcp = None
+        await mcp.close()
+        _mcp_ctx.reset(token_reset)
 
 def send_message(prompt: str, user_email: str = None, project_id: str = None) -> str:
     return asyncio.run(send_message_async(prompt, user_email, project_id))
