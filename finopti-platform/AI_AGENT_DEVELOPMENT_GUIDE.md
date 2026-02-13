@@ -1,9 +1,9 @@
 # FinOptiAgents Platform - AI Agent Development Instructions
 
-**Version:** 4.0 (STABLE)
-**Last Updated:** 2026-Feb-07
+**Version:** 5.0 (STABLE)
+**Last Updated:** 2026-Feb-13
 **Purpose:** Mandatory guidelines for AI assistants implementing new agents.
-**Status:** GOLD STANDARD - Adherence is required to prevent concurrency crashes.
+**Status:** GOLD STANDARD - Adherence is required to prevent concurrency crashes and sub-agent silence.
 
 ---
 
@@ -34,19 +34,33 @@ All stdout/stderr from containers is automatically collected by Promtail and sen
 1. Use `phoenix.otel.register` and `GoogleADKInstrumentor` in `agent.py`
 2. **NEVER HARDCODE** the endpoint. Use `os.getenv("PHOENIX_COLLECTOR_ENDPOINT")`
 3. **ALWAYS use the SAME project name** across related agents (e.g., "finoptiagents-MATS" for all MATS agents)
-4. **ALWAYS set `session.id` attribute** on spans for session grouping in Phoenix
-5. **ALWAYS extract and propagate `session_id`** from payloads or headers
-6. Ensure `arize-phoenix`, `openinference-instrumentation-google-adk`, and `openinference-semconv` are in `requirements.txt`
+4. **ALWAYS set `session.id` AND `user_id` attributes** on spans for tracing and Redis channel mapping.
+5. **ALWAYS extract and propagate `session_id` AND `user_email`** from payloads or headers.
+6. Ensure `arize-phoenix`, `openinference-instrumentation-google-adk`, and `openinference-semconv` are in `requirements.txt`.
 
 **Session Tracking Benefits:**
-- Groups multiple traces under one logical user session
-- Enables end-to-end debugging across agent boundaries
-- Provides complete visibility of multi-agent workflows
-- Allows session-level performance analysis
+- Groups multiple traces under one logical user session.
+- Enables end-to-end debugging across agent boundaries.
+- **Mandatory for Redis streaming** (channels are keyed by `user_email`).
 
 See [Section 7: Observability Implementation](#7-observability-implementation-phoenix-session-tracking) for complete implementation guide.
 
-### Rule 6: Asyncio Event Loop Safety (NO GLOBAL APP)
+### Rule 6: Redis Event Bridge for Live Streaming (MANDATORY)
+**CRITICAL:** Agents must never be "silent." All internal thoughts, tool calls, and status updates must be published to Redis for the UI to stream.
+**Requirement:**
+1. Use `redis_common.RedisEventPublisher` to report events.
+2. **Standardized Event Types**:
+   - `STATUS_UPDATE`: High-level progress (UI progress bars/icons).
+   - `THOUGHT`: Chain-of-thought/Internal reasoning (Icon: 🧠).
+   - `TOOL_CALL`: Before calling an MCP tool (Icon: 🛠️).
+   - `OBSERVATION`: Raw output from an MCP tool (Icon: 👁️).
+   - `ERROR`: Exception details (Icon: ❌).
+3. **Channel Targeting**: Channels MUST follow the pattern `channel:user_{email}:session_{id}`.
+
+### Rule 7: Jinja Template Escaping in Instructions
+**CRITICAL:** If agent instructions contain literal double-braces `{{ }}` (common in JSON examples), they MUST be escaped or converted to `[[ ]]` to prevent ADK/Jinja initialization errors.
+
+### Rule 8: Asyncio Event Loop Safety (NO GLOBAL APP)
 **CRITICAL:** The `App` and its `Plugins` (especially `BigQueryAgentAnalyticsPlugin`) create async primitives (locks, queues) bound to the event loop active at instantiation.
 **Requirement:**
 1. **NEVER** instantiate `App` or `Plugins` globally.
@@ -61,9 +75,9 @@ See [Section 7: Observability Implementation](#7-observability-implementation-ph
 ```
 sub_agents/{agent_name}_adk/
 ├── agent.py           # Core Logic: Agent + App + Plugins + Auth + CONTEXT ISOLATION + OBSERVABILITY
-├── main.py            # Entrypoint: Flask HTTP wrapper
+├── main.py            # Entrypoint: Flask HTTP wrapper (Extracts user_email)
 ├── verify_agent.py    # Self-Verification Script (MANDATORY)
-├── Dockerfile         # Container build definition
+├── Dockerfile         # Container build definition (Must mount redis_common)
 └── ...
 ```
 
@@ -112,123 +126,80 @@ tracer_provider = register(
 )
 GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
 
-# --- 1. CONTEXT ISOLATION ---
-# Stores the MCP client for the current request/loop.
-# Default=None prevents accidental reuse.
+# --- 1. CONTEXT ISOLATION & PROGRESS ---
+# Stores the MCP client, session, and user for the current request/loop.
 _mcp_ctx: ContextVar["MyMCPClient"] = ContextVar("mcp_client", default=None)
+_session_id_ctx: ContextVar[str] = ContextVar("session_id", default=None)
+_user_email_ctx: ContextVar[str] = ContextVar("user_email", default=None)
+_redis_publisher_ctx: ContextVar["RedisEventPublisher"] = ContextVar("redis_publisher", default=None)
 
-class MyMCPClient:
-    def __init__(self):
-        # Allow override via ENV for testing/staging
-        self.image = os.getenv("MY_MCP_DOCKER_IMAGE", "finopti-my-mcp") 
-        self.mount_path = os.getenv('GCLOUD_MOUNT_PATH', f"{os.path.expanduser('~')}/.config/gcloud:/root/.config/gcloud")
-        self.process = None
-        self.request_id = 0
-
-    async def connect(self):
-        cmd = ["docker", "run", "-i", "--rm", "-v", self.mount_path, self.image]
-        logger.info(f"Starting MCP: {' '.join(cmd)}")
-        self.process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+# --- 2. PROGRESS HELPER ---
+async def _report_progress(message: str, event_type: str = "STATUS_UPDATE", icon: str = "🤖"):
+    """Publishes event to Redis using context-bound session/user."""
+    pub = _redis_publisher_ctx.get()
+    sid = _session_id_ctx.get()
+    uid = _user_email_ctx.get() or "default_user"
+    
+    if pub and sid:
+        pub.publish_event(
+            session_id=sid, user_id=uid, trace_id="unknown",
+            msg_type=event_type, message=message,
+            display_type="console_log", icon=icon
         )
-        await self._handshake()
 
-    # ... (Standard _handshake, _send_json, call_tool, close) ...
+# ... (MCP Client Class same as before) ...
 
-async def ensure_mcp():
-    """Retrieve the client for the CURRENT context."""
-    client = _mcp_ctx.get()
-    if not client:
-        raise RuntimeError("MCP Client not initialized for this context")
-    return client
-
-# --- 2. TOOL WRAPPERS ---
-async def my_tool(arg1: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    # verify tool name matches MCP server spec exactly!
-    return await client.call_tool("my_tool", {"arg1": arg1}) 
-
-# --- 3. AGENT SETUP ---
-# ... (Standard Agent, App, Plugin setup) ...
-
-# --- 4. EXECUTION LOGIC (Lifecycle Management + Session Tracking) ---
-async def process_request_async(
-    prompt_or_payload: Any,
-    user_email: str = None
-) -> str:
-    """
-    Process request with session tracking support.
-    
-    Args:
-        prompt_or_payload: Can be string (simple) or dict (with session_id + headers)
-        user_email: User email for logging
-    """
-    # A. Extract session_id from payload for Phoenix session grouping
-    session_id = None
-    trace_context = {}
-    
+# --- 3. EXECUTION LOGIC ---
+async def process_request_async(prompt_or_payload: Any, session_id: str = None, user_email: str = None):
+    # Extract from payload if not provided as direct args
     if isinstance(prompt_or_payload, dict):
-        session_id = prompt_or_payload.get("session_id")
-        trace_context = prompt_or_payload.get("headers", {})
-        prompt = prompt_or_payload.get("message") or prompt_or_payload.get("prompt")
-    else:
-        prompt = prompt_or_payload
+        session_id = session_id or prompt_or_payload.get("session_id")
+        user_email = user_email or prompt_or_payload.get("user_email")
     
-    # B. Extract parent trace context for span linking
-    parent_ctx = propagate.extract(trace_context) if trace_context else None
-    tracer = trace.get_tracer(__name__)
+    # Set Context for _report_progress
+    if session_id: _session_id_ctx.set(session_id)
+    if user_email: _user_email_ctx.set(user_email)
     
-    # C. Create span with session.id attribute
-    with tracer.start_as_current_span(
-        "my_agent_operation",
-        context=parent_ctx,
-        attributes={
-            SpanAttributes.OPENINFERENCE_SPAN_KIND: "CHAIN",
-            "agent.name": "my-agent",
-            "agent.type": "specialist"
-        }
-    ) as span:
-        # D. Set session.id for Phoenix session grouping
-        if session_id and span and span.is_recording():
-            span.set_attribute(SpanAttributes.SESSION_ID, session_id)
-            logger.info(f"[{session_id}] MyAgent: Set session.id on span")
-        
-        # E. Initialize MCP Client for THIS Scope
-        mcp = MyMCPClient()
-        token_reset = _mcp_ctx.set(mcp)  # Bind to ContextVar
-        
-        try:
-            # F. Connect
-            await mcp.connect()
-            
-            # G. Run Agent
-            async with InMemoryRunner(app=app) as runner:
-                await runner.session_service.create_session(
-                    app_name="finopti_my_agent",
-                    user_id="default",
-                    session_id="default"
-                )
-                message = types.Content(parts=[types.Part(text=prompt)])
-                response_text = ""
-                async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
-                    if hasattr(event, 'content') and event.content:
-                        for part in event.content.parts:
-                            if part.text: 
-                                response_text += part.text
-                return response_text
-        finally:
-            # H. Cleanup
-            await mcp.close()
-            _mcp_ctx.reset(token_reset)  # Unbind to prevent leaks
+    # Initialize Redis Publisher
+    pub = RedisEventPublisher("My Agent", "Specialist")
+    _redis_publisher_ctx.set(pub)
+    
+    # Report initial status
+    await _report_progress("Starting specialized task...", icon="🚀")
+
+    # ... (Rest of Agent run loop) ...
+    # Inside tool calls:
+    # await _report_progress(f"Calling tool X", event_type="TOOL_CALL", icon="🛠️")
+
 
 def process_request(prompt_or_payload: Any, user_email: str = None) -> str:
     return asyncio.run(process_request_async(prompt_or_payload, user_email))
 ```
 
-### 2. `verify_agent.py` (MANDATORY)
+### 2. `main.py` (The Pattern)
+
+Your entrypoint must propagate `session_id` and `user_email` to the core agent logic.
+
+```python
+@app.route('/execute', methods=['POST'])
+def execute():
+    data = request.json
+    prompt = data.get('prompt')
+    session_id = data.get('session_id')
+    user_email = data.get('user_email')  # <-- MANDATORY: Extract for Redis targeting
+    
+    # Validation
+    if not prompt: return jsonify({"error": "No prompt"}), 400
+    
+    try:
+        # Run agent
+        result = process_request(prompt, session_id=session_id, user_email=user_email)
+        return jsonify({"response": result})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+```
+
+### 3. `verify_agent.py` (MANDATORY)
 
 Verification scripts MUST use the valid OAuth token to test accurately.
 
@@ -531,6 +502,7 @@ For complete examples, see:
 
 ## Version History
 
+- **v5.0 (2026-02-13)**: Integrated Redis Event Bridge requirements, standardized event types (TOOL_CALL, etc.), and mandatory user_email propagation for live streaming
 - **v4.0 (2026-02-07)**: Added comprehensive observability implementation section (#7) with Phoenix session tracking patterns, examples, and troubleshooting
 - **v3.0 (2026-01-21)**: Added context isolation rules and asyncio safety requirements
 - **v2.0 (2026-01-15)**: Initial standardization of agent patterns

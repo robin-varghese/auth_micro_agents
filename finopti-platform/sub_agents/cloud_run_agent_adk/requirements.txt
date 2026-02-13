@@ -13,3 +13,6 @@ arize-phoenix>=4.0.0
 openinference-instrumentation-google-adk>=0.1.0
 opentelemetry-sdk
 opentelemetry-exporter-otlp
+
+redis>=5.0.0
+pydantic>=2.0.0

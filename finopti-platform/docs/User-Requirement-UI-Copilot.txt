@@ -1,0 +1,47 @@
+Functional Goal: I have built a agentic platform in an microservices architecture. This platform consists of an UI interface where user interacts with the system and every request is responded by group of Ai agents again deployed as micro agents in separate containers. Now I am facing a new challenge. For certain requests, it might take 10-15 minutes to get the final results. In the UI there is only one revolving icon to show the progress. Its really boring for the user not to get any update from the agents on the progress. I want this challenge to be addressed with regular updates from the agentic operations.
+I have already integrated Redis Db for session management. I am thinking of pushing messages from every agent, before and after the operations into this session object. Then in the UI I can have an listener which will fetch these messages respective to the session and render it in the UI so that user is regularly informed about the progress.
+
+----****UI Changes****----
+TASK 1: channel creator: When a new session is started, a corresponding pub/sub channel should be created in Redis.
+Implementation Strategy for the Routing Key (The "Address")
+Instead of pushing to global_queue, the Agent constructs a dynamic key:
+channel:user_{user_id}:session_{session_id}
+
+TASK 2: Message Listerner: when ever there is an message available in the channel, it should be read and rendered according to the message type and format defined. The message pay load will be in json format. 
+
+TASK 3: As previously implemented, session ID should be generated and passed from the frontend to the backend/agents.
+a. This session ID will be used for agent observability implementation of Arize Phoenix.
+b.  (Agentic operations) This user_{user_id}:session_{session_id}+agent message is pushed into Redis pub/sub respective channel.
+
+----****REDIS Channel Implementation****----
+Redis pub/sub needs to be implemented for the UI to get the agent responses in real time. Redis Pub/Sub: Solves the "Transport" problem (getting data from deep micro-agents to the API surface instantly).
+
+TASK 4: The Architecture: "The Event Bridge"
+In an enterprise microservices setup, you cannot have the UI connect directly to Redis. You need a secure "Gateway" or "BFF" (Backend for Frontend) in the middle.
+The Flow:
+UI: User sends a request.
+API Gateway: Assigns a request_id linked to the user's session_id. Pushes the job to a Task Queue (e.g., Celery/Redis List).
+UI: Immediately subscribes to a WebSocket/SSE endpoint: /updates/{session_id}/{request_id}.
+
+Message Push Implementation: UI->API Gateway->Redis Client->Redis
+Message Pull Implementation: Redis->Redis Client->API Gateway->UI
+
+Inoder to implement this architecture, develop a new microservice for API Gateway. There can be 4. different operations that needs to be implemented in this API Gateway.
+a. create a new channel for each session ID in Redis
+b. Push messages into the respective Redis channel
+c. Pull messages from the respective Redis channel
+d. drop channel when session is terminated
+
+TASK 5: Since all agents and compoenets are deployed as microservices, we need to containerize the solution in a way that can be deployed as Docker containers.
+
+explanation for point d:
+Clearing of old session data from Redis DB needs to be implemented. So when user clicks on top right button (New Session or conversation) it should clear the old session data (associated with previous session_ID) and start a new session. Inthis platform we don't have requirement to maintain conversation history.
+
+----****APISIX Changes****----
+Connection Limits:
+Redis Pub/Sub is very fast, but keeping 10,000 HTTP connections open (waiting for updates) is heavy on your Load Balancer.
+TASK 6: Fix: Ensure your API Gateway uses an asynchronous server (like Uvicorn for Python or Node.js). Do not use synchronous workers (like Gunicorn sync workers) for streaming endpoints.
+Since this platform will be used by concurrent users, we need to implement the solution in a way that can handle concurrent users and sessions are isolated.In Redis Pub/Sub, we achieve this by Namespacing Channels.
+
+----****Agent Message Publishing****----
+TASK 7: use ADK Agent callbacks to push messages to Redis Pub/Sub->https://google.github.io/adk-docs/callbacks/types-of-callbacks/

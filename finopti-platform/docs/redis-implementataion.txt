@@ -1,0 +1,119 @@
+To provide a "neat" user experience that replaces the boring spinner with meaningful insights, your JSON structure needs to handle Process Visibility. It shouldn't just be a text log; it needs to tell the UI how to render the information (e.g., as a progress bar, a code block, a status badge, or a simple thought bubble).
+Based on the Google ADK event principles (which emphasize clear distinction between Headers, Payloads, and Event Types) and your Microservices architecture, here is the recommended Standard Agent Event Schema.
+The JSON Structure
+Every message pushed to Redis should follow this strict envelope.
+code
+JSON
+{
+  "header": {
+    "event_id": "uuid-v4-string",
+    "timestamp": "2023-10-27T10:15:30Z",
+    "trace_id": "job-123-abc", 
+    "agent_name": "Log_Analyzer_Bot",
+    "agent_role": "Investigator"
+  },
+  "type": "STATUS_UPDATE", 
+  "payload": {
+    "message": "Scanning server logs for error patterns...",
+    "severity": "INFO",
+    "progress": 25,
+    "metadata": {
+      "target_host": "192.168.1.5",
+      "log_file": "/var/log/syslog"
+    }
+  },
+  "ui_rendering": {
+    "display_type": "step_progress", 
+    "icon": "🔍",
+    "color": "blue"
+  }
+}
+Field Definitions
+1. Header (Meta Information)
+Used by your frontend to sort messages and identify who is talking.
+trace_id: The global Session/Job ID.
+agent_name: The specific microservice (e.g., "SQL Optimizer", "Security Scanner").
+agent_role: Helps the UI group messages (e.g., all "Investigator" messages on the left, "Executor" messages on the right).
+2. Type (The Event Category)
+This is the most important field for your UI logic. It dictates the "Category" of the update.
+LIFECYCLE: Agent starting or stopping.
+THOUGHT: Internal reasoning (the "Why"). Shows the user the agent is "thinking."
+ACTION: The agent is performing an external tool call (API, DB query).
+STATUS_UPDATE: General progress (e.g., "Step 2 of 5").
+ARTIFACT: The agent generated a result (JSON, Code, Image).
+ERROR: Something went wrong.
+3. Payload (The Content)
+The actual data to display.
+message: Human-readable text (one or two sentences).
+severity: INFO, WARN, ERROR, SUCCESS.
+progress: An integer (0-100) if applicable.
+metadata: Technical details (JSON object) that can be hidden behind a "Show Details" dropdown in the UI.
+4. UI Rendering (The Hints)
+This decoupling allows the backend to control the "Vibe" of the frontend without changing frontend code.
+display_type: toast, timeline_item, code_block, markdown, alert.
+icon: A specific emoji or icon name to render next to the message.
+Examples for Different Stages of Troubleshooting
+Here is how different agents would push messages during that 15-minute wait.
+A. The "I am thinking" Message (Reasoning)
+Use this when the agent is planning. This builds trust.
+code
+JSON
+{
+  "header": { ... },
+  "type": "THOUGHT",
+  "payload": {
+    "message": "The database is timing out. I suspect a deadlock. I will now check the active transaction locks.",
+    "severity": "INFO"
+  },
+  "ui_rendering": {
+    "display_type": "markdown",
+    "icon": "🧠"
+  }
+}
+B. The "I am doing work" Message (Action)
+Use this to show movement during long waits.
+code
+JSON
+{
+  "header": { ... },
+  "type": "ACTION",
+  "payload": {
+    "message": "Executing Query: SELECT * FROM pg_locks...",
+    "progress": 45,
+    "metadata": {
+      "query_latency": "pending"
+    }
+  },
+  "ui_rendering": {
+    "display_type": "console_log", 
+    "icon": "⚙️"
+  }
+}
+C. The "I found something" Message (Success/Artifact)
+Use this when a sub-agent completes a task.
+code
+JSON
+{
+  "header": { ... },
+  "type": "ARTIFACT",
+  "payload": {
+    "message": "Deadlock detected on Table 'Orders'.",
+    "severity": "SUCCESS",
+    "metadata": {
+      "process_id": 8922,
+      "wait_time": "600s"
+    }
+  },
+  "ui_rendering": {
+    "display_type": "alert_success",
+    "icon": "✅"
+  }
+}
+How to Implement this in your UI
+Since you are pushing this to Redis Pub/Sub:
+Frontend Listener: When the UI receives the JSON:
+Check type.
+If type == 'THOUGHT': Render a grey "bubble" or italic text.
+If type == 'ACTION': Update the progress bar to the payload.progress value.
+If type == 'ARTIFACT': Render a Card with the results.
+Visual History: Append these messages to a list. This creates a "Live Activity Feed" (like a scrolling terminal or chat window) so the user sees a constant stream of activity, making the 15 minutes feel engaged rather than stalled.

@@ -17,6 +17,11 @@ import requests
 import json
 from datetime import datetime
 import oauth_helper
+import threading
+import uuid
+import time
+import concurrent.futures
+import queue
 
 # Page configuration
 st.set_page_config(
@@ -40,7 +45,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-import time
 
 # Initialize session state
 if 'authenticated' not in st.session_state:
@@ -70,10 +74,10 @@ if 'active_session_id' not in st.session_state:
 APISIX_URL = "http://apisix:9080"
 ORCHESTRATOR_ASK = f"{APISIX_URL}/orchestrator/ask"  # CHANGED: Use routing orchestrator, not direct MATS
 MATS_JOBS = f"{APISIX_URL}/agent/mats/jobs"  # Keep for troubleshooting-specific flows if needed
+ORCHESTRATOR_JOBS = f"{APISIX_URL}/orchestrator/jobs" # Assuming this endpoint exists for polling
 
 # ... (Auth and Helpers)
 
-import uuid
 from opentelemetry import trace, propagate
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
@@ -93,9 +97,14 @@ def _get_trace_header(trace_id: str, span_id: str = None):
         span_id = uuid.uuid4().hex[:16]
     return f"00-{trace_id}-{span_id}-01"
 
-def start_job(prompt: str, trace_id: str = None, session_id: str = None) -> dict:
+def start_job(prompt: str, user_email: str, trace_id: str = None, session_id: str = None, stream_ready_event: threading.Event = None) -> dict:
     """Send request to orchestrator for intelligent routing"""
     try:
+        # SYNC: Wait for Redis Stream connection to be ready before firing the request
+        if stream_ready_event:
+            # Wait up to 5 seconds for the stream to connect
+            stream_ready_event.wait(timeout=5)
+
         headers = oauth_helper.get_auth_headers()
         
         # 1. Trace Propagation Logic
@@ -110,6 +119,10 @@ def start_job(prompt: str, trace_id: str = None, session_id: str = None) -> dict
         # CRITICAL: Pass session ID for Phoenix session grouping
         if session_id:
             headers["X-Session-ID"] = session_id
+        
+        # CRITICAL FIX: Pass identity to Orchestrator
+        if user_email:
+            headers["X-User-Email"] = user_email
 
         payload = {"prompt": prompt}
         
@@ -121,7 +134,8 @@ def start_job(prompt: str, trace_id: str = None, session_id: str = None) -> dict
             timeout=1800  # 30 minutes for MATS investigations
         )
         
-        if response.status_code == 200:
+        # CHANGED: Accept 202 (Accepted/Async) as success
+        if response.status_code in [200, 202]:
             data = response.json()
             # Store trace_id in response for UI tracking if needed
             data["trace_id"] = trace_id 
@@ -154,150 +168,104 @@ def poll_job(job_id: str, trace_id: str = None) -> dict:
     except:
         return {"error": "Poll error"}
 
-# ... (Sidebar)
+def poll_until_complete(job_id: str, trace_id: str = None) -> dict:
+    """Poll job status until terminal state"""
+    # Max poll time: 30 minutes
+    end_time = time.time() + 1800
+    while time.time() < end_time:
+        result = poll_job(job_id, trace_id)
+        status = result.get("status")
+        
+        if status in ["COMPLETED", "SUCCESS", "FAILURE", "MISROUTED", "WAITING_FOR_USER", "SKIPPED", "PARTIAL"]:
+            return result
+        
+        if "error" in result and "Job not found" not in result["error"]:
+             # If error interacting with API, return it
+             return result
+             
+        time.sleep(2)
+        
+    return {"error": "Polling timed out"}
 
-# Main Content
-if not st.session_state.authenticated:
-    # ... (Login Page)
-    pass
-else:
-    # Handle Resume via URL
-    if "trace_id" in st.query_params and not st.session_state.active_trace_id:
-        st.session_state.active_trace_id = st.query_params["trace_id"]
-        st.toast(f"Resumed Trace: {st.session_state.active_trace_id}")
+# Redis Gateway Client
+REDIS_GATEWAY_URL = "http://finopti-redis-gateway:8000"
 
-    # Display Session ID prominently at top
-    col_session, col_new = st.columns([4, 1])
-    with col_session:
-        st.title("MATS Chat 💬")
-        # Auto-generate session if not exists
-        if not st.session_state.get('active_session_id'):
-            st.session_state.active_session_id = _generate_trace_id()
-        
-        # Display Session ID prominently
-        st.info(f"📋 **Session ID:** `{st.session_state.active_session_id}`")
-        st.caption("Use this Session ID for troubleshooting in Phoenix: http://localhost:6006")
-    
-    with col_new:
-        if st.button("➕ New Investigation", help="Start a fresh investigation with new session ID"):
-            # Reset session ID to start new investigation session
-            st.session_state.active_session_id = _generate_trace_id()
-            st.session_state.active_job_id = None
-            st.session_state.messages = []
-            st.rerun()
-    
-    # Display chat messages
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-    
-    # Chat input logic
-    user_input = st.chat_input("Ask me to perform GCloud or Monitoring operations...")
-    
-    if st.session_state.pending_prompt:
-        user_input = st.session_state.pending_prompt
-        st.session_state.pending_prompt = None
-    
-    # Unified Logic: Determine if we have a job to run (New or Existing)
-    current_job_id = None
-    
-    # Job Status Placeholders
-    job_creation_status = st.empty()
-    
-    # Check if we have a pending message to process (from previous rerun)
-    if "processing_message" in st.session_state:
-        # Second pass: Process the message and get response
-        processing_msg = st.session_state.processing_message
-        del st.session_state.processing_message  # Clear flag immediately
-        
-        # Start/Resume Job
-        with st.chat_message("assistant"):
-             with job_creation_status.status("🚀 Initializing...", expanded=True) as status_ptr:
-                 try:
-                      # CRITICAL: Pass session_id (persistent) but NOT trace_id (per-request)
-                      # start_job will generate a NEW trace_id for each request
-                      response_data = start_job(
-                          processing_msg, 
-                          trace_id=None,  # Let start_job generate new trace_id
-                          session_id=st.session_state.active_session_id  # Session persists across requests
-                      )
-                      
-                      if "error" in response_data:
-                          status_ptr.update(label="❌ Error", state="error")
-                          error_msg = response_data["error"]
-                          st.error(error_msg)
-                          # Add error to message history
-                          st.session_state.messages.append({"role": "assistant", "content": f"❌ Error: {error_msg}"})
-                      else:
-                          # SUCCESS - Display response immediately (synchronous)
-                          status_ptr.update(label="✅ Complete", state="complete")
-                          
-                          response_text = ""
-                          
-                          # Check if this was routed to MATS (which returns status/error format)
-                          if "status" in response_data:
-                              # MATS response format
-                              if response_data.get("status") == "MISROUTED":
-                                  error_text = response_data.get("error", "Request was misrouted")
-                                  st.error(error_text)
-                                  response_text = f"❌ {error_text}"
-                                  if "suggestion" in response_data:
-                                      suggestion = response_data["suggestion"]
-                                      st.info(suggestion)
-                                      response_text += f"\n\n💡 {suggestion}"
-                              else:
-                                  st.write(response_data)
-                                  response_text = str(response_data)
-                          # Check for orchestrator routing response
-                          elif "orchestrator" in response_data:
-                              # Display routing info
-                              orchestrator_info = response_data.get("orchestrator", {})
-                              if "target_agent" in orchestrator_info:
-                                  routing_info = f"🎯 Routed to: **{orchestrator_info['target_agent']}**"
-                                  st.info(routing_info)
-                                  response_text = routing_info + "\n\n"
-                              
-                              # Display agent response
-                              if "response" in response_data:
-                                  agent_resp = response_data["response"]
-                                  st.write(agent_resp)
-                                  response_text += str(agent_resp)
-                              elif "data" in response_data:
-                                  agent_resp = response_data["data"]
-                                  st.write(agent_resp)
-                                  response_text += str(agent_resp)
-                              else:
-                                  st.write(response_data)
-                                  response_text += str(response_data)
-                          else:
-                              # Generic response
-                              st.write(response_data)
-                              response_text = str(response_data)
-                          
-                          # Add response to message history
-                          st.session_state.messages.append({"role": "assistant", "content": response_text})
-                          
-                          # Clear pending prompt
-                          st.session_state.pending_prompt = None
-                          st.session_state.active_job_id = None  # No job polling needed
-                          
-                 except Exception as e:
-                      status_ptr.update(label="❌ Error", state="error")
-                      error_msg = str(e)
-                      st.error(error_msg)
-                      st.session_state.messages.append({"role": "assistant", "content": f"❌ Error: {error_msg}"})
-    
-    # 1. Handle New User Input
-    elif user_input:
-        is_waiting = (st.session_state.get('job_status') == "WAITING_FOR_USER")
-        
-        if st.session_state.active_job_id and not is_waiting:
-             st.warning("⚠️ Another job is already running. Please wait.")
+def init_redis_channel(user_id: str, session_id: str):
+    """
+    Task 1: Call Redis Gateway to initialize the session channel.
+    This ensures the backend is ready to receive messages for this session.
+    """
+    try:
+        payload = {
+            "user_id": user_id,
+            "session_id": session_id
+        }
+        response = requests.post(f"{REDIS_GATEWAY_URL}/session/init", json=payload, timeout=2)
+        if response.status_code == 200:
+            data = response.json()
+            # Optional: Store channel name if needed, but the convention is deterministic
+            return data
         else:
-            # First pass: Add user message to history and trigger rerun for processing
-            st.session_state.messages.append({"role": "user", "content": user_input})
-            st.session_state.processing_message = user_input
-            st.rerun()
+            print(f"Warning: Failed to init Redis channel: {response.text}")
+    except Exception as e:
+        print(f"Warning: Redis Gateway unavailable: {e}")
+
+# --- UI Rendering Logic ---
+def render_event(event_data, status_container):
+    """
+    Renders a Redis event based on ui_rendering specification.
+    """
+    try:
+        ui = event_data.get("ui_rendering", {})
+        payload = event_data.get("payload", {})
+        header = event_data.get("header", {})
+        
+        display_type = ui.get("display_type", "markdown")
+        icon = ui.get("icon", "🤖")
+        message = payload.get("message", "")
+        agent_role = header.get("agent_role", "Agent")
+        
+        # 1. Toast Notification
+        if display_type == "toast":
+            st.toast(message, icon=icon)
+            
+        # 2. Step Progress (Spinner Update)
+        elif display_type == "step_progress":
+            status_container.update(label=f"{icon} {message}", state="running")
+            # Optionally write to expanded status to keep history
+            status_container.write(f"{icon} {message}")
+            
+        # 3. Markdown (Chat Bubble)
+        elif display_type == "markdown":
+            with st.chat_message(agent_role, avatar=icon):
+                st.markdown(message)
+            
+            if event_data.get("type") in ["THOUGHT", "ARTIFACT"]:
+                 st.session_state.messages.append({
+                     "role": "assistant", 
+                     "content": message,
+                     "avatar": icon,
+                     "agent_role": agent_role
+                 })
+
+        # 4. Code Block
+        elif display_type == "code_block":
+            with st.chat_message(agent_role, avatar=icon):
+                st.code(message, language=payload.get("metadata", {}).get("language", "json"))
+
+        # 5. Console Log
+        elif display_type == "console_log":
+            with st.expander(f"{icon} Logs"):
+                 st.text(message)
+
+        # 6. Alerts
+        elif display_type == "alert":
+            st.error(message, icon=icon)
+        elif display_type == "alert_success":
+            st.success(message, icon=icon)
+
+    except Exception as e:
+        print(f"Render Error: {e}")
 
 
 # User profiles for simulated login
@@ -319,8 +287,6 @@ AVAILABLE_USERS = {
     }
 }
 
-
-
 def login_simulated(user_email: str):
     """Simulate user login (development mode)"""
     st.session_state.authenticated = True
@@ -331,6 +297,8 @@ def login_simulated(user_email: str):
     # Auto-generate session ID on login
     if not st.session_state.get('active_session_id'):
         st.session_state.active_session_id = _generate_trace_id()
+        # Task 1: Init Redis Channel on login
+        init_redis_channel(user_email, st.session_state.active_session_id)
     st.success(f"Logged in as {AVAILABLE_USERS[user_email]['name']} (Simulated)")
 
 def logout():
@@ -471,10 +439,6 @@ with st.sidebar:
     # st.title("🤖 MATS")
     st.markdown("---")
     
-    # Show OAuth status
-    # Removed as per user request
-
-    
     if not st.session_state.authenticated:
         # Tab for OAuth vs Simulated auth
         if oauth_helper.is_oauth_enabled():
@@ -604,3 +568,248 @@ with st.sidebar:
     st.caption("MATS Platform v1.0")
 
 
+# Main Content - Execution
+if not st.session_state.authenticated:
+    # Login prompt (handled by sidebar for now, or could be a main page welcome)
+    st.info("Please login from the sidebar to continue.")
+else:
+    # Handle Resume via URL
+    if "trace_id" in st.query_params and not st.session_state.active_trace_id:
+        st.session_state.active_trace_id = st.query_params["trace_id"]
+        st.toast(f"Resumed Trace: {st.session_state.active_trace_id}")
+
+    # Display Session ID prominently at top
+    col_session, col_new = st.columns([4, 1])
+    with col_session:
+        st.title("MATS Chat 💬")
+        # Auto-generate session if not exists
+        if not st.session_state.get('active_session_id'):
+            st.session_state.active_session_id = _generate_trace_id()
+            # Task 1: Init Redis Channel on first load
+            user_id = st.session_state.get('user_email', 'anonymous')
+            init_redis_channel(user_id, st.session_state.active_session_id)
+        
+        # Display Session ID prominently
+        st.info(f"📋 **Session ID:** `{st.session_state.active_session_id}`")
+        st.caption("Use this Session ID for troubleshooting in Phoenix: http://localhost:6006")
+    
+    with col_new:
+        if st.button("➕ New Investigation", help="Start a fresh investigation with new session ID"):
+            # Reset session ID to start new investigation session
+            st.session_state.active_session_id = _generate_trace_id()
+            # Task 1: Init Redis Channel on manual reset
+            user_id = st.session_state.get('user_email', 'anonymous')
+            init_redis_channel(user_id, st.session_state.active_session_id)
+            
+            st.session_state.active_job_id = None
+            st.session_state.messages = []
+            st.rerun()
+    
+    # Display chat messages
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+    
+    # Chat input logic
+    user_input = st.chat_input("Ask me to perform GCloud or Monitoring operations...")
+    
+    if st.session_state.pending_prompt:
+        user_input = st.session_state.pending_prompt
+        st.session_state.pending_prompt = None
+    
+    # Unified Logic: Determine if we have a job to run (New or Existing)
+    current_job_id = None
+    
+    # Job Status Placeholders
+    job_creation_status = st.empty()
+    
+    # Check if we have a pending message to process (from previous rerun)
+    if "processing_message" in st.session_state:
+        # Second pass: Process the message and get response
+        processing_msg = st.session_state.processing_message
+        del st.session_state.processing_message  # Clear flag immediately
+        
+    # ... (Start/Resume Job)
+        with st.chat_message("assistant"):
+             status_container = st.status("🚀 Initiating...", expanded=True)
+             
+             user_id = st.session_state.get('user_email', 'anonymous')
+             session_id = st.session_state.active_session_id
+             
+             # RACE CONDITION FIX: Event to signal when stream is connected
+             stream_ready = threading.Event()
+
+             executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+             
+             # Phase 1: Submit the Job
+             future = executor.submit(
+                 start_job, 
+                 processing_msg, 
+                 user_id,
+                 trace_id=None, 
+                 session_id=session_id,
+                 stream_ready_event=stream_ready
+             )
+             
+             # State to track if we have transitioned to polling
+             is_polling = False
+             
+             # Queue for stream events
+             event_queue = queue.Queue()
+             stop_stream = threading.Event()
+             
+             def consume_stream(url):
+                 try:
+                     with requests.get(url, stream=True, timeout=1800) as stream_resp:
+                         if stream_resp.status_code == 200:
+                             stream_ready.set()
+                             
+                         for line in stream_resp.iter_lines():
+                             if stop_stream.is_set():
+                                 break
+                             if line:
+                                 event_queue.put(line)
+                 except Exception as e:
+                     print(f"Stream error: {e}")
+                 finally:
+                     stream_ready.set() # Ensure we don't block start_job
+             
+             try:
+                 # CONSUME STREAM (Task 3: Streaming)
+                 stream_url = f"{REDIS_GATEWAY_URL}/stream/{user_id}/{session_id}"
+                 
+                 # Start background thread for stream
+                 stream_thread = threading.Thread(target=consume_stream, args=(stream_url,), daemon=True)
+                 stream_thread.start()
+                 
+                 # Main Event Loop
+                 while True:
+                     # 1. Check if the current task (Submission OR Polling) is done
+                     if future.done():
+                         result = future.result()
+                         
+                         if not is_polling:
+                             # Submission phase complete. Check if we need to poll.
+                             if result.get("status") in ["RUNNING", "RESUMED", "PENDING"]:
+                                 job_id = result.get("job_id")
+                                 if job_id:
+                                     # Transition to Polling Phase
+                                     is_polling = True
+                                     st.session_state.active_job_id = job_id
+                                     # Submit Polling Task
+                                     future = executor.submit(poll_until_complete, job_id)
+                                     continue # Continue loop
+                             else:
+                                 # Sync result or Error - WE ARE DONE
+                                 stop_stream.set()
+                                 break
+                         else:
+                             # Polling phase complete. We have the final result. - WE ARE DONE
+                             stop_stream.set()
+                             break
+                     
+                     # 2. Process Events from Queue (Non-blocking)
+                     try:
+                         # Wait for 0.1s to allow UI to be responsive and check future.done()
+                         line = event_queue.get(timeout=0.1)
+                         line_text = line.decode('utf-8')
+                         if line_text.startswith("data: "):
+                             try:
+                                 event_data = json.loads(line_text[6:])
+                                 render_event(event_data, status_container)
+                             except json.JSONDecodeError:
+                                 pass
+                     except queue.Empty:
+                         continue
+                 
+             except Exception as e:
+                 # If stream fails (e.g. timeout), just ignore and wait for result
+                 print(f"Main loop error: {e}")
+                 stop_stream.set()
+                 stream_ready.set()
+             
+             # Get Final Result
+             try:
+                 response_data = future.result()
+                 
+                 if "error" in response_data:
+                      status_container.update(label="❌ Error", state="error")
+                      st.error(response_data["error"])
+                      st.session_state.messages.append({"role": "assistant", "content": f"❌ Error: {response_data['error']}"})
+                 else:
+                      status_container.update(label="✅ Complete", state="complete")
+                      
+                      # ... (Format Response Logic) ...
+                      response_text = ""
+                      should_display = True
+
+                      # Check if this was routed to MATS
+                      if "status" in response_data:
+                           if response_data.get("status") == "MISROUTED":
+                               error_text = response_data.get("error", "Request was misrouted")
+                               st.error(error_text)
+                               response_text = f"❌ {error_text}"
+                               if "suggestion" in response_data:
+                                   suggestion = response_data["suggestion"]
+                                   st.info(suggestion)
+                                   response_text += f"\n\n💡 {suggestion}"
+                           else:
+                               # Check for 'response' field first (standard)
+                               if "response" in response_data:
+                                   response_text = str(response_data["response"])
+                               elif "result" in response_data:
+                                    # Handle nested result from JobManager
+                                    res = response_data["result"]
+                                    if isinstance(res, dict) and "response" in res:
+                                        response_text = res["response"]
+                                    else:
+                                        response_text = str(res)
+                               else:
+                                   response_text = str(response_data)
+                                   
+                      elif "orchestrator" in response_data:
+                           # Display routing info
+                           orchestrator_info = response_data.get("orchestrator", {})
+                           if "target_agent" in orchestrator_info:
+                               routing_info = f"🎯 Routed to: **{orchestrator_info['target_agent']}**"
+                               response_text = routing_info + "\n\n"
+                           
+                           # Display agent response
+                           if "response" in response_data:
+                               agent_resp = response_data["response"]
+                               response_text += str(agent_resp)
+                           elif "data" in response_data:
+                               agent_resp = response_data["data"]
+                               response_text += str(agent_resp)
+                           else:
+                               response_text += str(response_data)
+                      else:
+                           response_text = str(response_data)
+                      
+                      # DEDUPLICATION CHECK
+                      last_msg = st.session_state.messages[-1] if st.session_state.messages else {}
+                      if last_msg.get("content") == response_text or (response_text and response_text in last_msg.get("content", "")):
+                           should_display = False
+                      
+                      if should_display:
+                           st.write(response_text)
+                           st.session_state.messages.append({"role": "assistant", "content": response_text})
+                      
+                      st.session_state.pending_prompt = None
+                      st.session_state.active_job_id = None
+                      
+             except Exception as e:
+                  status_container.update(label="❌ Error", state="error")
+                  st.error(str(e))
+    
+    # 1. Handle New User Input
+    elif user_input:
+        is_waiting = (st.session_state.get('job_status') == "WAITING_FOR_USER")
+        
+        if st.session_state.active_job_id and not is_waiting:
+             st.warning("⚠️ Another job is already running. Please wait.")
+        else:
+            # First pass: Add user message to history and trigger rerun for processing
+            st.session_state.messages.append({"role": "user", "content": user_input})
+            st.session_state.processing_message = user_input
+            st.rerun()

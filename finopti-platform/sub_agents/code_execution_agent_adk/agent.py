@@ -8,6 +8,19 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+# Add Redis Publisher
+try:
+    if str(Path(__file__).parent) not in sys.path:
+        sys.path.append(str(Path(__file__).parent))
+
+    from redis_common.redis_publisher import RedisEventPublisher
+except ImportError as e:
+    sys.path.append(str(Path(__file__).parent.parent.parent / "redis-sessions" / "common"))
+    try:
+        from redis_publisher import RedisEventPublisher
+    except ImportError:
+        RedisEventPublisher = None
+
 from google.adk.agents import LlmAgent
 from google.adk.apps import App
 from google.adk.runners import InMemoryRunner
@@ -32,11 +45,37 @@ from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 # Initialize tracing
 tracer_provider = register(
-    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-code-execution-agent",
+    project_name="finoptiagents-CodeExecutionAgent",
     endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
     set_global_tracer_provider=True
 )
 GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+
+# --- CONTEXT ISOLATION & PROGRESS (Rule 1 & 6) ---
+from contextvars import ContextVar
+from opentelemetry import trace
+from openinference.semconv.trace import SpanAttributes
+
+_session_id_ctx: ContextVar[str] = ContextVar("session_id", default=None)
+_user_email_ctx: ContextVar[str] = ContextVar("user_email", default=None)
+_redis_publisher_ctx: ContextVar = ContextVar("redis_publisher", default=None)
+
+def _report_progress(message, event_type="STATUS_UPDATE", icon="🤖", display_type="markdown", metadata=None):
+    """Standardized progress reporting using context-bound session/user."""
+    pub = _redis_publisher_ctx.get()
+    sid = _session_id_ctx.get()
+    uid = _user_email_ctx.get() or "unknown"
+    if pub and sid:
+        try:
+            span_ctx = trace.get_current_span().get_span_context()
+            trace_id_hex = format(span_ctx.trace_id, '032x') if span_ctx.trace_id else "unknown"
+        except Exception:
+            trace_id_hex = "unknown"
+        pub.publish_event(
+            session_id=sid, user_id=uid, trace_id=trace_id_hex,
+            msg_type=event_type, message=message, display_type=display_type,
+            icon=icon, metadata=metadata
+        )
 
 # Agent Configuration
 APP_NAME = "code_execution_agent"
@@ -69,8 +108,18 @@ else:
 # -------------------------------------------------------------------------
 from common.model_resilience import run_with_model_fallback
 
-async def run_agent(prompt: str) -> str:
+async def run_agent(prompt: str, user_email: str = None, session_id: str = "default") -> str:
     """Run the agent with the given prompt."""
+    # --- CONTEXT SETTING (Rule 1 & 6) ---
+    _session_id_ctx.set(session_id)
+    _user_email_ctx.set(user_email or "unknown")
+
+    # Trace attribute setting (Rule 5)
+    span = trace.get_current_span()
+    if span and span.is_recording():
+        span.set_attribute(SpanAttributes.SESSION_ID, session_id or "unknown")
+        if user_email:
+            span.set_attribute("user_id", user_email)
     
     def create_app(model_name: str = None):
         model_to_use = model_name or config.FINOPTIAGENTS_LLM
@@ -101,24 +150,44 @@ async def run_agent(prompt: str) -> str:
             plugins=[bq_plugin]
         )
 
+    # Initialize Redis Publisher once
+    publisher = None
+    if RedisEventPublisher:
+            try:
+                publisher = RedisEventPublisher(
+                    agent_name="Code Execution Agent",
+                    agent_role="Python Specialist"
+                )
+                _redis_publisher_ctx.set(publisher)
+            except: pass
+
+    # Publish "Processing" event via standardized helper
+    _report_progress(f"Executing Python code...", icon="🐍", display_type="toast")
+
     try:
         async def _run_once(app_instance):
             final_response_text = ""
             async with InMemoryRunner(app=app_instance) as runner:
+                 sid = session_id
+                 uid = user_email or USER_ID
                  await runner.session_service.create_session(
                     app_name=APP_NAME,
-                    user_id=USER_ID,
-                    session_id=SESSION_ID
+                    user_id=uid,
+                    session_id=sid
                 )
                  
                  content = types.Content(role='user', parts=[types.Part(text=prompt)])
-                 
+
                  # Run the agent
                  async for event in runner.run_async(
-                    user_id=USER_ID,
-                    session_id=SESSION_ID,
+                    user_id=uid,
+                    session_id=sid,
                     new_message=content
                  ):
+                    # Stream Events
+                    if publisher:
+                        publisher.process_adk_event(event, session_id=sid, user_id=uid)
+
                     # Check for executable code parts for logging
                     if event.content and event.content.parts:
                         for part in event.content.parts:
@@ -146,6 +215,6 @@ async def run_agent(prompt: str) -> str:
         logger.error(f"Error running agent: {str(e)}", exc_info=True)
         return f"Error running agent: {str(e)}"
 
-def process_request(prompt: str) -> str:
+def process_request(prompt: str, user_email: str = None, session_id: str = "default") -> str:
     """Synchronous wrapper for run_agent."""
-    return asyncio.run(run_agent(prompt))
+    return asyncio.run(run_agent(prompt, user_email, session_id))

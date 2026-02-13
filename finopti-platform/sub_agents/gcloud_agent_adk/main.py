@@ -83,19 +83,21 @@ def execute():
         
         prompt = data['prompt']
         user_email = data.get('user_email', 'unknown')
+        session_id = data.get('session_id', 'default') # Extract session_id
         
         # Log request
         if STRUCTURED_LOGGING_AVAILABLE:
             logger.info(
                 "Received execution request",
                 user_email=user_email,
+                session_id=session_id,
                 prompt=prompt[:100] if len(prompt) > 100 else prompt
             )
         else:
-            logger.info(f"Received request from {user_email}: {prompt[:100]}")
+            logger.info(f"Received request from {user_email} (session: {session_id}): {prompt[:100]}")
         
         # Process with ADK agent
-        response_text = send_message(prompt, user_email)
+        response_text = send_message(prompt, user_email, session_id=session_id)
         
         # Log success
         if STRUCTURED_LOGGING_AVAILABLE:

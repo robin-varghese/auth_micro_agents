@@ -102,21 +102,27 @@ def ask():
         
         # Extract Authorization header
         auth_token = request.headers.get('Authorization')
+        
+        # Extract Session ID (default to trace ID or generated if missing)
+        session_id = request.headers.get('X-Session-ID')
+        if not session_id:
+             session_id = request.headers.get('X-Request-ID', 'default-session')
 
         # Log incoming request
         if STRUCTURED_LOGGING_AVAILABLE:
             logger.info(
                 "Received orchestration request",
                 user_email=user_email,
+                session_id=session_id,
                 prompt=prompt[:100] if len(prompt) > 100 else prompt,
                 project_id=project_id
             )
         else:
-            logger.info(f"Received request from {user_email}: {prompt[:100]}")
+            logger.info(f"Received request from {user_email} (session: {session_id}): {prompt[:100]}")
         
         # Process request
         from agent import process_request
-        result = process_request(prompt, user_email, project_id, auth_token)
+        result = process_request(prompt, user_email, project_id, auth_token, session_id)
         
         # Check if authorization failed
         if result.get('error') and '403' in result.get('message', ''):

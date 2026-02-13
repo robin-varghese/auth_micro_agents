@@ -23,6 +23,25 @@ import json
 
 from config import config
 from structured_logging import propagate_request_id
+from contextvars import ContextVar
+from opentelemetry.semconv.trace import SpanAttributes
+
+# Initialize logger early
+import logging
+logger = logging.getLogger(__name__)
+
+# Redis Publisher
+sys.path.append("/app/redis_common")
+try:
+    from redis_publisher import RedisEventPublisher
+except ImportError:
+    # Fallback if not mounted yet/running locally without path
+    try:
+        sys.path.append(str(Path(__file__).parent.parent.parent / "redis-sessions" / "common"))
+        from redis_publisher import RedisEventPublisher
+    except ImportError as e2:
+        logger.warning(f"RedisEventPublisher not found. Streaming disabled. Error: {e2}")
+        RedisEventPublisher = None
 
 # Observability
 from phoenix.otel import register
@@ -30,11 +49,41 @@ from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 # Initialize tracing
 tracer_provider = register(
-    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-orchestrator-adk",
+    project_name="finoptiagents-OrchestratorADK",
     endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
     set_global_tracer_provider=True
 )
 GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+
+# --- CONTEXT ISOLATION & PROGRESS (Rule 1 & 6) ---
+_session_id_ctx: ContextVar[str] = ContextVar("session_id", default=None)
+_user_email_ctx: ContextVar[str] = ContextVar("user_email", default=None)
+_redis_publisher_ctx: ContextVar["RedisEventPublisher"] = ContextVar("redis_publisher", default=None)
+
+async def _report_progress(message: str, event_type: str = "STATUS_UPDATE", icon: str = "🤖", display_type: str = "markdown", metadata: dict = None):
+    """Standardized progress reporting using context-bound session/user."""
+    pub = _redis_publisher_ctx.get()
+    sid = _session_id_ctx.get()
+    uid = _user_email_ctx.get() or "unknown"
+    
+    if pub and sid:
+        # Extract trace_id from current span for link back
+        try:
+            span_ctx = trace.get_current_span().get_span_context()
+            trace_id_hex = format(span_ctx.trace_id, '032x') if span_ctx.trace_id else "unknown"
+        except Exception:
+            trace_id_hex = "unknown"
+
+        pub.publish_event(
+            session_id=sid,
+            user_id=uid,
+            trace_id=trace_id_hex,
+            msg_type=event_type,
+            message=message,
+            display_type=display_type,
+            icon=icon,
+            metadata=metadata
+        )
 
 # Global Registry Cache
 _AGENT_REGISTRY = None
@@ -204,7 +253,7 @@ def check_opa_authorization(user_email: str, target_agent: str) -> dict:
         }
 
 
-async def route_to_agent(target_agent: str, prompt: str, user_email: str, project_id: str = None, auth_token: str = None) -> Dict[str, Any]:
+async def route_to_agent(target_agent: str, prompt: str, user_email: str, project_id: str = None, auth_token: str = None, session_id: str = None) -> Dict[str, Any]:
     """
     ADK tool: Route request to appropriate sub-agent using Master Registry.
     """
@@ -221,7 +270,8 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
                  "project_id": project_id or config.GCP_PROJECT_ID,
                  "repo_url": "https://github.com/robin-varghese/auth_micro_agents", # Default for this env
                  "user_request": prompt, # Updated from logic
-                 "user_email": user_email
+                 "user_email": user_email,
+                 "session_id": session_id # Pass session to MATS
              }
              
         # 2. Dynamic Routing for Sub-Agents (APISIX)
@@ -239,7 +289,8 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
                  
              payload = {
                 "prompt": prompt,
-                "user_email": user_email
+                "user_email": user_email,
+                "session_id": session_id # Pass session to Sub-Agent
              }
              if project_id:
                 payload["project_id"] = project_id
@@ -409,122 +460,123 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
         }
 
 
-# Create ADK Orchestrator Agent
-orchestrator_agent = Agent(
-    name="finopti_orchestrator",
-    model=config.FINOPTIAGENTS_LLM,
-    description="""
-    FinOps orchestration agent that intelligently routes user requests to specialized agents.
-    Manages infrastructure, monitoring, code, storage, and databases.
-    """,
-    instruction="""
-    You are the central orchestrator for the FinOptiAgents platform.
-    
-    Your responsibilities:
-    1. Understand user requests related to cloud operations.
-    2. Determine which specialized agent should handle the request.
-    3. Coordinate with the appropriate agent to fulfill the request.
-    
-    Available specialized agents:
-    - **gcloud**: Handles GCP infrastructure, operations, activity, and audit logs.
-    - **monitoring**: Handles metrics, logs, and observability queries.
-    - **github**: Handles GitHub repositories, issues, and PRs (NOT Google Cloud Source Repos).
-    - **storage**: Handles Google Cloud Storage buckets and objects.
-    - **storage**: Handles Google Cloud Storage buckets and objects.
-    - **db**: Handles SQL database queries (PostgreSQL).
-    - **cloud-run**: Handles Cloud Run services, jobs, and deployments.
-    - **brave**: Web search using Brave Search (privacy-focused).
-    - **filesystem**: Local file system operations (list, read, write).
-    - **analytics**: Google Analytics queries (traffic, users).
-    - **puppeteer**: Browser automation and screenshots.
-    - **sequential**: Deep reasoning for complex multi-step problems.
-    - **googlesearch**: Google Search (official) for internet queries.
-    - **code**: Execute Python code for calculations and data processing.
-    
-    Routing Logic Guidelines (CRITICAL - Follow Exactly):
-    
-    **GCloud Agent** - Use for generic GCP-related request (VMs, Networks):
-    - GCP operations: "list operations", "cloud operations", "recent changes"
-    - Infrastructure: "Create VM", "Delete disk", "List instances", "Show VMs"
-    - Cloud activity: "What changed", "Recent deployments", "Audit logs"
-    - GCP services: Compute Engine, GKE, Cloud Functions
-    - Resource management: "Resize VM", "Stop instance", "Network config"
-
-    **Cloud Run Agent** - Use for Cloud Run / Serverless Containers:
-    - "Deploy to Cloud Run", "List Cloud Run services"
-    - "Show revisions", "Update traffic split", "Cloud Run jobs"
-    - "Serverless deployment"
-    
-    **GitHub Agent** - Use ONLY for GitHub.com:
-    - "List GitHub repos", "Show my repositories on GitHub"
-    - "Find code in GitHub", "Show PRs", "Create issue"
-    - DO NOT use for Google Cloud Source Repositories
-    
-    **Storage Agent**:
-    - "List buckets", "Upload file to GCS", "Show blobs"
-    - "Download from bucket", "Get object metadata"
-    
-    **Database Agent**:
-    - "Query table", "Show schema", "SELECT * FROM"
-    - PostgreSQL-specific queries
-    
-    **Monitoring Agent**:
-    - "CPU usage", "Error logs", "Latency metrics"
-    - "Show logs from service X", "Memory consumption"
-
-    **Web Search Agents**:
-    - **brave**: "search brave for X", "find X online" (Privacy focus)
-    - **googlesearch**: "google X", "search internet for X" (General focus)
-    - Use these for external knowledge, current events, or documentation.
-
-    **Filesystem Agent**:
-    - "List files in directory", "Read file X", "Cat file Y"
-    
-    **Analytics Agent**:
-    - "Show website traffic", "User count for last week"
-    
-    **Puppeteer Agent**:
-    - "Take screenshot of google.com", "Browser automation"
-    
-    **Sequential Agent**:
-    - "Think step by step", "Plan a complex solution"
-    
-    **Code Execution Agent**:
-    - "Calculate fibonacci", "Run python script", "Solve math problem"
-    
-    **MATS Orchestrator** - Use ONLY for complex troubleshooting and root cause analysis:
-    - "Why did X fail?" (causality questions)
-    - "Debug this error in Y" (specific error investigation)
-    - "Find the root cause of the crash" (explicit RCA)
-    - "Troubleshoot the deployment failure" (multi-step diagnosis)
-    - "What caused the outage?" (incident analysis)
-    - "Investigate the failure/error/crash" (specific problem investigation)
-    
-    **DO NOT use MATS for simple operations**:
-    - ❌ "List VMs", "Show buckets", "Get logs" → Use specific agents instead
-    - ❌ "Create instance", "Delete bucket" → Use gcloud/storage agents
-    - ❌ "What are my resources?" → Use gcloud agent
-    - ❌ Generic "investigate" without failure context → Use appropriate agent
-    
-    **Key Rules:**
-    1. "operations in GCP/cloud/project" → **gcloud** (NEVER github)
-    2. Mention of "project ID" or "GCP Project" → **gcloud**
-    3. "GitHub repos/code" → **github**  
-    4. "troubleshoot/debug/fix" complex issues → **mats-orchestrator**
-    5. Default for infrastructure → **gcloud**
-    
-    WARNING: Do NOT route "cloud project" or "project operations" to the github agent. The github agent only handles code repositories on github.com. GCP operations like "list operations" MUST go to gcloud.
-    
-    Authorization is handled separately via OPA before you receive requests.
-    """,
-    tools=[route_to_agent]
-)
-
 # Helper to create app per request
 def create_app():
+    """Factory to create loop-safe App and Agent instances."""
     # Ensure API Key is in environment for GenAI library
     if config.GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+
+    # Create Orchestrator Agent (Rule 8: Move locally)
+    orchestrator_agent = Agent(
+        name="finopti_orchestrator",
+        model=config.FINOPTIAGENTS_LLM,
+        description="""
+        FinOps orchestration agent that intelligently routes user requests to specialized agents.
+        Manages infrastructure, monitoring, code, storage, and databases.
+        """,
+        instruction="""
+        You are the central orchestrator for the FinOptiAgents platform.
+        
+        Your responsibilities:
+        1. Understand user requests related to cloud operations.
+        2. Determine which specialized agent should handle the request.
+        3. Coordinate with the appropriate agent to fulfill the request.
+        
+        Available specialized agents:
+        - **gcloud**: Handles GCP infrastructure, operations, activity, and audit logs.
+        - **monitoring**: Handles metrics, logs, and observability queries.
+        - **github**: Handles GitHub repositories, issues, and PRs (NOT Google Cloud Source Repos).
+        - **storage**: Handles Google Cloud Storage buckets and objects.
+        - **storage**: Handles Google Cloud Storage buckets and objects.
+        - **db**: Handles SQL database queries (PostgreSQL).
+        - **cloud-run**: Handles Cloud Run services, jobs, and deployments.
+        - **brave**: Web search using Brave Search (privacy-focused).
+        - **filesystem**: Local file system operations (list, read, write).
+        - **analytics**: Google Analytics queries (traffic, users).
+        - **puppeteer**: Browser automation and screenshots.
+        - **sequential**: Deep reasoning for complex multi-step problems.
+        - **googlesearch**: Google Search (official) for internet queries.
+        - **code**: Execute Python code for calculations and data processing.
+        
+        Routing Logic Guidelines (CRITICAL - Follow Exactly):
+        
+        **GCloud Agent** - Use for generic GCP-related request (VMs, Networks):
+        - GCP operations: "list operations", "cloud operations", "recent changes"
+        - Infrastructure: "Create VM", "Delete disk", "List instances", "Show VMs"
+        - Cloud activity: "What changed", "Recent deployments", "Audit logs"
+        - GCP services: Compute Engine, GKE, Cloud Functions
+        - Resource management: "Resize VM", "Stop instance", "Network config"
+    
+        **Cloud Run Agent** - Use for Cloud Run / Serverless Containers:
+        - "Deploy to Cloud Run", "List Cloud Run services"
+        - "Show revisions", "Update traffic split", "Cloud Run jobs"
+        - "Serverless deployment"
+        
+        **GitHub Agent** - Use ONLY for GitHub.com:
+        - "List GitHub repos", "Show my repositories on GitHub"
+        - "Find code in GitHub", "Show PRs", "Create issue"
+        - DO NOT use for Google Cloud Source Repositories
+        
+        **Storage Agent**:
+        - "List buckets", "Upload file to GCS", "Show blobs"
+        - "Download from bucket", "Get object metadata"
+        
+        **Database Agent**:
+        - "Query table", "Show schema", "SELECT * FROM"
+        - PostgreSQL-specific queries
+        
+        **Monitoring Agent**:
+        - "CPU usage", "Error logs", "Latency metrics"
+        - "Show logs from service X", "Memory consumption"
+    
+        **Web Search Agents**:
+        - **brave**: "search brave for X", "find X online" (Privacy focus)
+        - **googlesearch**: "google X", "search internet for X" (General focus)
+        - Use these for external knowledge, current events, or documentation.
+    
+        **Filesystem Agent**:
+        - "List files in directory", "Read file X", "Cat file Y"
+        
+        **Analytics Agent**:
+        - "Show website traffic", "User count for last week"
+        
+        **Puppeteer Agent**:
+        - "Take screenshot of google.com", "Browser automation"
+        
+        **Sequential Agent**:
+        - "Think step by step", "Plan a complex solution"
+        
+        **Code Execution Agent**:
+        - "Calculate fibonacci", "Run python script", "Solve math problem"
+        
+        **MATS Orchestrator** - Use ONLY for complex troubleshooting and root cause analysis:
+        - "Why did X fail?" (causality questions)
+        - "Debug this error in Y" (specific error investigation)
+        - "Find the root cause of the crash" (explicit RCA)
+        - "Troubleshoot the deployment failure" (multi-step diagnosis)
+        - "What caused the outage?" (incident analysis)
+        - "Investigate the failure/error/crash" (specific problem investigation)
+        
+        **DO NOT use MATS for simple operations**:
+        - ❌ "List VMs", "Show buckets", "Get logs" → Use specific agents instead
+        - ❌ "Create instance", "Delete bucket" → Use gcloud/storage agents
+        - ❌ "What are my resources?" → Use gcloud agent
+        - ❌ Generic "investigate" without failure context → Use appropriate agent
+        
+        **Key Rules:**
+        1. "operations in GCP/cloud/project" → **gcloud** (NEVER github)
+        2. Mention of "project ID" or "GCP Project" → **gcloud**
+        3. "GitHub repos/code" → **github**  
+        4. "troubleshoot/debug/fix" complex issues → **mats-orchestrator**
+        5. Default for infrastructure → **gcloud**
+        
+        WARNING: Do NOT route "cloud project" or "project operations" to the github agent. The github agent only handles code repositories on github.com. GCP operations like "list operations" MUST go to gcloud.
+        
+        Authorization is handled separately via OPA before you receive requests.
+        """,
+        tools=[route_to_agent]
+    )
 
     # Configure BigQuery Analytics Plugin
     bq_config = BigQueryLoggerConfig(
@@ -557,7 +609,8 @@ async def process_request_async(
     prompt: str,
     user_email: str,
     project_id: Optional[str] = None,
-    auth_token: Optional[str] = None
+    auth_token: Optional[str] = None,
+    session_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Process a user request through the orchestrator
@@ -567,11 +620,23 @@ async def process_request_async(
         user_email: User's email address
         project_id: Optional GCP project ID
         auth_token: Optional OAuth token
+        session_id: Optional ADK Session ID
     
     Returns:
         Dictionary with response and metadata
     """
     try:
+        # --- CONTEXT SETTING (Rule 1 & 6) ---
+        _session_id_ctx.set(session_id)
+        _user_email_ctx.set(user_email or "unknown")
+
+        # Trace attribute setting (Rule 5)
+        span = trace.get_current_span()
+        if span and span.is_recording():
+            span.set_attribute(SpanAttributes.SESSION_ID, session_id or "unknown")
+            if user_email:
+                span.set_attribute("user_id", user_email)
+
         # Create App per request
         app = create_app()
 
@@ -596,8 +661,17 @@ async def process_request_async(
             prompt=prompt,
             user_email=user_email,
             project_id=project_id or config.GCP_PROJECT_ID,
-            auth_token=auth_token
+            auth_token=auth_token,
+            session_id=session_id
         )
+        
+        # Publish routing event
+        if 'RedisEventPublisher' in globals() and RedisEventPublisher and session_id:
+            try:
+                pub = RedisEventPublisher("Orchestrator", "System Coordinator")
+                _redis_publisher_ctx.set(pub)
+                await _report_progress(f"Routing request to {target_agent}...", event_type="STATUS_UPDATE", icon="🔀", display_type="step_progress")
+            except Exception: pass
         
         # Propagate error if present
         if not agent_response.get('success', False):
@@ -685,7 +759,8 @@ def process_request(
     prompt: str,
     user_email: str,
     project_id: Optional[str] = None,
-    auth_token: Optional[str] = None
+    auth_token: Optional[str] = None,
+    session_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Synchronous wrapper for process_request_async
@@ -695,11 +770,12 @@ def process_request(
         user_email: User's email address
         project_id: Optional GCP project ID
         auth_token: Optional OAuth token
+        session_id: Optional Session ID
     
     Returns:
         Dictionary with response and metadata
     """
-    return asyncio.run(process_request_async(prompt, user_email, project_id, auth_token))
+    return asyncio.run(process_request_async(prompt, user_email, project_id, auth_token, session_id))
 
 
 if __name__ == "__main__":

@@ -33,11 +33,37 @@ from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 # Initialize tracing
 tracer_provider = register(
-    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-gcloud-agent-adk",
+    project_name="finoptiagents-GCloudAgent",
     endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
     set_global_tracer_provider=True
 )
 GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+
+# --- CONTEXT ISOLATION & PROGRESS (Rule 1 & 6) ---
+from contextvars import ContextVar
+from opentelemetry import trace
+from openinference.semconv.trace import SpanAttributes
+
+_session_id_ctx: ContextVar[str] = ContextVar("session_id", default=None)
+_user_email_ctx: ContextVar[str] = ContextVar("user_email", default=None)
+_redis_publisher_ctx: ContextVar = ContextVar("redis_publisher", default=None)
+
+def _report_progress(message, event_type="STATUS_UPDATE", icon="🤖", display_type="markdown", metadata=None):
+    """Standardized progress reporting using context-bound session/user."""
+    pub = _redis_publisher_ctx.get()
+    sid = _session_id_ctx.get()
+    uid = _user_email_ctx.get() or "unknown"
+    if pub and sid:
+        try:
+            span_ctx = trace.get_current_span().get_span_context()
+            trace_id_hex = format(span_ctx.trace_id, '032x') if span_ctx.trace_id else "unknown"
+        except Exception:
+            trace_id_hex = "unknown"
+        pub.publish_event(
+            session_id=sid, user_id=uid, trace_id=trace_id_hex,
+            msg_type=event_type, message=message, display_type=display_type,
+            icon=icon, metadata=metadata
+        )
 
 # MCP Client for GCloud via Docker Stdio
 class GCloudMCPClient:
@@ -321,23 +347,72 @@ from google.genai import types
 
 from common.model_resilience import run_with_model_fallback
 
-async def send_message_async(prompt: str, user_email: str = None) -> str:
+# Add Redis Publisher
+try:
+    # Ensure current directory is in path (Docker WORKDIR /app)
+    if str(Path(__file__).parent) not in sys.path:
+        sys.path.append(str(Path(__file__).parent))
+
+    from redis_common.redis_publisher import RedisEventPublisher
+except ImportError as e:
+    logging.warning(f"Failed to import redis_common: {e}")
+    # Fallback or local dev path if not mounted
+    sys.path.append(str(Path(__file__).parent.parent.parent / "redis-sessions" / "common"))
+    try:
+        from redis_publisher import RedisEventPublisher
+    except ImportError as e2:
+        RedisEventPublisher = None
+        logging.warning(f"RedisPublisher not found (fallback failed too: {e2}). Events will not be streamed.")
+
+
+async def send_message_async(prompt: str, user_email: str = None, session_id: str = "default") -> str:
     """
     Send a message to the GCloud agent with Model Fallback
     """
     try:
+        # --- CONTEXT SETTING (Rule 1 & 6) ---
+        _session_id_ctx.set(session_id)
+        _user_email_ctx.set(user_email or "unknown")
+
+        # Trace attribute setting (Rule 5)
+        span = trace.get_current_span()
+        if span and span.is_recording():
+            span.set_attribute(SpanAttributes.SESSION_ID, session_id or "unknown")
+            if user_email:
+                span.set_attribute("user_id", user_email)
+
         # Initialize MCP client if needed
         global _mcp_client
         if not _mcp_client:
             _mcp_client = GCloudMCPClient()
             await _mcp_client.connect()
         
+        # Initialize Redis Publisher
+        publisher = None
+        if RedisEventPublisher:
+             try:
+                 publisher = RedisEventPublisher(
+                     agent_name="GCloud Agent",
+                     agent_role="Infrastructure Specialist"
+                 )
+                 _redis_publisher_ctx.set(publisher)
+                 logging.info("RedisEventPublisher initialized successfully")
+             except Exception as e:
+                 logging.error(f"Failed to initialize RedisEventPublisher: {e}")
+        else:
+             logging.warning("RedisEventPublisher class not available (import failed?)")
+
+        # Publish "Processing" event via standardized helper
+        _report_progress(f"Processing request: {prompt[:50]}...", icon="⏳", display_type="toast")
+
         # Define the execution logic for a specific app/model
         async def _run_once(app_instance):
             # Use InMemoryRunner to execute the app
             async with InMemoryRunner(app=app_instance) as runner:
-                sid = "default"
-                uid = "default"
+                sid = session_id 
+                uid = user_email or "default"
+                
+                # ADK Session Creation
                 await runner.session_service.create_session(
                     session_id=sid, 
                     user_id=uid,
@@ -346,27 +421,27 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
                 
                 message = types.Content(parts=[types.Part(text=prompt)])
                 response_text = ""
+
                 async for event in runner.run_async(
                     user_id=uid,
                     session_id=sid,
                     new_message=message
                 ):
-                     # Accumulate text content from events
+                     # 1. Capture ADK Events for Stream
+                     if publisher:
+                         publisher.process_adk_event(event, session_id=sid, user_id=uid)
+
+                     # 2. Accumulate text content for final response
                      if hasattr(event, 'content') and event.content and event.content.parts:
-                         for part in event.content.parts:
-                             if part.text:
-                                 response_text += part.text
+                          for part in event.content.parts:
+                              if part.text:
+                                  response_text += part.text
                 
                 return response_text if response_text else "No response generated."
 
-        # Wrapper for create_app to adapt signature if needed, or modify create_app
-        # We need to modify create_app to accept model_name. 
-        # Since I can't modify create_app definition in this chunk easily without context,
-        # I will rely on a lambda that modifies the global or passes it if create_app is updated.
-        # WAIT: I need to update create_app signature too.
-        
+        # Wrapper for create_app
         return await run_with_model_fallback(
-            create_app_func=create_app, # execute_gcloud_command needs update too? No, tool is independent.
+            create_app_func=create_app, 
             run_func=_run_once,
             context_name="GCloud Agent"
         )
@@ -380,18 +455,19 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
             _mcp_client = None
 
 
-def send_message(prompt: str, user_email: str = None) -> str:
+def send_message(prompt: str, user_email: str = None, session_id: str = "default") -> str:
     """
     Synchronous wrapper for send_message_async
     
     Args:
         prompt: User's natural language request
         user_email: Optional user email for logging
+        session_id: Optional session ID for tracking
     
     Returns:
         Agent's response as string
     """
-    return asyncio.run(send_message_async(prompt, user_email))
+    return asyncio.run(send_message_async(prompt, user_email, session_id))
 
 
 if __name__ == "__main__":

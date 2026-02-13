@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 SRE_AGENT_URL = os.getenv("SRE_AGENT_URL", "http://mats-sre-agent:8081")
 INVESTIGATOR_AGENT_URL = os.getenv("INVESTIGATOR_AGENT_URL", "http://mats-investigator-agent:8082")
 ARCHITECT_AGENT_URL = os.getenv("ARCHITECT_AGENT_URL", "http://mats-architect-agent:8083")
+GCLOUD_AGENT_URL = os.getenv("GCLOUD_AGENT_URL", "http://finopti-gcloud-agent:5001")
 
 
 async def _http_post(url: str, data: Dict[str, Any], timeout: int = 900) -> Dict[str, Any]:
@@ -58,7 +59,8 @@ async def delegate_to_sre(
     task_description: str,
     project_id: str,
     session_id: str = "unknown",
-    job_id: str = None
+    job_id: str = None,
+    user_email: str = None
 ) -> Dict[str, Any]:
     """
     Delegate task to SRE Agent.
@@ -99,7 +101,7 @@ Please analyze the logs and metrics. Return your findings in the following JSON 
     async def _call():
         logger.info(f"[{session_id}] Delegating to SRE: {task_description[:100]}")
         # Use 300s for SRE as it does heavy lifting
-        payload = {"message": prompt, "session_id": session_id}  # Pass session_id for Phoenix grouping
+        payload = {"message": prompt, "session_id": session_id, "user_email": user_email}  # Pass session_id and user_email
         if job_id:
             payload["job_id"] = job_id
             payload["orchestrator_url"] = "http://mats-orchestrator:8084" 
@@ -117,7 +119,7 @@ Please analyze the logs and metrics. Return your findings in the following JSON 
         except ImportError:
             pass
 
-        result = await _http_post(SRE_AGENT_URL, payload, timeout=600)
+        result = await _http_post(SRE_AGENT_URL, payload, timeout=900)
         response_text = result.get("response", "")
         
         # Try to parse JSON from response
@@ -173,7 +175,8 @@ async def delegate_to_investigator(
     sre_context: str,
     repo_url: str,
     session_id: str = "unknown",
-    job_id: str = None
+    job_id: str = None,
+    user_email: str = None
 ) -> Dict[str, Any]:
     """
     Delegate task to Investigator Agent.
@@ -216,7 +219,7 @@ Please investigate the code and return findings in this JSON format:
     
     async def _call():
         logger.info(f"[{session_id}] Delegating to Investigator")
-        payload = {"message": prompt, "session_id": session_id}  # Pass session_id for Phoenix grouping
+        payload = {"message": prompt, "session_id": session_id, "user_email": user_email}  # Pass session_id and user_email
         if job_id:
             payload["job_id"] = job_id
             payload["orchestrator_url"] = "http://mats-orchestrator:8084" 
@@ -272,7 +275,8 @@ async def delegate_to_architect(
     sre_findings: Dict[str, Any],
     investigator_findings: Dict[str, Any],
     session_id: str = "unknown",
-    user_request: str = ""
+    user_request: str = "",
+    user_email: str = None
 ) -> Dict[str, Any]:
     """
     Delegate RCA synthesis to Architect Agent.
@@ -321,7 +325,7 @@ Also return your response in this JSON format:
     
     async def _call():
         logger.info(f"[{session_id}] Delegating to Architect for RCA synthesis")
-        payload = {"message": prompt, "session_id": session_id}  # Pass session_id for Phoenix grouping
+        payload = {"message": prompt, "session_id": session_id, "user_email": user_email}  # Pass session_id and user_email
         
         # Inject Trace Headers
         try:
@@ -366,4 +370,81 @@ Also return your response in this JSON format:
         max_attempts=2,
         session_id=session_id,
         agent_name="Architect"
+    )
+
+@trace_span("delegate_operational", kind="AGENT")
+async def delegate_to_operational_agent(
+    task_description: str,
+    agent_url: str,
+    agent_name: str,
+    session_id: str = "unknown",
+    user_email: str = None
+) -> Dict[str, Any]:
+    """
+    Delegate task to an Operational Agent (GCloud, GitHub, etc.)
+    using the standard /execute endpoint.
+    
+    Args:
+        task_description: The prompt/command to execute
+        agent_url: Base URL of the agent
+        agent_name: Name for logging
+        session_id: Investigation session ID
+        user_email: User email context
+        
+    Returns:
+        Dict with 'success' and 'response' (or 'output')
+    """
+    async def _call():
+        logger.info(f"[{session_id}] Delegating to {agent_name}: {task_description[:50]}...")
+        
+        payload = {
+            "prompt": task_description,
+            "session_id": session_id,
+            "user_email": user_email or "unknown"
+        }
+        
+        # Inject Trace Headers
+        try:
+            from common.observability import FinOptiObservability
+            headers = {}
+            FinOptiObservability.inject_trace_to_headers(headers)
+            # Some agents might check headers directly, others via payload
+            # For standard Flask wrapper in gcloud_agent, headers are propagated via request context
+            # But we can't easily set headers in _http_post helper without modifying it.
+            # However, _http_post uses aiohttp.ClientSession(). It doesn't take custom headers arg.
+            # We will rely on payload propagation if supported, or modify _http_post if needed.
+            # GCloud agent's main.py checks X-Request-ID, but not W3C traceparent essentially?
+            # Actually, `send_message` in agent.py uses InMemoryRunner which creates a new trace?
+            # Let's just send the payload.
+            pass 
+        except ImportError:
+            pass
+
+        # Operational agents use /execute endpoint
+        # We need to manually construct the URL since _http_post appends /chat
+        # So we can't use _http_post directly. We'll duplicate logic briefly or refactor.
+        # Let's assume we use _http_post but we need to change the endpoint.
+        # Refactor time: Let's just use aiohttp directly here to avoid breaking _http_post
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{agent_url}/execute",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=600)
+            ) as resp:
+                if resp.status >= 500:
+                    text = await resp.text()
+                    raise Exception(f"HTTP {resp.status}: {text}")
+                elif resp.status >= 400:
+                    text = await resp.text()
+                    raise NonRetryableError(f"HTTP {resp.status}: {text}")
+                    
+                result = await resp.json()
+                return result
+
+    return await retry_async(
+        _call,
+        max_attempts=1, # Operational commands might not always be safe to retry
+        session_id=session_id,
+        agent_name=agent_name
     )

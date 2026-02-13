@@ -31,6 +31,13 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from utils.tracing import trace_span
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+# Add Redis Common to path
+sys.path.append('/app/redis_common')
+try:
+    from redis_publisher import RedisEventPublisher
+except ImportError:
+    # Fallback for local testing vs docker
+    pass
 from config import config
 
 # Configure logging
@@ -84,8 +91,37 @@ else:
         del os.environ["GOOGLE_API_KEY"]
     logger.info("Using ADC/Service Account for authentication (Vertex AI enabled)")
 
-# --- CONTEXT ISOLATION (Rule 1) ---
+# --- CONTEXT ISOLATION & PROGRESS (Rule 1 & 6) ---
+# Stores state for the current request context
 _sequential_thinking_ctx: ContextVar["SequentialThinkingClient"] = ContextVar("seq_thinking_client", default=None)
+_session_id_ctx: ContextVar[str] = ContextVar("session_id", default=None)
+_user_email_ctx: ContextVar[str] = ContextVar("user_email", default=None)
+_redis_publisher_ctx: ContextVar["RedisEventPublisher"] = ContextVar("redis_publisher", default=None)
+
+async def _report_progress(message: str, event_type: str = "STATUS_UPDATE", icon: str = "🤖", display_type: str = "markdown", metadata: dict = None):
+    """Standardized progress reporting using context-bound session/user."""
+    pub = _redis_publisher_ctx.get()
+    sid = _session_id_ctx.get()
+    uid = _user_email_ctx.get() or "unknown"
+    
+    if pub and sid:
+        # Extract trace_id from current span for link back
+        try:
+            span_ctx = trace.get_current_span().get_span_context()
+            trace_id_hex = format(span_ctx.trace_id, '032x') if span_ctx.trace_id else "unknown"
+        except Exception:
+            trace_id_hex = "unknown"
+
+        pub.publish_event(
+            session_id=sid,
+            user_id=uid,
+            trace_id=trace_id_hex,
+            msg_type=event_type,
+            message=message,
+            display_type=display_type,
+            icon=icon,
+            metadata=metadata
+        )
 
 
 class SequentialThinkingClient:
@@ -343,61 +379,68 @@ def load_agent_registry() -> list:
     return []
 
 
-# --- AGENT DEFINITION ---
-orchestrator_agent = Agent(
-    name="mats_orchestrator",
-    model=config.FINOPTIAGENTS_LLM,
-    description="MATS Orchestrator - Autonomous troubleshooting manager",
-    instruction="""
-You are the MATS Orchestrator, the brain of the Micro Agent Troubleshooting System.
+# --- COMPONENT FACTORY (Rule 8) ---
+def create_app():
+    """Factory to create loop-safe App and Agent instances."""
+    # Ensure API Key is in environment ONLY if not using Vertex AI
+    if config.GOOGLE_API_KEY and not (config.GOOGLE_GENAI_USE_VERTEXAI and config.GOOGLE_GENAI_USE_VERTEXAI.upper() == "TRUE"):
+        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    
+    # Define Agent
+    orchestrator_agent = Agent(
+        name="mats_orchestrator",
+        model=config.FINOPTIAGENTS_LLM,
+        description="MATS Orchestrator - Autonomous troubleshooting manager",
+        instruction="""
+    You are the MATS Orchestrator, the brain of the Micro Agent Troubleshooting System.
 
-YOUR ROLE:
-- Plan investigations using Sequential Thinking
-- Delegate tasks to Team Lead agents (SRE, Investigator, Architect)
-- Monitor progress and handle failures
-- Report status to users
+    YOUR ROLE:
+    - Plan investigations using Sequential Thinking
+    - Delegate tasks to Team Lead agents (SRE, Investigator, Architect)
+    - Monitor progress and handle failures
+    - Report status to users
 
-WORKFLOW:
-1. PLANNING: Use generate_plan() to create investigation steps
-2. EXECUTION: Execute steps by calling team leads
-3. VALIDATION: Check quality gates between phases
-4. SYNTHESIS: Collect RCA from Architect
-5. REPORTING: Return results to user
+    WORKFLOW:
+    1. PLANNING: Use generate_plan() to create investigation steps
+    2. EXECUTION: Execute steps by calling team leads
+    3. VALIDATION: Check quality gates between phases
+    4. SYNTHESIS: Collect RCA from Architect
+    5. REPORTING: Return results to user
 
-ERROR HANDLING:
-- IF SRE returns "NO_LOGS_FOUND": Expand time window and retry
-- IF any agent returns "PERMISSION_DENIED": Escalate to user
-- IF confidence < 0.5: Flag as "Low Confidence" in final report
-- IF retry count >= 3: Proceed with partial results
+    ERROR HANDLING:
+    - IF SRE returns "NO_LOGS_FOUND": Expand time window and retry
+    - IF any agent returns "PERMISSION_DENIED": Escalate to user
+    - IF confidence < 0.5: Flag as "Low Confidence" in final report
+    - IF retry count >= 3: Proceed with partial results
 
-OUTPUT:
-Always provide structured updates including:
-- Current phase
-- Progress (step X of Y)
-- Any blockers or warnings
-- Final RCA URL when complete
-""",
-    tools=[]  # Tools will be dynamically added via delegation module
-)
-
-# BigQuery Analytics Plugin
-bq_plugin = BigQueryAgentAnalyticsPlugin(
-    project_id=os.getenv("GCP_PROJECT_ID"),
-    dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-    table_id=config.BQ_ANALYTICS_TABLE,
-    config=BigQueryLoggerConfig(
-        enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+    OUTPUT:
+    Always provide structured updates including:
+    - Current phase
+    - Progress (step X of Y)
+    - Any blockers or warnings
+    - Final RCA URL when complete
+    """,
+        tools=[] 
     )
-)
 
-app_instance = App(
-    name="mats_orchestrator_app",
-    root_agent=orchestrator_agent,
-    plugins=[
-        ReflectAndRetryToolPlugin(max_retries=2),
-        bq_plugin
-    ]
-)
+    # BigQuery Analytics Plugin
+    bq_plugin = BigQueryAgentAnalyticsPlugin(
+        project_id=os.getenv("GCP_PROJECT_ID"),
+        dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
+        table_id=config.BQ_ANALYTICS_TABLE,
+        config=BigQueryLoggerConfig(
+            enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
+        )
+    )
+
+    return App(
+        name="mats_orchestrator_app",
+        root_agent=orchestrator_agent,
+        plugins=[
+            ReflectAndRetryToolPlugin(max_retries=2),
+            bq_plugin
+        ]
+    )
 
 
 # --- EXECUTION LOGIC ---
@@ -419,7 +462,13 @@ async def run_investigation_async(
         Investigation results with RCA URL
     """
     from state import create_session, WorkflowPhase
-    from delegation import delegate_to_sre, delegate_to_investigator, delegate_to_architect
+    from delegation import (
+        delegate_to_sre, 
+        delegate_to_investigator, 
+        delegate_to_architect,
+        delegate_to_operational_agent,
+        GCLOUD_AGENT_URL
+    )
     from quality_gates import (
         gate_planning_to_triage,
         gate_triage_to_analysis,
@@ -436,78 +485,106 @@ async def run_investigation_async(
     session = await create_session(user_email or "default", project_id, repo_url, provided_session_id)
     session_id = session.session_id
     
+    # --- CONTEXT SETTING (Rule 1 & 6) ---
+    _session_id_ctx.set(session_id)
+    _user_email_ctx.set(user_email or "unknown")
+
+    # Trace attribute setting (Rule 5)
+    span = trace.get_current_span()
+    if span and span.is_recording():
+        span.set_attribute(SpanAttributes.SESSION_ID, session_id)
+        if user_email:
+            span.set_attribute("user_id", user_email)
+
     logger.info(f"[{session_id}] Starting investigation (Job: {job_id}): {user_request[:100]}")
-    logger.info(f"[{session_id}] Using session ID from UI: {provided_session_id is not None}")
+
+    # --- REDIS INSTRUMENTATION (Rule 6) ---
+    try:
+        redis_publisher = RedisEventPublisher("MATS Orchestrator", "Orchestrator")
+        _redis_publisher_ctx.set(redis_publisher)
+    except Exception as e:
+        logger.error(f"Failed to initialize RedisEventPublisher: {e}")
+        redis_publisher = None
+
+    await _report_progress(f"Received request: {user_request[:50]}...", event_type="STATUS_UPDATE", icon="📥", display_type="step_progress")
 
     # --- REQUEST VALIDATION: Guard against simple operations ---
     import re
     request_lower = user_request.lower()
     
-    # Detect if this is a simple CRUD operation (should not be routed to MATS!)
-    simple_patterns = [
-        r'\blist\s+(all|my|the)?\s*(vms?|instances?|buckets?|services?|projects?|resources?)',
-        r'\bshow\s+(all|my|the)?\s*(vms?|instances?|buckets?|services?|projects?|resources?)',
-        r'\bget\s+(all|my|the)?\s*(vms?|instances?|buckets?|services?|projects?|resources?)',
-        r'\bcreate\s+a?\s*(vm|instance|bucket|service|resource)',
-        r'\bdelete\s+a?\s*(vm|instance|bucket|service|resource)',
-        r'\bdescribe\s+(the|my|a)?\s*(vm|instance|bucket|service|resource)',
+    # --- OPERATIONAL ROUTING (User Request: Delegate simple tasks) ---
+    import re
+    request_lower = user_request.lower()
+    
+    # Define operational patterns and their target agents
+    # Format: (regex_pattern, agent_url, agent_name)
+    operational_routes = [
+        # GCloud Patterns
+        (r'\blist\s+(all|my|the)?\s*(vms?|instances?|buckets?|services?|projects?|resources?)', GCLOUD_AGENT_URL, "GCloud Agent"),
+        (r'\bshow\s+(all|my|the)?\s*(vms?|instances?|buckets?|services?|projects?|resources?)', GCLOUD_AGENT_URL, "GCloud Agent"),
+        (r'\bget\s+(all|my|the)?\s*(vms?|instances?|buckets?|services?|projects?|resources?)', GCLOUD_AGENT_URL, "GCloud Agent"),
+        (r'\bcreate\s+a?\s*(vm|instance|bucket|service|resource)', GCLOUD_AGENT_URL, "GCloud Agent"),
+        (r'\bdelete\s+a?\s*(vm|instance|bucket|service|resource)', GCLOUD_AGENT_URL, "GCloud Agent"),
+        (r'\bdescribe\s+(the|my|a)?\s*(vm|instance|bucket|service|resource)', GCLOUD_AGENT_URL, "GCloud Agent"),
+        # Add Generic GCloud Intent if relevant
+        (r'\bgcloud\s+', GCLOUD_AGENT_URL, "GCloud Agent"),
     ]
     
-    for pattern in simple_patterns:
+    match_found = False
+    target_agent_url = None
+    target_agent_name = None
+    
+    for pattern, url, name in operational_routes:
         if re.search(pattern, request_lower):
-            error_msg = (
-                f"This appears to be a simple operation, not a troubleshooting request. "
-                f"MATS is designed for root cause analysis and complex debugging. "
-                f"For simple operations like listing resources, please use the appropriate agent directly "
-                f"(e.g., gcloud agent for 'list VMs')."
-            )
-            logger.warning(f"[{session_id}] MATS received simple request (misrouted): {user_request[:100]}")
-            logger.warning(f"[{session_id}] Matched pattern: {pattern}")
+            match_found = True
+            target_agent_url = url
+            target_agent_name = name
+            logger.info(f"[{session_id}] Request matched operational route: {name} (Pattern: {pattern})")
+            break
             
-            # Return error response instead of proceeding
+    if match_found:
+        await _report_progress(f"Routing request to **{target_agent_name}**...", event_type="THOUGHT", icon="🧠")
+        
+        try:
+            # Delegate to Operational Agent
+            op_result = await delegate_to_operational_agent(
+                task_description=user_request,
+                agent_url=target_agent_url,
+                agent_name=target_agent_name,
+                session_id=session_id,
+                user_email=user_email
+            )
+            
+            # Format Response
+            response_text = ""
+            if op_result.get("success"):
+                response_text = op_result.get("response", "Command executed successfully.")
+                await _report_progress(response_text, event_type="ARTIFACT", icon="✅")
+            else:
+                response_text = f"⚠️ Error executing command: {op_result.get('message', 'Unknown error')}"
+                await _report_progress(response_text, event_type="ERROR", icon="❌", display_type="alert")
+                
+            # Log completion for JobManager if needed
+            if job_id and JobManager:
+                JobManager.update_job(job_id, {"status": "COMPLETED", "result": op_result})
+
             return {
-                "status": "MISROUTED",
-                "error": error_msg,
-                "suggestion": "Please rephrase your request to focus on troubleshooting, or use the specific agent for this operation."
+                "status": "SUCCESS",
+                "orchestrator": {"target_agent": target_agent_name},
+                "response": response_text,
+                "data": op_result
             }
-    
-    # Detect troubleshooting indicators - log warning if missing
-    troubleshooting_indicators = [
-        "why", "root cause", "rca", "failed", "failure", "error", "crash", "crashed",
-        "broken", "not working", "issue", "problem", "debug", "troubleshoot",
-        "diagnose", "what caused"
-    ]
-    
-    has_troubleshooting_intent = any(indicator in request_lower for indicator in troubleshooting_indicators)
-    
-    if not has_troubleshooting_intent:
-        logger.warning(f"[{session_id}] Ambiguous request - no clear troubleshooting indicators found: {user_request[:100]}")
-        logger.warning(f"[{session_id}] Proceeding with caution. This may not be a genuine troubleshooting request.")
-    
-    # --- END REQUEST VALIDATION ---
+            
+        except Exception as e:
+            logger.error(f"[{session_id}] Operational delegation failed: {e}")
+            await _report_progress(f"Failed to execute command: {e}", event_type="ERROR", icon="❌", display_type="alert")
+            return {
+                "status": "FAILURE",
+                "error": str(e)
+            }
 
 
-    # Set session.id on the current span (created by @trace_span decorator)
-    # This ensures Phoenix can group traces by session
-    current_span = trace.get_current_span()
-    if current_span and current_span.is_recording():
-        current_span.set_attribute(SpanAttributes.SESSION_ID, session_id)
-        current_span.set_attribute("user.email", user_email or "unknown")
-        current_span.set_attribute("session.project_id", project_id or "unknown")
-        current_span.set_attribute("session.repo_url", repo_url or "unknown")
-        current_span.set_attribute("job.id", job_id or "none")
-        logger.info(f"[{session_id}] Set session.id={session_id} on current span")
-    
-    # Inject trace context for propagation to sub-agents
-    trace_headers = {}
-    propagate.inject(trace_headers)
-    
-    # Store in session for delegation
-    session.trace_headers = trace_headers
-    logger.info(f"[{session_id}] Trace context injected with traceparent: {trace_headers.get('traceparent', 'N/A')[:50]}...")
-    
-    if job_id and JobManager and not resume_job_id:
-        JobManager.add_event(job_id, "SYSTEM", f"Investigation started for session {session_id}", "orchestrator")
+    await _report_progress(f"Starting investigation: {user_request[:50]}...", event_type="STATUS_UPDATE", icon="🚀", display_type="step_progress")
 
     
     # Initialize Sequential Thinking MCP
@@ -519,22 +596,29 @@ async def run_investigation_async(
         
         # --- PHASE 1: PLANNING (Skip if Resuming) ---
         if not resume_job_id:
+            await _report_progress("Generating investigation plan...", event_type="STATUS_UPDATE", icon="📋", display_type="step_progress")
             session.workflow.transition_to(WorkflowPhase.PLANNING, "Generating investigation plan")
             agent_registry = load_agent_registry()
-            plan = await generate_plan(user_request, agent_registry)
-            
-            # EMIT PLAN EVENT
-            if job_id and JobManager:
-                # Emit the raw plan or a formatted summary
+            try:
+                plan = await generate_plan(user_request, agent_registry)
+                
+                # EMIT PLAN EVENT
                 plan_summary = f"**Investigation Plan**\n\nReasoning: {plan.get('reasoning', 'N/A')}\n\nSteps:\n"
                 for i, step in enumerate(plan.get('steps', []), 1):
                     plan_summary += f"{i}. {step.get('ui_label')} ({step.get('assigned_lead')})\n"
                 
-                JobManager.add_event(job_id, "PLAN", plan_summary, "orchestrator")
+                await _report_progress(plan_summary, event_type="THOUGHT", icon="🧠")
+                
+                if job_id and JobManager:
+                    JobManager.add_event(job_id, "PLAN", plan_summary, "orchestrator")
+            except Exception as e:
+                await _report_progress(f"Planning failed: {e}", event_type="ERROR", icon="❌", display_type="alert")
+                raise e
             
             gate_result, reason = gate_planning_to_triage(plan, session_id)
             if gate_result == GateDecision.FAIL:
                 session.add_blocker("E000", f"Planning failed: {reason}")
+                await _report_progress(f"Planning failed: {reason}", event_type="ERROR", icon="❌", display_type="alert")
                 session.mark_completed("FAILURE")
                 return {
                     "status": "FAILURE", 
@@ -552,6 +636,7 @@ async def run_investigation_async(
                      session.sre_findings = prev_job["result"].get("sre_findings")
 
         # --- PHASE 2: TRIAGE (SRE) ---
+        await _report_progress("Triaging logs and metrics (SRE)...", event_type="STATUS_UPDATE", icon="🔍", display_type="step_progress")
         session.workflow.transition_to(WorkflowPhase.TRIAGE, "Analyzing logs and metrics")
         
         sre_result = None
@@ -606,7 +691,8 @@ async def run_investigation_async(
                 sre_resume_prompt,
                 project_id,
                 session_id,
-                job_id=job_id
+                job_id=job_id,
+                user_email=user_email
              )
         else:
             # FRESH SRE CALL
@@ -615,7 +701,8 @@ async def run_investigation_async(
                 f"{user_request}\n\nFocus on finding error signatures and stack traces.",
                 project_id,
                 session_id,
-                job_id=job_id # Passing job_id
+                job_id=job_id, # Passing job_id
+                user_email=user_email
             )
             
         session.sre_findings = sre_result
@@ -761,6 +848,7 @@ async def run_investigation_async(
             }
 
         # Phase 3: CODE ANALYSIS (Investigator) - Normal Flow
+        await _report_progress("Analyzing code repositories (Investigator)...", event_type="STATUS_UPDATE", icon="💻", display_type="step_progress")
         session.workflow.transition_to(WorkflowPhase.CODE_ANALYSIS, "Investigating code")
         sre_context = json.dumps(sre_result.get('evidence', {}), indent=2)
         inv_result = await delegate_to_investigator(
@@ -794,6 +882,7 @@ async def run_investigation_async(
                 }
         
         # Phase 4: SYNTHESIS (Architect)
+        await _report_progress("Synthesizing Root Cause Analysis (Architect)...", event_type="STATUS_UPDATE", icon="🏗️", display_type="step_progress")
         session.workflow.transition_to(WorkflowPhase.SYNTHESIS, "Generating RCA")
         arch_result = await delegate_to_architect(sre_result, inv_result, session_id, user_request=user_request)
         session.architect_output = arch_result

@@ -1,0 +1,22 @@
+* Host localhost:8000 was resolved.
+* IPv6: ::1
+* IPv4: 127.0.0.1
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0*   Trying [::1]:8000...
+* Connected to localhost (::1) port 8000
+> GET /stream/admin@cloudroaster.com/test-session-debug HTTP/1.1
+> Host: localhost:8000
+> User-Agent: curl/8.7.1
+> Accept: */*
+> 
+* Request completely sent off
+< HTTP/1.1 404 Not Found
+< date: Thu, 12 Feb 2026 22:53:37 GMT
+< server: uvicorn
+< content-length: 22
+< content-type: application/json
+< 
+{ [22 bytes data]
+{"detail":"Not Found"}100    22  100    22    0     0   1389      0 --:--:-- --:--:-- --:--:--  1466
+* Connection #0 to host localhost left intact

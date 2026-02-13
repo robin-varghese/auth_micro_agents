@@ -12,6 +12,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+# Add Redis Publisher
+try:
+    if str(Path(__file__).parent) not in sys.path:
+        sys.path.append(str(Path(__file__).parent))
+
+    from redis_common.redis_publisher import RedisEventPublisher
+except ImportError as e:
+    sys.path.append(str(Path(__file__).parent.parent.parent / "redis-sessions" / "common"))
+    try:
+        from redis_publisher import RedisEventPublisher
+    except ImportError:
+        RedisEventPublisher = None
+
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.plugins import ReflectAndRetryToolPlugin
@@ -29,7 +42,7 @@ from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 # Initialize tracing
 tracer_provider = register(
-    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-cloud-run-agent",
+    project_name="finoptiagents-CloudRunAgent",
     endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
     set_global_tracer_provider=True
 )
@@ -109,15 +122,38 @@ class CloudRunMCPClient:
             except: pass
 
 from contextvars import ContextVar
+from opentelemetry import trace
+from openinference.semconv.trace import SpanAttributes
 
 # ContextVar to store the MCP client for the current request
 _mcp_ctx: ContextVar["CloudRunMCPClient"] = ContextVar("mcp_client", default=None)
+
+# --- CONTEXT ISOLATION & PROGRESS (Rule 1 & 6) ---
+_session_id_ctx: ContextVar[str] = ContextVar("session_id", default=None)
+_user_email_ctx: ContextVar[str] = ContextVar("user_email", default=None)
+_redis_publisher_ctx: ContextVar = ContextVar("redis_publisher", default=None)
+
+def _report_progress(message, event_type="STATUS_UPDATE", icon="🤖", display_type="markdown", metadata=None):
+    """Standardized progress reporting using context-bound session/user."""
+    pub = _redis_publisher_ctx.get()
+    sid = _session_id_ctx.get()
+    uid = _user_email_ctx.get() or "unknown"
+    if pub and sid:
+        try:
+            span_ctx = trace.get_current_span().get_span_context()
+            trace_id_hex = format(span_ctx.trace_id, '032x') if span_ctx.trace_id else "unknown"
+        except Exception:
+            trace_id_hex = "unknown"
+        pub.publish_event(
+            session_id=sid, user_id=uid, trace_id=trace_id_hex,
+            msg_type=event_type, message=message, display_type=display_type,
+            icon=icon, metadata=metadata
+        )
 
 async def ensure_mcp():
     client = _mcp_ctx.get()
     if not client:
         raise RuntimeError("MCP Client not initialized for this context")
-    # No need to connect here, connection happens in send_message_async
     return client
 
 # --- Tool Wrappers ---
@@ -235,11 +271,36 @@ def create_app(model_name: str = None):
 # Limit concurrency to restrict file descriptor/thread usage
 _concurrency_sem = asyncio.Semaphore(5)
 
-async def send_message_async(prompt: str, user_email: str = None) -> str:
+async def send_message_async(prompt: str, user_email: str = None, session_id: str = "default") -> str:
     async with _concurrency_sem:
+        # --- CONTEXT SETTING (Rule 1 & 6) ---
+        _session_id_ctx.set(session_id)
+        _user_email_ctx.set(user_email or "unknown")
+
+        # Trace attribute setting (Rule 5)
+        span = trace.get_current_span()
+        if span and span.is_recording():
+            span.set_attribute(SpanAttributes.SESSION_ID, session_id or "unknown")
+            if user_email:
+                span.set_attribute("user_id", user_email)
+
         # Create new client for this request (and this event loop)
         mcp = CloudRunMCPClient()
         token_reset = _mcp_ctx.set(mcp)
+
+        # Initialize Redis Publisher once
+        publisher = None
+        if RedisEventPublisher:
+            try:
+                publisher = RedisEventPublisher(
+                    agent_name="Cloud Run Agent",
+                    agent_role="Serverless Specialist"
+                )
+                _redis_publisher_ctx.set(publisher)
+            except: pass
+
+        # Publish "Processing" event via standardized helper
+        _report_progress(f"Managing Cloud Run...", icon="🏃", display_type="toast")
         
         try:
             await mcp.connect()
@@ -247,7 +308,6 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
             # Define run_once for fallback logic
             async def _run_once(app_instance):
                 bq_plugin = None
-                # Find BQ plugin for later cleanup
                 for p in app_instance.plugins:
                     if isinstance(p, BigQueryAgentAnalyticsPlugin):
                         bq_plugin = p
@@ -255,14 +315,21 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
                 
                 try:
                     async with InMemoryRunner(app=app_instance) as runner:
+                        sid = session_id
+                        uid = user_email or "default"
                         await runner.session_service.create_session(
                             app_name="finopti_cloud_run_agent",
-                            user_id="default",
-                            session_id="default"
+                            user_id=uid,
+                            session_id=sid
                         )
                         message = types.Content(parts=[types.Part(text=prompt)])
+
                         response_text = ""
-                        async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
+                        async for event in runner.run_async(session_id=sid, user_id=uid, new_message=message):
+                            # Stream Events
+                            if publisher:
+                                publisher.process_adk_event(event, session_id=sid, user_id=uid)
+
                             if hasattr(event, 'content') and event.content:
                                 for part in event.content.parts:
                                     if part.text: response_text += part.text
@@ -271,10 +338,8 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
                     # Clean up BQ Plugin (Critical for preventing BookingIOError/Resource Exhaustion)
                     if bq_plugin:
                         try:
-                            # Attempt to close the client if it exists (standard google cloud client pattern)
                             if hasattr(bq_plugin, 'client') and hasattr(bq_plugin.client, 'close'):
                                 bq_plugin.client.close()
-                            # Also check for private _client attribute just in case
                             elif hasattr(bq_plugin, '_client') and hasattr(bq_plugin._client, 'close'):
                                 bq_plugin._client.close()
                         except Exception as e:
@@ -290,5 +355,5 @@ async def send_message_async(prompt: str, user_email: str = None) -> str:
             await mcp.close()
             _mcp_ctx.reset(token_reset)
 
-def send_message(prompt: str, user_email: str = None) -> str:
-    return asyncio.run(send_message_async(prompt, user_email))
+def send_message(prompt: str, user_email: str = None, session_id: str = "default") -> str:
+    return asyncio.run(send_message_async(prompt, user_email, session_id))

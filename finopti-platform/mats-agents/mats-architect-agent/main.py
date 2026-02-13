@@ -25,10 +25,12 @@ def chat():
         return jsonify({"error": "Message is required"}), 400
 
     user_message = data['message']
-    logger.info(f"Received request: {len(user_message)} chars")
+    session_id = data.get('session_id')  # Extract session_id
+    user_email = data.get('user_email')  # Extract user_email for Redis channel
+    logger.info(f"Received request: {len(user_message)} chars. Session: {session_id}, User: {user_email}")
 
     try:
-        response = asyncio.run(process_request(user_message))
+        response = asyncio.run(process_request(user_message, session_id=session_id, user_email=user_email))
         return jsonify({"response": response})
     except Exception as e:
         logger.error(f"Error processing request: {e}")

@@ -26,11 +26,13 @@ def chat():
         return jsonify({"error": "Message is required"}), 400
 
     user_message = data['message']
-    logger.info(f"Received request: {user_message[:50]}...")
+    session_id = data.get('session_id')  # Extract session_id
+    user_email = data.get('user_email')  # Extract user_email for Redis channel
+    logger.info(f"Received request: {user_message[:50]}... Session: {session_id}, User: {user_email}")
 
     try:
         # Run the async agent loop
-        agent_result = asyncio.run(process_request(user_message))
+        agent_result = asyncio.run(process_request(user_message, session_id=session_id, user_email=user_email))
         
         # agent_result is now a dict: {"response": "...", "execution_trace": [...]}
         # We return it directly as JSON

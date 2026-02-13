@@ -45,9 +45,9 @@ def start_job():
     if "traceparent" in request.headers:
         trace_context["traceparent"] = request.headers["traceparent"]
     
-    # Extract Session ID from headers (UI provides this for Phoenix tracking)
-    provided_session_id = request.headers.get('X-Session-ID')
-    logger.info(f"Received session ID from UI: {provided_session_id}")
+    # Extract Session ID from body (Preferred) or headers (Legacy/Fallback)
+    provided_session_id = data.get('session_id') or request.headers.get('X-Session-ID')
+    logger.info(f"Received session ID from UI/Payload: {provided_session_id}")
         
     if not user_request:
         return jsonify({"error": "Prompt/user_request is required"}), 400

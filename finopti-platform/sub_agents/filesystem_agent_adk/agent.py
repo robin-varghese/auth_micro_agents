@@ -14,6 +14,19 @@ from contextlib import AsyncExitStack
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+# Add Redis Publisher
+try:
+    if str(Path(__file__).parent) not in sys.path:
+        sys.path.append(str(Path(__file__).parent))
+
+    from redis_common.redis_publisher import RedisEventPublisher
+except ImportError as e:
+    sys.path.append(str(Path(__file__).parent.parent.parent / "redis-sessions" / "common"))
+    try:
+        from redis_publisher import RedisEventPublisher
+    except ImportError:
+        RedisEventPublisher = None
+
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -38,7 +51,7 @@ from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 # Initialize tracing
 tracer_provider = register(
-    project_name=os.getenv("GCP_PROJECT_ID", "local") + "-filesystem-agent",
+    project_name="finoptiagents-FilesystemAgent",
     endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
     set_global_tracer_provider=True
 )
@@ -139,9 +152,33 @@ class FilesystemMCPClient:
         self.exit_stack = None
 
 from contextvars import ContextVar
+from opentelemetry import trace
+from openinference.semconv.trace import SpanAttributes
 
 # ContextVar to store the MCP client for the current request
 _mcp_ctx: ContextVar["FilesystemMCPClient"] = ContextVar("mcp_client", default=None)
+
+# --- CONTEXT ISOLATION & PROGRESS (Rule 1 & 6) ---
+_session_id_ctx: ContextVar[str] = ContextVar("session_id", default=None)
+_user_email_ctx: ContextVar[str] = ContextVar("user_email", default=None)
+_redis_publisher_ctx: ContextVar = ContextVar("redis_publisher", default=None)
+
+def _report_progress(message, event_type="STATUS_UPDATE", icon="🤖", display_type="markdown", metadata=None):
+    """Standardized progress reporting using context-bound session/user."""
+    pub = _redis_publisher_ctx.get()
+    sid = _session_id_ctx.get()
+    uid = _user_email_ctx.get() or "unknown"
+    if pub and sid:
+        try:
+            span_ctx = trace.get_current_span().get_span_context()
+            trace_id_hex = format(span_ctx.trace_id, '032x') if span_ctx.trace_id else "unknown"
+        except Exception:
+            trace_id_hex = "unknown"
+        pub.publish_event(
+            session_id=sid, user_id=uid, trace_id=trace_id_hex,
+            msg_type=event_type, message=message, display_type=display_type,
+            icon=icon, metadata=metadata
+        )
 
 async def ensure_mcp():
     """Retrieve the client for the CURRENT context."""
@@ -278,10 +315,35 @@ def create_app(model_name: str = None):
         ]
     )
 
-async def send_message_async(prompt: str, user_email: str = None, project_id: str = None) -> str:
+async def send_message_async(prompt: str, user_email: str = None, project_id: str = None, session_id: str = "default") -> str:
+    # --- CONTEXT SETTING (Rule 1 & 6) ---
+    _session_id_ctx.set(session_id)
+    _user_email_ctx.set(user_email or "unknown")
+
+    # Trace attribute setting (Rule 5)
+    span = trace.get_current_span()
+    if span and span.is_recording():
+        span.set_attribute(SpanAttributes.SESSION_ID, session_id or "unknown")
+        if user_email:
+            span.set_attribute("user_id", user_email)
+
     # Create new client for this request (and this event loop)
     mcp = FilesystemMCPClient()
     token_reset = _mcp_ctx.set(mcp)
+
+    # Initialize Redis Publisher once
+    publisher = None
+    if RedisEventPublisher:
+         try:
+             publisher = RedisEventPublisher(
+                 agent_name="Filesystem Agent",
+                 agent_role="Local IO Specialist"
+             )
+             _redis_publisher_ctx.set(publisher)
+         except: pass
+
+    # Publish "Processing" event via standardized helper
+    _report_progress(f"Accessing Filesystem...", icon="📂", display_type="toast")
     
     try:
         await mcp.connect()
@@ -294,10 +356,16 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
         async def _run_once(app_instance):
             response_text = ""
             async with InMemoryRunner(app=app_instance) as runner:
-                await runner.session_service.create_session(session_id="default", user_id="default", app_name="finopti_filesystem_agent")
+                sid = session_id
+                uid = user_email or "default"
+                await runner.session_service.create_session(session_id=sid, user_id=uid, app_name="finopti_filesystem_agent")
                 message = types.Content(parts=[types.Part(text=prompt)])
-                
-                async for event in runner.run_async(session_id="default", user_id="default", new_message=message):
+
+                async for event in runner.run_async(session_id=sid, user_id=uid, new_message=message):
+                    # Stream Events
+                    if publisher:
+                        publisher.process_adk_event(event, session_id=sid, user_id=uid)
+
                     if hasattr(event, 'content') and event.content:
                         for part in event.content.parts:
                             if part.text: response_text += part.text
@@ -312,5 +380,5 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
         await mcp.close()
         _mcp_ctx.reset(token_reset)
 
-def send_message(prompt: str, user_email: str = None, project_id: str = None) -> str:
-    return asyncio.run(send_message_async(prompt, user_email, project_id))
+def send_message(prompt: str, user_email: str = None, project_id: str = None, session_id: str = "default") -> str:
+    return asyncio.run(send_message_async(prompt, user_email, project_id, session_id))

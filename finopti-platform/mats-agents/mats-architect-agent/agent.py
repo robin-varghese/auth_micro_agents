@@ -8,6 +8,7 @@ import asyncio
 import logging
 import json
 from typing import Any
+from contextvars import ContextVar
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.plugins import ReflectAndRetryToolPlugin
@@ -31,6 +32,12 @@ tracer_provider = register(
 GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+# Add Redis Common to path
+sys.path.append('/app/redis_common')
+try:
+    from redis_publisher import RedisEventPublisher
+except ImportError:
+    pass
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -148,8 +155,8 @@ def create_architect_agent(model_name: str = None) -> Agent:
     [Incident ID] - Autonomous Root Cause Analysis
     
     **Metadata (Auto-Generated)**
-    - Incident ID: {{incident_id}}
-    - Primary System: {{impacted_service_name}}
+    - Incident ID: [incident_id]
+    - Primary System: [impacted_service_name]
     - Detection Source: Google Cloud Observability
     - Agent Version: MATS-v1.0
     - Status: Pending Human Review
@@ -195,7 +202,11 @@ def create_architect_agent(model_name: str = None) -> Agent:
 # -------------------------------------------------------------------------
 # RUNNER
 # -------------------------------------------------------------------------
-async def process_request(prompt_or_payload: Any):
+_redis_publisher_ctx: ContextVar["RedisEventPublisher"] = ContextVar("redis_publisher", default=None)
+_session_id_ctx: ContextVar[str] = ContextVar("session_id", default=None)
+_user_email_ctx: ContextVar[str] = ContextVar("user_email", default=None)
+
+async def process_request(prompt_or_payload: Any, session_id: str = None, user_email: str = None):
     # Handle Payload - extract prompt first
     prompt = ""
     if isinstance(prompt_or_payload, dict):
@@ -226,10 +237,28 @@ async def process_request(prompt_or_payload: Any):
     parent_ctx = propagate.extract(trace_context) if trace_context else None
     tracer = trace.get_tracer(__name__)
     
-    # Extract session_id from payload for Phoenix session grouping
-    session_id = None
-    if isinstance(prompt_or_payload, dict):
+    # Extract session_id and user_email from payload if not already provided
+    if not session_id and isinstance(prompt_or_payload, dict):
         session_id = prompt_or_payload.get("session_id")
+    if not user_email and isinstance(prompt_or_payload, dict):
+        user_email = prompt_or_payload.get("user_email")
+    
+    # Store user_email in ContextVar for consistency
+    if user_email:
+        _user_email_ctx.set(user_email)
+
+    # Initialize Redis Publisher
+    try:
+        pub = RedisEventPublisher("MATS Architect", "Architect")
+        _redis_publisher_ctx.set(pub)
+        if session_id:
+            _session_id_ctx.set(session_id)
+            pub.publish_event(
+                session_id=session_id, user_id=user_email or "architect", trace_id="unknown",
+                msg_type="STATUS_UPDATE", message=f"Architect starting RCA synthesis...",
+                display_type="step_progress", icon="🏗️"
+            )
+    except: pass
     
     # Create child span linked to orchestrator's root span
     span_context = {"context": parent_ctx} if parent_ctx else {}
@@ -303,6 +332,17 @@ async def process_request(prompt_or_payload: Any):
                             for part in event.content.parts:
                                 if part.text:
                                     response_text += part.text
+                                    # Report thought to Redis
+                                    pub = _redis_publisher_ctx.get()
+                                    sid = _session_id_ctx.get()
+                                    if pub and sid:
+                                        try:
+                                            pub.publish_event(
+                                                session_id=sid, user_id=user_email or "architect", trace_id="unknown",
+                                                msg_type="THOUGHT", message=part.text[:200],
+                                                display_type="markdown", icon="🧠"
+                                            )
+                                        except: pass
             except Exception as e:
                 err_msg = str(e)
                 logger.error(f"Runner failed: {err_msg}")

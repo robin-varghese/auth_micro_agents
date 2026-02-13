@@ -13,6 +13,26 @@
 
 services:
   # ====================
+  # Redis Gateway (Event Bridge)
+  # ====================
+  redis_gateway:
+    build:
+      context: ./redis-sessions/backend
+    container_name: finopti-redis-gateway
+    ports:
+      - "8001:8000"
+    networks:
+      - finopti-net
+    environment:
+      - REDIS_URL=redis://redis_session_store:6379
+    depends_on:
+      - redis_session_store
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  # ====================
   # Etcd - APISIX Backend
   # ====================
   etcd:
@@ -130,6 +150,7 @@ services:
       - apisix
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ./redis-sessions/common:/app/redis_common
     environment:
       GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID:-}"
       GCP_PROJECT_ID: "${GCP_PROJECT_ID:-}"
@@ -168,6 +189,7 @@ services:
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./redis-sessions/common:/app/redis_common
     environment:
       GOOGLE_CLOUD_PROJECT: "${GCP_PROJECT_ID:-}"
       GCP_PROJECT_ID: "${GCP_PROJECT_ID:-}"
@@ -479,6 +501,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ./redis-sessions/common:/app/redis_common
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
       interval: 10s
@@ -519,6 +542,8 @@ services:
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./redis-sessions/common:/app/redis_common
+      # - ./mats-agents/common:/app/common # Removed to prevent shadowing model_resilience.py
       - finopti-agent-shared-data:/projects
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5004/health"]
@@ -559,7 +584,9 @@ services:
       DB_MCP_TOOLBOX_URL: "http://db_mcp_toolbox:5000/mcp"
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ~/.config/gcloud:/root/.config/gcloud:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./redis-sessions/common:/app/redis_common
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5005/health"]
       interval: 10s
@@ -624,7 +651,9 @@ services:
       GOOGLE_GENAI_USE_VERTEXAI: "TRUE"
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ~/.config/gcloud:/root/.config/gcloud:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./redis-sessions/common:/app/redis_common
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5006/health"]
       interval: 10s
@@ -651,7 +680,9 @@ services:
       # Brave API Key handled by Secret Manager logic in agent, but passing env just in case we switch
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ./redis-sessions/common:/app/redis_common
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5006/health"]
       interval: 10s
@@ -682,6 +713,7 @@ services:
       - ~/.config/gcloud:/root/.config/gcloud:ro
       # Bind mount for the safe fs operation
       - finopti-agent-shared-data:/projects
+      - ./redis-sessions/common:/app/redis_common
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5007/health"]
       interval: 10s
@@ -719,7 +751,9 @@ services:
       - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ./redis-sessions/common:/app/redis_common
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5008/health"]
       interval: 10s
@@ -747,6 +781,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
       - finopti-agent-shared-data:/projects
+      - ./redis-sessions/common:/app/redis_common
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5009/health"]
       interval: 10s
@@ -801,6 +836,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ./redis-sessions/common:/app/redis_common
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5010/health"]
       interval: 10s
@@ -824,15 +860,7 @@ services:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GOOGLE_GENAI_USE_VERTEXAI=TRUE
       - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
-      - BQ_ANALYTICS_TABLE=${BQ_ANALYTICS_TABLE:-}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ~/.config/gcloud:/root/.config/gcloud:ro
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5011/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+
 
   # --- Code Execution Agent ---
   code_execution_agent_adk:
@@ -854,6 +882,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ./redis-sessions/common:/app/redis_common
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5012/health"]
       interval: 10s
@@ -893,6 +922,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ./redis-sessions/common:/app/redis_common
     ports:
       - "8081:8081"
     networks:
@@ -920,6 +950,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ./redis-sessions/common:/app/redis_common
     ports:
       - "8082:8082"
     networks:
@@ -946,6 +977,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ./redis-sessions/common:/app/redis_common
     ports:
       - "8083:8083"
     networks:
@@ -981,6 +1013,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ./redis-sessions/common:/app/redis_common
     ports:
       - "8084:8084"
     networks:

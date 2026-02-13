@@ -86,20 +86,23 @@ def execute():
         user_email = data.get('user_email', 'unknown')
         project_id = data.get('project_id', config.GCP_PROJECT_ID)
         
+        session_id = data.get('session_id', 'default')
+        
         # Log request
         if STRUCTURED_LOGGING_AVAILABLE:
             logger.info(
                 "Received monitoring request",
                 user_email=user_email,
+                session_id=session_id,
                 prompt=prompt[:100] if len(prompt) > 100 else prompt,
                 project_id=project_id
             )
         else:
-            logger.info(f"Received request from {user_email}: {prompt[:100]}")
+            logger.info(f"Received request from {user_email} (session: {session_id}): {prompt[:100]}")
         
         # Process with ADK agent
         from agent import send_message
-        response_text = send_message(prompt, user_email, project_id)
+        response_text = send_message(prompt, user_email, project_id, session_id=session_id)
         
         # Log success
         if STRUCTURED_LOGGING_AVAILABLE:

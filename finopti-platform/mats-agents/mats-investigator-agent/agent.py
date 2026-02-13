@@ -7,10 +7,17 @@ import asyncio
 import json
 import logging
 from typing import Dict, Any, List
+from contextvars import ContextVar
 
 import requests
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+# Add Redis Common to path
+sys.path.append('/app/redis_common')
+try:
+    from redis_publisher import RedisEventPublisher
+except ImportError:
+    pass
 
 from google.adk.agents import Agent
 from google.adk.apps import App
@@ -49,6 +56,10 @@ else:
 # -------------------------------------------------------------------------
 # PROGRESS HELPER (ASYNC)
 # -------------------------------------------------------------------------
+_redis_publisher_ctx: ContextVar["RedisEventPublisher"] = ContextVar("redis_publisher", default=None)
+_session_id_ctx: ContextVar[str] = ContextVar("session_id", default=None)
+_user_email_ctx: ContextVar[str] = ContextVar("user_email", default=None)
+
 async def _report_progress(message: str, event_type: str = "INFO"):
     """Helper to send progress to Orchestrator"""
     job_id = os.environ.get("MATS_JOB_ID")
@@ -56,6 +67,28 @@ async def _report_progress(message: str, event_type: str = "INFO"):
     
     if not job_id:
         return
+
+    # Redis Publishing
+    publisher = _redis_publisher_ctx.get()
+    session_id = _session_id_ctx.get()
+    
+    if publisher and session_id:
+        try:
+             # Map internal event types
+             msg_type_map = {
+                 "INFO": "STATUS_UPDATE", "TOOL_USE": "TOOL_CALL", "OBSERVATION": "OBSERVATION", 
+                 "ERROR": "ERROR", "THOUGHT": "THOUGHT"
+             }
+             mapped_type = msg_type_map.get(event_type, "STATUS_UPDATE")
+             icons = {"INFO": "ℹ️", "TOOL_USE": "🛠️", "OBSERVATION": "👁️", "ERROR": "❌", "THOUGHT": "🧠"}
+             
+             publisher.publish_event(
+                 session_id=session_id, user_id=_user_email_ctx.get() or "investigator", trace_id="unknown",
+                 msg_type=mapped_type, message=message,
+                 display_type="markdown" if mapped_type == "THOUGHT" else "console_log",
+                 icon=icons.get(event_type, "🤖")
+             )
+        except: pass
 
     try:
         loop = asyncio.get_running_loop()
@@ -281,7 +314,7 @@ def create_investigator_agent(model_name: str = None) -> Agent:
 # -------------------------------------------------------------------------
 # RUNNER
 # -------------------------------------------------------------------------
-async def process_request(prompt_or_payload: Any):
+async def process_request(prompt_or_payload: Any, session_id: str = None, user_email: str = None):
     # Ensure API Key state is consistent
     if config.GOOGLE_API_KEY and not (config.GOOGLE_GENAI_USE_VERTEXAI and config.GOOGLE_GENAI_USE_VERTEXAI.upper() == "TRUE"):
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
@@ -304,6 +337,9 @@ async def process_request(prompt_or_payload: Any):
         prompt = prompt_or_payload.get("message", "")
         job_id = prompt_or_payload.get("job_id")
         orchestrator_url = prompt_or_payload.get("orchestrator_url")
+        # Allow payload to override session_id if provided there
+        if not session_id:
+             session_id = prompt_or_payload.get("session_id")
     else:
          # Try to parse string as json just in case
          input_str = str(prompt_or_payload)
@@ -313,6 +349,8 @@ async def process_request(prompt_or_payload: Any):
                  prompt = data.get("message", input_str)
                  job_id = data.get("job_id")
                  orchestrator_url = data.get("orchestrator_url")
+                 if not session_id:
+                    session_id = data.get("session_id")
              else:
                  prompt = input_str
          except:
@@ -342,10 +380,26 @@ async def process_request(prompt_or_payload: Any):
     parent_ctx = propagate.extract(trace_context) if trace_context else None
     tracer = trace.get_tracer(__name__)
     
-    # Extract session_id from payload for Phoenix session grouping
-    session_id = None
-    if isinstance(prompt_or_payload, dict):
-        session_id = prompt_or_payload.get("session_id")
+    # Extract user_email from payload if not already provided
+    if not user_email and isinstance(prompt_or_payload, dict):
+        user_email = prompt_or_payload.get("user_email")
+    
+    # Store user_email in ContextVar for _report_progress
+    if user_email:
+        _user_email_ctx.set(user_email)
+
+    # Initialize Redis Publisher
+    try:
+        pub = RedisEventPublisher("MATS Investigator", "Investigator")
+        _redis_publisher_ctx.set(pub)
+        if session_id:
+            _session_id_ctx.set(session_id)
+            pub.publish_event(
+                session_id=session_id, user_id=user_email or "investigator", trace_id="unknown",
+                msg_type="STATUS_UPDATE", message=f"Investigator starting analysis...",
+                display_type="step_progress", icon="🕵️"
+            )
+    except: pass
     
     # Create child span linked to orchestrator's root span
     span_context = {"context": parent_ctx} if parent_ctx else {}

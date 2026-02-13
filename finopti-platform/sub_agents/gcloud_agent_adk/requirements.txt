@@ -1,5 +1,7 @@
-google-adk>=1.21.0
-google-generativeai>=0.8.0
+google-adk
+google-genai
+redis
+pydantic
 requests>=2.32.4
 python-dotenv>=1.0.1
 requests>=2.32.4

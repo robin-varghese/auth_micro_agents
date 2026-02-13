@@ -16,15 +16,11 @@ REDIS_HOST = os.getenv("REDIS_HOST", "redis_session_store")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 
-# Global Redis Client
-_redis_client = None
-
 def get_redis_client():
-    global _redis_client
-    if _redis_client is None:
-        logger.info(f"Initializing Redis Client: host={REDIS_HOST}, port={REDIS_PORT}, db={REDIS_DB}")
-        _redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
-    return _redis_client
+    # Remove global caching to avoid Event Loop issues across threads
+    # redis-py's ConnectionPool handles the actual connection management efficiently
+    logger.info(f"Creating Redis Client: host={REDIS_HOST}, port={REDIS_PORT}, db={REDIS_DB}")
+    return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
 
 class WorkflowPhase(Enum):
     """Investigation workflow phases"""
