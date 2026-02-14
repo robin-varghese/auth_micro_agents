@@ -1,17 +1,19 @@
 """
-MATS Orchestrator - Main Agent
+MATS Orchestrator - Core Agent
 
 Orchestrator agent using Sequential Thinking for planning and delegation.
-Follows AI_AGENT_DEVELOPMENT_GUIDE.md v3.0 standards.
+Follows AI_AGENT_DEVELOPMENT_GUIDE.md v5.0 standards.
+
+Refactored per REFACTORING_GUIDELINE.md:
+- Core agent definition (create_app) and workflow (run_investigation_async) remain here
+- Supporting modules: observability, context, mcp_client, planner, routing, response_builder
 """
 import os
 import sys
 import asyncio
 import json
 import logging
-from contextvars import ContextVar
-from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from google.adk.agents import Agent
 from google.adk.apps import App
@@ -23,370 +25,52 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import (
 )
 from google.genai import types
 
-# Observability
-from phoenix.otel import register
-from openinference.instrumentation.google_adk import GoogleADKInstrumentor
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-
-from utils.tracing import trace_span
-
+# Ensure paths
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-# Add Redis Common to path
 sys.path.append('/app/redis_common')
+
 try:
     from redis_publisher import RedisEventPublisher
 except ImportError:
-    # Fallback for local testing vs docker
-    pass
-from config import config
+    RedisEventPublisher = None
 
-# Configure logging
+from config import config
+from utils.tracing import trace_span
+
+# --- EXTRACTED MODULES ---
+from observability import setup_observability, ensure_api_key_env
+from context import (
+    _session_id_ctx, _user_email_ctx, _redis_publisher_ctx,
+    _sequential_thinking_ctx, _report_progress
+)
+from mcp_client import SequentialThinkingClient
+from planner import generate_plan, load_agent_registry
+from routing import match_operational_route, handle_operational_request
+from response_builder import format_investigation_response, safe_confidence
+
+# --- SETUP ---
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - [%(session_id)s] %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Initialize tracing
-# Use SimpleSpanProcessor for debugging to ensure immediate export 
-# (register uses BatchSpanProcessor by default)
-TRACE_ENDPOINT = os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces")
+# Initialize observability (Phoenix, OTel, ADK Instrumentor)
+tracer_provider, tracer = setup_observability()
 
-tracer_provider = register(
-    project_name="finoptiagents-MATS",
-    endpoint=TRACE_ENDPOINT,
-    set_global_tracer_provider=True
-)
+# Set API key if needed
+ensure_api_key_env()
 
-# Force SimpleSpanProcessor for immediate export debug
-# Note: register() adds a BatchSpanProcessor. We are adding a second processor.
-# ideally we would replace it, but adding a simple one ensures at least one path flushes immediately.
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-http_exporter = OTLPSpanExporter(endpoint=TRACE_ENDPOINT)
-tracer_provider.add_span_processor(SimpleSpanProcessor(http_exporter))
-
-GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
-
-# Send manual test trace on startup
+# OTel imports for span attributes
 from opentelemetry import trace, propagate
-from openinference.semconv.trace import SpanAttributes, OpenInferenceSpanKindValues
-
-# Get tracer for creating spans
-tracer = trace.get_tracer(__name__)
-
-# Send manual test trace on startup
-with tracer.start_as_current_span("agent-startup-check") as span:
-    span.set_attribute("status", "startup_ok")
-    logger.info("Sent manual startup trace to Phoenix")
-
-
-# Ensure API Key is in environment ONLY if not using Vertex AI
-# Vertex AI requires ADC/OAuth tokens. API keys can cause 401 conflicts.
-if config.GOOGLE_API_KEY and not (config.GOOGLE_GENAI_USE_VERTEXAI and config.GOOGLE_GENAI_USE_VERTEXAI.upper() == "TRUE"):
-    os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
-    logger.info("Using API Key for authentication (Vertex AI disabled)")
-else:
-    # Ensure it's NOT in env to force ADC for Vertex
-    if "GOOGLE_API_KEY" in os.environ:
-        del os.environ["GOOGLE_API_KEY"]
-    logger.info("Using ADC/Service Account for authentication (Vertex AI enabled)")
-
-# --- CONTEXT ISOLATION & PROGRESS (Rule 1 & 6) ---
-# Stores state for the current request context
-_sequential_thinking_ctx: ContextVar["SequentialThinkingClient"] = ContextVar("seq_thinking_client", default=None)
-_session_id_ctx: ContextVar[str] = ContextVar("session_id", default=None)
-_user_email_ctx: ContextVar[str] = ContextVar("user_email", default=None)
-_redis_publisher_ctx: ContextVar["RedisEventPublisher"] = ContextVar("redis_publisher", default=None)
-
-async def _report_progress(message: str, event_type: str = "STATUS_UPDATE", icon: str = "🤖", display_type: str = "markdown", metadata: dict = None):
-    """Standardized progress reporting using context-bound session/user."""
-    pub = _redis_publisher_ctx.get()
-    sid = _session_id_ctx.get()
-    uid = _user_email_ctx.get() or "unknown"
-    
-    if pub and sid:
-        # Extract trace_id from current span for link back
-        try:
-            span_ctx = trace.get_current_span().get_span_context()
-            trace_id_hex = format(span_ctx.trace_id, '032x') if span_ctx.trace_id else "unknown"
-        except Exception:
-            trace_id_hex = "unknown"
-
-        pub.publish_event(
-            session_id=sid,
-            user_id=uid,
-            trace_id=trace_id_hex,
-            msg_type=event_type,
-            message=message,
-            display_type=display_type,
-            icon=icon,
-            metadata=metadata
-        )
-
-
-class SequentialThinkingClient:
-    """MCP client for Sequential Thinking specialist"""
-    
-    def __init__(self):
-        self.image = os.getenv("SEQUENTIAL_THINKING_MCP_DOCKER_IMAGE", "sequentialthinking")
-        self.mount_path = os.getenv('GCLOUD_MOUNT_PATH', f"{os.path.expanduser('~')}/.config/gcloud:/root/.config/gcloud")
-        self.process = None
-        self.request_id = 0
-        
-    async def connect(self):
-        """Start the Sequential Thinking MCP server"""
-        # No need for gcloud mount for sequential thinking logic
-        cmd = ["docker", "run", "-i", "--rm", self.image]
-        logger.info(f"Starting Sequential Thinking MCP: {' '.join(cmd)}")
-        
-        self.process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=10 * 1024 * 1024  # 10MB buffer
-        )
-        await self._handshake()
-        
-    async def _handshake(self):
-        """Perform MCP initialization handshake"""
-        init_msg = {
-            "jsonrpc": "2.0",
-            "id": 0,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "roots": {
-                        "listChanged": True
-                    },
-                    "sampling": {}
-                },
-                "clientInfo": {"name": "mats-orchestrator", "version": "1.0.0"}
-            }
-        }
-        await self._send_json(init_msg)
-        response = await self._read_json()
-        logger.info(f"Sequential Thinking MCP initialized: {response}")
-
-        # Send initialized notification
-        await self._send_json({
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized"
-        })
-        
-    async def _send_json(self, data: dict):
-        """Send JSON-RPC message"""
-        message = json.dumps(data) + "\n"
-        self.process.stdin.write(message.encode())
-        await self.process.stdin.drain()
-        
-    async def _read_json(self) -> dict:
-        """Read JSON-RPC response, skipping non-JSON lines"""
-        while True:
-            line = await self.process.stdout.readline()
-            if not line:
-                raise EOFError("MCP server process closed unexpectedly")
-            
-            line_str = line.decode().strip()
-            if not line_str:
-                continue
-                
-            try:
-                return json.loads(line_str)
-            except json.JSONDecodeError:
-                logger.debug(f"MCP non-JSON output: {line_str}")
-                continue
-        
-    async def call_tool(self, tool_name: str, args: dict) -> dict:
-        """Call a tool on the MCP server"""
-        self.request_id += 1
-        request = {
-            "jsonrpc": "2.0",
-            "id": self.request_id,
-            "method": "tools/call",
-            "params": {"name": tool_name, "arguments": args}
-        }
-        await self._send_json(request)
-        response = await self._read_json()
-        
-        if "error" in response:
-            raise Exception(f"Tool call error: {response['error']}")
-            
-        return response.get("result", {})
-        
-    async def close(self):
-        """Close the MCP connection"""
-        if self.process:
-            try:
-                self.process.stdin.close()
-                await asyncio.wait_for(self.process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                logger.warning("Sequential Thinking MCP did not exit gracefully, killing")
-                self.process.kill()
-                await self.process.wait()
-
-
-async def ensure_sequential_thinking():
-    """Retrieve Sequential Thinking client for current context"""
-    client = _sequential_thinking_ctx.get()
-    if not client:
-        raise RuntimeError("Sequential Thinking MCP not initialized for this context")
-    return client
-
-
-# --- TOOL WRAPPERS ---
-async def generate_plan(user_request: str, agent_registry: list) -> Dict[str, Any]:
-    """
-    Generate investigation plan using LLM directly (Bypassing MCP tool to avoid schema errors).
-    
-    Args:
-        user_request: User's problem description
-        agent_registry: List of available agents/capabilities
-        
-    Returns:
-        Plan with reasoning and steps
-    """
-    # Format agent registry for context
-    capabilities_summary = "\n".join([
-        f"- {agent['name']}: {agent.get('capabilities', 'N/A')}"
-        for agent in agent_registry
-    ])
-    
-    prompt = f"""
-    You are a Principal SRE Investigator planning a troubleshooting session.
-    
-    USER REQUEST: {user_request}
-    
-    AVAILABLE CAPABILITIES:
-    {capabilities_summary}
-    
-    Create a step-by-step investigation plan. Your plan should:
-    1. Start with log/metric triage (SRE)
-    2. Move to code analysis (Investigator)
-    3. End with RCA synthesis (Architect)
-    
-    Think through the approach carefully and output a JSON plan with:
-    - plan_id
-    - reasoning (why this approach)
-    - steps (array of {{step_id, assigned_lead, task, ui_label}})
-    """
-    
-    try:
-        from google import genai
-        # Re-verify API key availability for this client
-        api_key = None
-        if config.GOOGLE_API_KEY and not (config.GOOGLE_GENAI_USE_VERTEXAI and config.GOOGLE_GENAI_USE_VERTEXAI.upper() == "TRUE"):
-            api_key = config.GOOGLE_API_KEY
-            
-        client = genai.Client(api_key=api_key)
-        
-
-        logger.info(f"Generating plan. Primary model: {config.FINOPTIAGENTS_LLM}")
-        
-        response = None
-        last_error = None
-        
-        # Use fallback list or default to single model if list missing
-        model_list = getattr(config, "FINOPTIAGENTS_MODEL_LIST", [config.FINOPTIAGENTS_LLM])
-        
-        for model_name in model_list:
-            try:
-                logger.info(f"Attempting plan generation with model: {model_name}")
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config={"response_mime_type": "application/json"}
-                )
-                logger.info(f"Plan generation successful with model: {model_name}")
-                break # Success
-            except Exception as e:
-                err_msg = str(e)
-                if "429" in err_msg or "Resource exhausted" in err_msg or "Too Many Requests" in err_msg:
-                    logger.warning(f"Model {model_name} quota exhausted. Switching to next model...")
-                    last_error = e
-                    continue
-                else:
-                    # For other errors, we might strictly fail, but for planning let's try others too just in case
-                    logger.warning(f"Model {model_name} failed with error: {e}. Retrying with next...")
-                    last_error = e
-                    continue
-        
-        if not response:
-             raise last_error or RuntimeError("All models failed plan generation")
-        
-        if not response.parsed:
-             # Fallback parsing if needed
-             import json
-             plan = json.loads(response.text)
-        else:
-             plan = response.parsed
-             
-        # Robust parsing for List output (common small model behavior)
-        if isinstance(plan, list):
-            logger.warning(f"Plan generation returned a list, attempting to wrap: {str(plan)[:100]}...")
-            if len(plan) > 0 and isinstance(plan[0], dict):
-                # Case 1: List of steps
-                if "step_id" in plan[0]:
-                    plan = {
-                        "plan_id": "auto-generated",
-                        "reasoning": "Model returned raw list of steps",
-                        "steps": plan
-                    }
-                # Case 2: List containing the plan object
-                elif "steps" in plan[0]:
-                    plan = plan[0]
-                else:
-                    return {
-                        "plan_id": "fallback-list",
-                        "reasoning": "Model returned unrecognized list format",
-                        "steps": [
-                            {"step_id": 1, "assigned_lead": "sre", "task": f"Analyze logs: {user_request}", "ui_label": "Investigating"}
-                        ]
-                    }
-            else:
-                 return {
-                    "plan_id": "fallback-empty",
-                    "reasoning": "Model returned empty/invalid list",
-                    "steps": [
-                        {"step_id": 1, "assigned_lead": "sre", "task": f"Analyze logs: {user_request}", "ui_label": "Investigating"}
-                    ]
-                 }
-                 
-        return plan
-        
-    except Exception as e:
-        logger.error(f"Plan generation failed: {e}")
-        # Fallback plan
-        return {
-            "plan_id": "fallback-001",
-            "reasoning": "Using default 3-step investigation due to planning error",
-            "steps": [
-                {"step_id": 1, "assigned_lead": "sre", "task": f"Analyze logs for: {user_request}", "ui_label": "Investigating Logs"},
-                {"step_id": 2, "assigned_lead": "investigator", "task": "Analyze code", "ui_label": "Analyzing Code"},
-                {"step_id": 3, "assigned_lead": "architect", "task": "Generate RCA", "ui_label": "Generating RCA"}
-            ]
-        }
-
-
-# Load agent registry
-def load_agent_registry() -> list:
-    """Load agent registry from JSON file"""
-    registry_path = Path(__file__).parent / "agent_registry.json"
-    if registry_path.exists():
-        with open(registry_path) as f:
-            return json.load(f)
-    return []
+from openinference.semconv.trace import SpanAttributes
 
 
 # --- COMPONENT FACTORY (Rule 8) ---
 def create_app():
     """Factory to create loop-safe App and Agent instances."""
-    # Ensure API Key is in environment ONLY if not using Vertex AI
-    if config.GOOGLE_API_KEY and not (config.GOOGLE_GENAI_USE_VERTEXAI and config.GOOGLE_GENAI_USE_VERTEXAI.upper() == "TRUE"):
-        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    ensure_api_key_env()
     
-    # Define Agent
     orchestrator_agent = Agent(
         name="mats_orchestrator",
         model=config.FINOPTIAGENTS_LLM,
@@ -423,7 +107,6 @@ def create_app():
         tools=[] 
     )
 
-    # BigQuery Analytics Plugin
     bq_plugin = BigQueryAgentAnalyticsPlugin(
         project_id=os.getenv("GCP_PROJECT_ID"),
         dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
@@ -451,9 +134,9 @@ async def run_investigation_async(
     repo_url: str,
     user_email: str = None,
     job_id: str = None,
-    resume_job_id: str = None, # New optional param to signal resumption
+    resume_job_id: str = None,
     trace_context: Dict[str, Any] = None,
-    provided_session_id: str = None  # NEW: Session ID from UI for Phoenix tracking
+    provided_session_id: str = None
 ) -> Dict[str, Any]:
     """
     Run complete investigation workflow.
@@ -461,13 +144,12 @@ async def run_investigation_async(
     Returns:
         Investigation results with RCA URL
     """
+    import re
     from state import create_session, WorkflowPhase
     from delegation import (
         delegate_to_sre, 
         delegate_to_investigator, 
         delegate_to_architect,
-        delegate_to_operational_agent,
-        GCLOUD_AGENT_URL
     )
     from quality_gates import (
         gate_planning_to_triage,
@@ -475,21 +157,19 @@ async def run_investigation_async(
         gate_analysis_to_synthesis,
         GateDecision
     )
-    # Import JobManager locally 
     try:
         from job_manager import JobManager
     except ImportError:
         JobManager = None
-    
-    # Create session (use provided_session_id from UI if available)
+
+    # Create session
     session = await create_session(user_email or "default", project_id, repo_url, provided_session_id)
     session_id = session.session_id
-    
+
     # --- CONTEXT SETTING (Rule 1 & 6) ---
     _session_id_ctx.set(session_id)
     _user_email_ctx.set(user_email or "unknown")
 
-    # Trace attribute setting (Rule 5)
     span = trace.get_current_span()
     if span and span.is_recording():
         span.set_attribute(SpanAttributes.SESSION_ID, session_id)
@@ -499,94 +179,31 @@ async def run_investigation_async(
     logger.info(f"[{session_id}] Starting investigation (Job: {job_id}): {user_request[:100]}")
 
     # --- REDIS INSTRUMENTATION (Rule 6) ---
-    try:
-        redis_publisher = RedisEventPublisher("MATS Orchestrator", "Orchestrator")
-        _redis_publisher_ctx.set(redis_publisher)
-    except Exception as e:
-        logger.error(f"Failed to initialize RedisEventPublisher: {e}")
-        redis_publisher = None
+    redis_publisher = None
+    if RedisEventPublisher:
+        try:
+            redis_publisher = RedisEventPublisher("MATS Orchestrator", "Orchestrator")
+            _redis_publisher_ctx.set(redis_publisher)
+        except Exception as e:
+            logger.error(f"Failed to initialize RedisEventPublisher: {e}")
 
     await _report_progress(f"Received request: {user_request[:50]}...", event_type="STATUS_UPDATE", icon="📥", display_type="step_progress")
 
-    # --- REQUEST VALIDATION: Guard against simple operations ---
-    import re
-    request_lower = user_request.lower()
-    
-    # --- OPERATIONAL ROUTING (User Request: Delegate simple tasks) ---
-    import re
-    request_lower = user_request.lower()
-    
-    # Define operational patterns and their target agents
-    # Format: (regex_pattern, agent_url, agent_name)
-    operational_routes = [
-        # GCloud Patterns
-        (r'\blist\s+(all|my|the)?\s*(vms?|instances?|buckets?|services?|projects?|resources?)', GCLOUD_AGENT_URL, "GCloud Agent"),
-        (r'\bshow\s+(all|my|the)?\s*(vms?|instances?|buckets?|services?|projects?|resources?)', GCLOUD_AGENT_URL, "GCloud Agent"),
-        (r'\bget\s+(all|my|the)?\s*(vms?|instances?|buckets?|services?|projects?|resources?)', GCLOUD_AGENT_URL, "GCloud Agent"),
-        (r'\bcreate\s+a?\s*(vm|instance|bucket|service|resource)', GCLOUD_AGENT_URL, "GCloud Agent"),
-        (r'\bdelete\s+a?\s*(vm|instance|bucket|service|resource)', GCLOUD_AGENT_URL, "GCloud Agent"),
-        (r'\bdescribe\s+(the|my|a)?\s*(vm|instance|bucket|service|resource)', GCLOUD_AGENT_URL, "GCloud Agent"),
-        # Add Generic GCloud Intent if relevant
-        (r'\bgcloud\s+', GCLOUD_AGENT_URL, "GCloud Agent"),
-    ]
-    
-    match_found = False
-    target_agent_url = None
-    target_agent_name = None
-    
-    for pattern, url, name in operational_routes:
-        if re.search(pattern, request_lower):
-            match_found = True
-            target_agent_url = url
-            target_agent_name = name
-            logger.info(f"[{session_id}] Request matched operational route: {name} (Pattern: {pattern})")
-            break
-            
-    if match_found:
-        await _report_progress(f"Routing request to **{target_agent_name}**...", event_type="THOUGHT", icon="🧠")
-        
-        try:
-            # Delegate to Operational Agent
-            op_result = await delegate_to_operational_agent(
-                task_description=user_request,
-                agent_url=target_agent_url,
-                agent_name=target_agent_name,
-                session_id=session_id,
-                user_email=user_email
-            )
-            
-            # Format Response
-            response_text = ""
-            if op_result.get("success"):
-                response_text = op_result.get("response", "Command executed successfully.")
-                await _report_progress(response_text, event_type="ARTIFACT", icon="✅")
-            else:
-                response_text = f"⚠️ Error executing command: {op_result.get('message', 'Unknown error')}"
-                await _report_progress(response_text, event_type="ERROR", icon="❌", display_type="alert")
-                
-            # Log completion for JobManager if needed
-            if job_id and JobManager:
-                JobManager.update_job(job_id, {"status": "COMPLETED", "result": op_result})
-
-            return {
-                "status": "SUCCESS",
-                "orchestrator": {"target_agent": target_agent_name},
-                "response": response_text,
-                "data": op_result
-            }
-            
-        except Exception as e:
-            logger.error(f"[{session_id}] Operational delegation failed: {e}")
-            await _report_progress(f"Failed to execute command: {e}", event_type="ERROR", icon="❌", display_type="alert")
-            return {
-                "status": "FAILURE",
-                "error": str(e)
-            }
-
+    # --- OPERATIONAL ROUTING: Bypass investigation for simple commands ---
+    matched, agent_url, agent_name = match_operational_route(user_request)
+    if matched:
+        return await handle_operational_request(
+            user_request=user_request,
+            agent_url=agent_url,
+            agent_name=agent_name,
+            session_id=session_id,
+            user_email=user_email,
+            job_id=job_id,
+            report_progress=_report_progress
+        )
 
     await _report_progress(f"Starting investigation: {user_request[:50]}...", event_type="STATUS_UPDATE", icon="🚀", display_type="step_progress")
 
-    
     # Initialize Sequential Thinking MCP
     seq_client = SequentialThinkingClient()
     token_reset = _sequential_thinking_ctx.set(seq_client)
@@ -602,7 +219,6 @@ async def run_investigation_async(
             try:
                 plan = await generate_plan(user_request, agent_registry)
                 
-                # EMIT PLAN EVENT
                 plan_summary = f"**Investigation Plan**\n\nReasoning: {plan.get('reasoning', 'N/A')}\n\nSteps:\n"
                 for i, step in enumerate(plan.get('steps', []), 1):
                     plan_summary += f"{i}. {step.get('ui_label')} ({step.get('assigned_lead')})\n"
@@ -627,13 +243,10 @@ async def run_investigation_async(
                 }
         else:
             logger.info(f"[{session_id}] Resuming job {resume_job_id}. Skipping Planning.")
-            # Restore state if possible (Mocking state restoration for now)
-            # In real system, load session from DB using job_id linkage.
-            # Here we will re-use the Job's last result if available via JobManager
             if JobManager:
-                 prev_job = JobManager.get_job(resume_job_id)
-                 if prev_job and prev_job.get("result"):
-                     session.sre_findings = prev_job["result"].get("sre_findings")
+                prev_job = JobManager.get_job(resume_job_id)
+                if prev_job and prev_job.get("result"):
+                    session.sre_findings = prev_job["result"].get("sre_findings")
 
         # --- PHASE 2: TRIAGE (SRE) ---
         await _report_progress("Triaging logs and metrics (SRE)...", event_type="STATUS_UPDATE", icon="🔍", display_type="step_progress")
@@ -641,34 +254,31 @@ async def run_investigation_async(
         
         sre_result = None
         
-        # Determine if we call SRE fresh or Resume SRE
         if resume_job_id and session.sre_findings:
-             # RESUME SRE
-             logger.info(f"[{session_id}] Resuming SRE with user input: {user_request}")
-             JobManager.add_event(job_id, "SYSTEM", "Resuming SRE Analysis...", "orchestrator")
-             
-             # Attempt to extract Project ID from user input (Heuristic)
-             import re
-             # Extract pattern like "project id: foo" or "project: bar"
-             patterns = [
-                 r"project\s*(?:id|name)?\s*[:=]\s*([a-z0-9-]+)",
-                 r"gcp\s*project\s*[:=]\s*([a-z0-9-]+)"
-             ]
-             for p in patterns:
-                 m = re.search(p, user_request, re.IGNORECASE)
-                 if m:
-                     new_pid = m.group(1).strip()
-                     if new_pid and new_pid.lower() != "yes":
+            # RESUME SRE
+            logger.info(f"[{session_id}] Resuming SRE with user input: {user_request}")
+            if JobManager:
+                JobManager.add_event(job_id, "SYSTEM", "Resuming SRE Analysis...", "orchestrator")
+            
+            # Extract Project ID from user input (Heuristic)
+            patterns = [
+                r"project\s*(?:id|name)?\s*[:=]\s*([a-z0-9-]+)",
+                r"gcp\s*project\s*[:=]\s*([a-z0-9-]+)"
+            ]
+            for p in patterns:
+                m = re.search(p, user_request, re.IGNORECASE)
+                if m:
+                    new_pid = m.group(1).strip()
+                    if new_pid and new_pid.lower() != "yes":
                         project_id = new_pid
                         logger.info(f"[{session_id}] Extracted Project ID from user input: {project_id}")
                         break
 
-             # Construct Resumption Prompt
-             prev_findings = session.sre_findings
-             pending_steps = prev_findings.get("pending_steps", [])
-             
-             # Context for SRE to know what it did
-             sre_resume_prompt = f"""
+            # Construct Resumption Prompt
+            prev_findings = session.sre_findings
+            pending_steps = prev_findings.get("pending_steps", [])
+            
+            sre_resume_prompt = f"""
              RESUMPTION INSTRUCTION:
              You previously paused analysis.
              User has APPROVED continuing with the following steps: {pending_steps}.
@@ -686,62 +296,56 @@ async def run_investigation_async(
              GOAL: Finish the investigation or declared "ROOT_CAUSE_NOT_FOUND".
              """
              
-             # Pass job_id to sub-agents for progress reporting
-             sre_result = await delegate_to_sre(
+            sre_result = await delegate_to_sre(
                 sre_resume_prompt,
                 project_id,
                 session_id,
                 job_id=job_id,
                 user_email=user_email
-             )
+            )
         else:
             # FRESH SRE CALL
-            # Pass job_id to sub-agents for progress reporting
             sre_result = await delegate_to_sre(
                 f"{user_request}\n\nFocus on finding error signatures and stack traces.",
                 project_id,
                 session_id,
-                job_id=job_id, # Passing job_id
+                job_id=job_id,
                 user_email=user_email
             )
             
         session.sre_findings = sre_result
-        conf = sre_result.get('confidence')
-        session.confidence_scores['sre'] = conf if conf is not None else 0.0
+        session.confidence_scores['sre'] = safe_confidence(sre_result.get('confidence'))
         
         gate_result, reason = gate_triage_to_analysis(sre_result, session_id)
         
-        # New: Handle Interactive SRE Pause
+        # Handle Interactive SRE Pause
         if sre_result.get("status") == "WAITING_FOR_APPROVAL":
-             pending_steps = sre_result.get("pending_steps", [])
-             steps_list = "\n".join([f"- {s}" for s in pending_steps])
-             response_msg = (
-                 f"⚠️ **SRE Analysis Paused**\n\n"
-                 f"The SRE Agent has completed initial checks but identified {len(pending_steps)} more potential analysis steps.\n\n"
-                 f"**Completed Work**: Analyzed initial logs.\n"
-                 f"**Pending Steps**:\n{steps_list}\n\n"
-                 f"**Action Required**: Check the steps above. If the agent is missing information (e.g., Project ID), please provide it.\n"
-                 f"Otherwise, reply **'Yes'** or **'Continue'** to proceed."
-             )
-             
-             return {
-                 "status": "WAITING_FOR_USER",
-                 "sre_findings": sre_result,
-                 "response": response_msg,
-                 "execution_trace": sre_result.get("execution_trace", [])
-             }
+            pending_steps = sre_result.get("pending_steps", [])
+            steps_list = "\n".join([f"- {s}" for s in pending_steps])
+            response_msg = (
+                f"⚠️ **SRE Analysis Paused**\n\n"
+                f"The SRE Agent has completed initial checks but identified {len(pending_steps)} more potential analysis steps.\n\n"
+                f"**Completed Work**: Analyzed initial logs.\n"
+                f"**Pending Steps**:\n{steps_list}\n\n"
+                f"**Action Required**: Check the steps above. If the agent is missing information (e.g., Project ID), please provide it.\n"
+                f"Otherwise, reply **'Yes'** or **'Continue'** to proceed."
+            )
+            
+            return {
+                "status": "WAITING_FOR_USER",
+                "sre_findings": sre_result,
+                "response": response_msg,
+                "execution_trace": sre_result.get("execution_trace", [])
+            }
 
         if gate_result == GateDecision.FAIL:
-            # Check if failure is actually a definitive blocker (Infra/Auth issue)
+            # Check if failure is an infra blocker (authentication, permission, etc.)
             blockers = sre_result.get("blockers", [])
-            # Heuristic: If we have specific blockers or low confidence but specific error signature
             infra_keywords = ["authentication", "permission", "access", "role", "limit", "quota", "iam", "policy", "forbidden", "403"]
             is_infra_blocker = any(any(k in b.lower() for k in infra_keywords) for b in blockers)
             
             if is_infra_blocker:
-                logger.info(f"[{session_id}] SRE blocked by definitive Infra issue: {blockers}. Treated as Root Cause.")
-                
-                # Treat as Root Cause Found -> Go to Architect
+                logger.info(f"[{session_id}] SRE blocked by Infra issue: {blockers}. Treated as Root Cause.")
                 session.workflow.transition_to(WorkflowPhase.SYNTHESIS, "Generating RCA (Blocked by Infra)")
                 
                 inv_result_skipped = {
@@ -753,36 +357,7 @@ async def run_investigation_async(
                 }
                 
                 arch_result = await delegate_to_architect(sre_result, inv_result_skipped, session_id, user_request=user_request)
-                session.architect_output = arch_result
-                arch_conf = arch_result.get('confidence')
-                session.confidence_scores['architect'] = arch_conf if arch_conf is not None else 0.0
-                session.rca_url = arch_result.get('rca_url')
-                
-                # Mark complete
-                overall_confidence = session.calculate_overall_confidence()
-                session.mark_completed("SUCCESS" if overall_confidence >= 0.5 else "PARTIAL_SUCCESS")
-                
-                response_msg = f"**Investigation Complete** (Confidence: {overall_confidence:.2f})\n\n"
-                if session.rca_url:
-                    response_msg += f"📄 **RCA Document**: {session.rca_url}\n\n"
-                elif arch_result.get('rca_content'):
-                     response_msg += "📄 **RCA generated** (See content below).\n\n"
-
-                response_msg += "**Summary:**\n"
-                rca_content = arch_result.get('rca_content', 'No details available.')
-                response_msg += rca_content[:1000] + ("..." if len(rca_content) > 1000 else "")
-
-                return {
-                    "status": "SUCCESS",
-                    "session_id": session_id,
-                    "response": response_msg,
-                    "confidence": overall_confidence,
-                    "rca_url": session.rca_url,
-                    "rca_content": arch_result.get('rca_content'),
-                    "warnings": session.warnings,
-                    "recommendations": arch_result.get('recommendations', []),
-                    "execution_trace": sre_result.get("execution_trace", [])
-                }
+                return format_investigation_response(session, arch_result, sre_result, session_id)
 
             # Genuine Failure
             session.add_blocker("E001", reason)
@@ -795,15 +370,11 @@ async def run_investigation_async(
                 "execution_trace": sre_result.get("execution_trace", [])
             }
         
-        # --- NEW SHORTCUT LOGIC ---
-        # If SRE found the root cause (e.g., Infrastructure/IAM error), skip Investigator
+        # --- SHORTCUT: SRE found root cause, skip Investigator ---
         if sre_result.get("root_cause_found"):
             logger.info(f"[{session_id}] SRE identified root cause. Skipping Investigator phase.")
-            
-            # Phase 4: SYNTHESIS (Architect) - Direct Transition
             session.workflow.transition_to(WorkflowPhase.SYNTHESIS, "Generating RCA (Infra Root Cause)")
             
-            # Create a dummy investigator result for the Architect
             inv_result_skipped = {
                 "status": "SKIPPED",
                 "confidence": 1.0, 
@@ -813,41 +384,9 @@ async def run_investigation_async(
             }
             
             arch_result = await delegate_to_architect(sre_result, inv_result_skipped, session_id)
-            session.architect_output = arch_result
-            arch_conf = arch_result.get('confidence')
-            session.confidence_scores['architect'] = arch_conf if arch_conf is not None else 0.0
-            session.rca_url = arch_result.get('rca_url')
-            
-            # Mark complete
-            overall_confidence = session.calculate_overall_confidence()
-            session.mark_completed("SUCCESS" if overall_confidence >= 0.5 else "PARTIAL_SUCCESS")
-            
-            logger.info(f"[{session_id}] Investigation complete (Shortcut), confidence={overall_confidence:.2f}")
-            
-            # Helper to format response (Duplicated for now, should be refactored)
-            response_msg = f"**Investigation Complete** (Confidence: {overall_confidence:.2f})\n\n"
-            if session.rca_url:
-                response_msg += f"📄 **RCA Document**: {session.rca_url}\n\n"
-            elif arch_result.get('rca_content'):
-                 response_msg += "📄 **RCA generated** (See content below).\n\n"
+            return format_investigation_response(session, arch_result, sre_result, session_id)
 
-            response_msg += "**Summary:**\n"
-            rca_content = arch_result.get('rca_content', 'No details available.')
-            response_msg += rca_content[:1000] + ("..." if len(rca_content) > 1000 else "")
-
-            return {
-                "status": "SUCCESS",
-                "session_id": session_id,
-                "response": response_msg,
-                "confidence": overall_confidence,
-                "rca_url": session.rca_url,
-                "rca_content": arch_result.get('rca_content'),
-                "warnings": session.warnings,
-                "recommendations": arch_result.get('recommendations', []),
-                "execution_trace": sre_result.get("execution_trace", [])
-            }
-
-        # Phase 3: CODE ANALYSIS (Investigator) - Normal Flow
+        # --- PHASE 3: CODE ANALYSIS (Investigator) ---
         await _report_progress("Analyzing code repositories (Investigator)...", event_type="STATUS_UPDATE", icon="💻", display_type="step_progress")
         session.workflow.transition_to(WorkflowPhase.CODE_ANALYSIS, "Investigating code")
         sre_context = json.dumps(sre_result.get('evidence', {}), indent=2)
@@ -858,17 +397,13 @@ async def run_investigation_async(
             session_id
         )
         session.investigator_findings = inv_result
-        inv_conf = inv_result.get('confidence')
-        session.confidence_scores['investigator'] = inv_conf if inv_conf is not None else 0.0
+        session.confidence_scores['investigator'] = safe_confidence(inv_result.get('confidence'))
         
         gate_result, reason = gate_analysis_to_synthesis(inv_result, session_id)
-        gate_result, reason = gate_analysis_to_synthesis(inv_result, session_id)
         if gate_result == GateDecision.FAIL:
-            # Smart Fallback: If SRE was very confident (e.g. found deletion/infra issue), proceed to RCA anyway
-            sre_raw_conf = sre_result.get('confidence')
-            sre_confidence = sre_raw_conf if sre_raw_conf is not None else 0.0
+            sre_confidence = safe_confidence(sre_result.get('confidence'))
             if sre_confidence > 0.7:
-                 logger.warning(f"[{session_id}] Investigator failed ({reason}) but SRE confidence high ({sre_confidence}). Proceeding to RCA.")
+                logger.warning(f"[{session_id}] Investigator failed ({reason}) but SRE confidence high ({sre_confidence}). Proceeding to RCA.")
             else:
                 session.add_blocker("E006", reason)
                 session.mark_completed("PARTIAL_SUCCESS")
@@ -881,74 +416,12 @@ async def run_investigation_async(
                     "execution_trace": sre_result.get("execution_trace", [])
                 }
         
-        # Phase 4: SYNTHESIS (Architect)
+        # --- PHASE 4: SYNTHESIS (Architect) ---
         await _report_progress("Synthesizing Root Cause Analysis (Architect)...", event_type="STATUS_UPDATE", icon="🏗️", display_type="step_progress")
         session.workflow.transition_to(WorkflowPhase.SYNTHESIS, "Generating RCA")
         arch_result = await delegate_to_architect(sre_result, inv_result, session_id, user_request=user_request)
-        session.architect_output = arch_result
-        arch_conf = arch_result.get('confidence')
-        session.confidence_scores['architect'] = arch_conf if arch_conf is not None else 0.0
-        session.rca_url = arch_result.get('rca_url')
         
-        # Mark complete
-        overall_confidence = session.calculate_overall_confidence()
-        session.mark_completed("SUCCESS" if overall_confidence >= 0.5 else "PARTIAL_SUCCESS")
-        
-        logger.info(f"[{session_id}] Investigation complete, confidence={overall_confidence:.2f}")
-        
-        # Construct summary response for UI
-        response_msg = f"**Investigation Complete** (Confidence: {overall_confidence:.2f})\n\n"
-        if session.rca_url:
-            response_msg += f"📄 **RCA Document**: {session.rca_url}\n\n"
-        elif arch_result.get('rca_content'):
-             response_msg += "📄 **RCA generated** (See content below).\n\n"
-
-        response_msg += "**Summary:**\n"
-        # Extract summary from Architect response
-        rca_content = arch_result.get('rca_content', 'No details available.')
-        
-        # Smart Summary Extraction
-        # Smart Summary Extraction
-        summary_text = rca_content
-        
-        # Try to find Executive Summary section
-        if "## 1. Executive Summary" in rca_content:
-             parts = rca_content.split("## 1. Executive Summary")
-             if len(parts) > 1:
-                 # Take content after header, stop at next header
-                 summary_text = parts[1].split("##")[0].strip()
-        elif "Executive Summary" in rca_content:
-             parts = rca_content.split("Executive Summary")
-             if len(parts) > 1:
-                 # If using standard markdown headers, split on next header
-                 if "##" in parts[1]:
-                    summary_text = parts[1].split("##")[0].strip()
-                 else:
-                    # Fallback for plain text, take first 2 paragraphs
-                    paragraphs = parts[1].strip().split("\n\n")
-                    summary_text = "\n\n".join(paragraphs[:2])
-
-        # Truncate for UI safety (Increased from 500 to 2000)
-        if len(summary_text) > 2000:
-            summary_text = summary_text[:1997] + "..."
-            
-        response_msg += summary_text
-        
-        if session.rca_url:
-             response_msg += f"\n\n[View Full RCA Document]({session.rca_url})"
-
-        return {
-            "status": "SUCCESS",
-            "session_id": session_id,
-            "response": response_msg,
-            "confidence": overall_confidence,
-            "rca_url": session.rca_url,
-            "rca_content": arch_result.get('rca_content'),
-            "warnings": session.warnings,
-            "recommendations": arch_result.get('recommendations', []),
-            # Propagate SRE traces for Verbose UI
-            "execution_trace": sre_result.get("execution_trace", [])
-        }
+        return format_investigation_response(session, arch_result, sre_result, session_id)
         
     except Exception as e:
         logger.error(f"[{session_id}] Investigation failed: {e}", exc_info=True)
