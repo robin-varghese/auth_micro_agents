@@ -8,340 +8,66 @@ It integrates with the Google Storage MCP server (gcloud-mcp).
 import os
 import sys
 import asyncio
-import json
 import logging
 from pathlib import Path
-from typing import Dict, Any, List
-from datetime import timedelta
-from google.cloud import storage
 
+# Ensure parent path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from google.adk.agents import Agent
 from google.adk.apps import App
-from google.adk.runners import InMemoryRunner
 from google.adk.plugins import ReflectAndRetryToolPlugin
-from google.adk.plugins.bigquery_agent_analytics_plugin import (
-    BigQueryAgentAnalyticsPlugin,
-    BigQueryLoggerConfig
-)
+from google.adk.runners import InMemoryRunner
 from google.genai import types
-from config import config
-
-# Setup logging
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-# Observability
-from phoenix.otel import register
-from openinference.instrumentation.google_adk import GoogleADKInstrumentor
-
-# Initialize tracing
-tracer_provider = register(
-    project_name="finoptiagents-StorageAgent",
-    endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
-    set_global_tracer_provider=True
-)
-GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
-
-class StorageMCPClient:
-    """Client for connecting to Storage MCP server via Docker Stdio"""
-    
-    def __init__(self):
-        self.image = os.getenv('STORAGE_MCP_DOCKER_IMAGE', 'finopti-storage-mcp')
-        self.mount_path = os.getenv('GCLOUD_MOUNT_PATH', f"{os.path.expanduser('~')}/.config/gcloud:/root/.config/gcloud")
-        self.process = None
-        self.request_id = 0
-    
-    async def connect(self):
-        cmd = [
-            "docker", "run", "-i", "--rm", 
-            "-v", self.mount_path,
-            self.image
-        ]
-        logging.info(f"Starting Storage MCP: {' '.join(cmd)}")
-        self.process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        await self._handshake()
-
-    async def _handshake(self):
-        await self._send_json({
-            "jsonrpc": "2.0", "method": "initialize", "id": 0,
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "storage-agent", "version": "1.0"}}
-        })
-        while True:
-            line = await self.process.stdout.readline()
-            if not line: break
-            msg = json.loads(line)
-            if msg.get("id") == 0: break
-        await self._send_json({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
-
-    async def _send_json(self, payload):
-        self.process.stdin.write((json.dumps(payload) + "\n").encode())
-        await self.process.stdin.drain()
-
-    async def call_tool(self, tool_name: str, arguments: dict) -> Any:
-        self.request_id += 1
-        payload = {
-            "jsonrpc": "2.0", "method": "tools/call",
-            "params": {"name": tool_name, "arguments": arguments},
-            "id": self.request_id
-        }
-        await self._send_json(payload)
-        
-        while True:
-            line = await self.process.stdout.readline()
-            if not line: raise RuntimeError("MCP closed")
-            msg = json.loads(line)
-            if msg.get("id") == self.request_id:
-                if "error" in msg: return {"error": msg["error"]}
-                result = msg.get("result", {})
-                content = result.get("content", [])
-                output_text = ""
-                for c in content:
-                    if c["type"] == "text": output_text += c["text"]
-                # Try parsing JSON output if possible
-                try: 
-                    return json.loads(output_text)
-                except:
-                    return {"output": output_text}
-
-    async def close(self):
-        if self.process:
-            try:
-                self.process.terminate()
-                await self.process.wait()
-            except: pass
-
-from contextvars import ContextVar
 from opentelemetry import trace
 from openinference.semconv.trace import SpanAttributes
 
-# ContextVar to store the MCP client for the current request
-_mcp_ctx: ContextVar["StorageMCPClient"] = ContextVar("mcp_client", default=None)
+from config import config
 
-# --- CONTEXT ISOLATION & PROGRESS (Rule 1 & 6) ---
-_session_id_ctx: ContextVar[str] = ContextVar("session_id", default=None)
-_user_email_ctx: ContextVar[str] = ContextVar("user_email", default=None)
-_redis_publisher_ctx: ContextVar = ContextVar("redis_publisher", default=None)
+# --- Refactored Modules ---
+from observability import setup_observability
+from context import (
+    _redis_publisher_ctx, 
+    _session_id_ctx, 
+    _user_email_ctx, 
+    _report_progress,
+    RedisEventPublisher
+)
+from instructions import AGENT_INSTRUCTIONS, AGENT_DESCRIPTION, AGENT_NAME
+from tools import (
+    list_objects, read_object_metadata, read_object_content, delete_object, 
+    write_object, update_object_metadata, copy_object, move_object, 
+    upload_object, download_object, list_buckets, create_bucket, 
+    delete_bucket, get_bucket_metadata, update_bucket_labels, 
+    get_bucket_location, view_iam_policy, check_iam_permissions, 
+    get_metadata_table_schema, execute_insights_query, list_insights_configs,
+    upload_file_from_local
+)
+from mcp_client import StorageMCPClient, _mcp_ctx
 
-def _report_progress(message, event_type="STATUS_UPDATE", icon="🤖", display_type="markdown", metadata=None):
-    """Standardized progress reporting using context-bound session/user."""
-    pub = _redis_publisher_ctx.get()
-    sid = _session_id_ctx.get()
-    uid = _user_email_ctx.get() or "unknown"
-    if pub and sid:
-        try:
-            span_ctx = trace.get_current_span().get_span_context()
-            trace_id_hex = format(span_ctx.trace_id, '032x') if span_ctx.trace_id else "unknown"
-        except Exception:
-            trace_id_hex = "unknown"
-        pub.publish_event(
-            session_id=sid, user_id=uid, trace_id=trace_id_hex,
-            msg_type=event_type, message=message, display_type=display_type,
-            icon=icon, metadata=metadata
-        )
+# Configure Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-async def ensure_mcp():
-    """Retrieve the client for the CURRENT context."""
-    client = _mcp_ctx.get()
-    if not client:
-        raise RuntimeError("MCP Client not initialized for this context")
-    return client
-
-# --- Tool Wrappers ---
-async def list_objects(bucket_name: str, prefix: str = "") -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("list_objects", {"bucket_name": bucket_name, "prefix": prefix})
-
-async def read_object_metadata(bucket_name: str, object_name: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("read_object_metadata", {"bucket_name": bucket_name, "object_name": object_name})
-
-async def read_object_content(bucket_name: str, object_name: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("read_object_content", {"bucket_name": bucket_name, "object_name": object_name})
-
-async def delete_object(bucket_name: str, object_name: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("delete_object", {"bucket_name": bucket_name, "object_name": object_name})
-
-async def write_object(bucket_name: str, object_name: str, content: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    # 1. Write the object via MCP
-    res = await client.call_tool("write_object_safe", {"bucket_name": bucket_name, "object_name": object_name, "content": content})
-    if "error" in res:
-        return res
-    
-    # 2. Generate Signed URL for immediate access
-    try:
-        def _get_signed_url():
-             storage_client = storage.Client()
-             bucket = storage_client.bucket(bucket_name)
-             blob = bucket.blob(object_name)
-             try:
-                 return blob.generate_signed_url(version="v4", expiration=timedelta(minutes=60), method="GET")
-             except:
-                 return f"https://storage.cloud.google.com/{bucket_name}/{object_name}"
-        
-        signed_url = await asyncio.to_thread(_get_signed_url)
-        return {
-            "result": f"Object '{object_name}' written to bucket '{bucket_name}'.",
-            "gcs_uri": f"gs://{bucket_name}/{object_name}",
-            "signed_url": signed_url
-        }
-    except Exception as e:
-        return {"result": f"Object written, but signed URL failed: {e}", "gcs_uri": f"gs://{bucket_name}/{object_name}"}
-
-async def update_object_metadata(bucket_name: str, object_name: str, metadata: dict) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("update_object_metadata", {"bucket_name": bucket_name, "object_name": object_name, "metadata": metadata})
-
-async def copy_object(source_bucket: str, source_object: str, dest_bucket: str, dest_object: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("copy_object_safe", {"source_bucket_name": source_bucket, "source_object_name": source_object, "destination_bucket_name": dest_bucket, "destination_object_name": dest_object})
-
-async def move_object(source_bucket: str, source_object: str, dest_bucket: str, dest_object: str) -> Dict[str, Any]:
-    # MCP does not support move_object directly. Implementing as copy + delete.
-    client = await ensure_mcp()
-    copy_res = await client.call_tool("copy_object_safe", {"source_bucket_name": source_bucket, "source_object_name": source_object, "destination_bucket_name": dest_bucket, "destination_object_name": dest_object})
-    if "error" in copy_res:
-        return copy_res
-    return await client.call_tool("delete_object", {"bucket_name": source_bucket, "object_name": source_object})
-
-async def upload_object(bucket_name: str, object_name: str, file_path: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("upload_object_safe", {"bucket_name": bucket_name, "object_name": object_name, "file_path": file_path})
-
-async def download_object(bucket_name: str, object_name: str, file_path: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("download_object", {"bucket_name": bucket_name, "object_name": object_name, "file_path": file_path})
-
-async def list_buckets() -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("list_buckets", {})
-
-async def create_bucket(bucket_name: str, location: str = "US") -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("create_bucket", {"bucket_name": bucket_name, "location": location})
-
-async def delete_bucket(bucket_name: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("delete_bucket", {"bucket_name": bucket_name})
-
-async def get_bucket_metadata(bucket_name: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("get_bucket_metadata", {"bucket_name": bucket_name})
-
-async def update_bucket_labels(bucket_name: str, labels: dict) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("update_bucket_labels", {"bucket_name": bucket_name, "labels": labels})
-
-async def get_bucket_location(bucket_name: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("get_bucket_location", {"bucket_name": bucket_name})
-
-async def view_iam_policy(bucket_name: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("view_iam_policy", {"bucket_name": bucket_name})
-
-async def check_iam_permissions(bucket_name: str, permissions: List[str]) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("check_iam_permissions", {"bucket_name": bucket_name, "permissions": permissions})
-
-async def get_metadata_table_schema(config_name: str, project: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("get_metadata_table_schema", {"config_name": config_name, "project": project})
-
-async def execute_insights_query(query: str, project: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("execute_insights_query", {"query": query, "project": project})
-
-async def list_insights_configs(project: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("list_insights_configs", {"project": project})
-
-async def upload_file_from_local(bucket_name: str, source_file_path: str, destination_blob_name: str) -> Dict[str, Any]:
-    """Uploads a file from the local filesystem to GCS and returns a Signed URL."""
-    try:
-        if not os.path.exists(source_file_path):
-             return {"error": f"Source file not found: {source_file_path}"}
-        
-        def _upload_and_sign():
-            storage_client = storage.Client()
-            bucket = storage_client.bucket(bucket_name)
-            blob = bucket.blob(destination_blob_name)
-            blob.upload_from_filename(source_file_path)
-            
-            try:
-                # Use v4 signing
-                return blob.generate_signed_url(version="v4", expiration=timedelta(minutes=60), method="GET")
-            except:
-                # Fallback to Console URL (requires login)
-                return f"https://storage.cloud.google.com/{bucket_name}/{destination_blob_name}"
-
-        signed_url = await asyncio.to_thread(_upload_and_sign)
-        gcs_uri = f"gs://{bucket_name}/{destination_blob_name}"
-        
-        return {
-            "result": f"Successfully uploaded {source_file_path} to {gcs_uri}.",
-            "gcs_uri": gcs_uri,
-            "signed_url": signed_url
-        }
-    except Exception as e:
-        logger.error(f"Failed to upload file: {e}")
-        return {"error": str(e)}
-
-# Load Manifest
-manifest_path = Path(__file__).parent / "manifest.json"
-manifest = {}
-if manifest_path.exists():
-    with open(manifest_path, "r") as f:
-        manifest = json.load(f)
-
-# Load Instructions
-instructions_path = Path(__file__).parent / "instructions.json"
-if instructions_path.exists():
-    with open(instructions_path, "r") as f:
-        data = json.load(f)
-        instruction_str = data.get("instruction", "You are a Storage Specialist.")
-else:
-    instruction_str = "You are a Storage Specialist."
-
-# Ensure API Key is in environment for GenAI library
-if hasattr(config, "GOOGLE_API_KEY") and config.GOOGLE_API_KEY:
-    os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
-
+# Initialize Observability
+setup_observability()
 
 # -------------------------------------------------------------------------
 # IMPORT COMMON UTILS
 # -------------------------------------------------------------------------
 from common.model_resilience import run_with_model_fallback
 
-# Add Redis Publisher
-try:
-    if str(Path(__file__).parent) not in sys.path:
-        sys.path.append(str(Path(__file__).parent))
-    from redis_common.redis_publisher import RedisEventPublisher
-except ImportError:
-    try:
-        from redis_publisher import RedisEventPublisher
-    except ImportError:
-        RedisEventPublisher = None
-        logging.warning("RedisPublisher not found. Events will not be streamed.")
-
+# -------------------------------------------------------------------------
+# AGENT DEFINITION
+# -------------------------------------------------------------------------
 def create_storage_agent(model_name: str = None) -> Agent:
     model_to_use = model_name or config.FINOPTIAGENTS_LLM
     
     return Agent(
-        name=manifest.get("agent_id", "storage_specialist"),
+        name=AGENT_NAME,
         model=model_to_use,
-        description=manifest.get("description", "Storage Specialist."),
-        instruction=instruction_str,
+        description=AGENT_DESCRIPTION,
+        instruction=AGENT_INSTRUCTIONS,
         tools=[
             list_objects, read_object_metadata, read_object_content, delete_object, 
             write_object, update_object_metadata, copy_object, move_object, 
@@ -354,56 +80,50 @@ def create_storage_agent(model_name: str = None) -> Agent:
     )
 
 def create_app(model_name: str = None):
-    # Retrieve or create agent
+    # Ensure API Key
+    if hasattr(config, "GOOGLE_API_KEY") and config.GOOGLE_API_KEY:
+        os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+    
     agent_instance = create_storage_agent(model_name)
     
     return App(
         name="finopti_storage_agent",
         root_agent=agent_instance,
         plugins=[
-            ReflectAndRetryToolPlugin(max_retries=3),
-            # BigQueryAgentAnalyticsPlugin(
-            #     project_id=config.GCP_PROJECT_ID,
-            #     dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            #     table_id=config.BQ_ANALYTICS_TABLE,
-            #     config=BigQueryLoggerConfig(enabled=True)
-            # )
+            ReflectAndRetryToolPlugin(max_retries=3)
         ]
     )
 
-
 async def send_message_async(prompt: str, user_email: str = None, session_id: str = "default") -> str:
-    # --- CONTEXT SETTING (Rule 1 & 6) ---
+    # --- CONTEXT SETTING ---
     _session_id_ctx.set(session_id)
     _user_email_ctx.set(user_email or "unknown")
 
-    # Trace attribute setting (Rule 5)
     span = trace.get_current_span()
     if span and span.is_recording():
         span.set_attribute(SpanAttributes.SESSION_ID, session_id or "unknown")
         if user_email:
             span.set_attribute("user_id", user_email)
 
-    # Create new client for this request (and this event loop)
+    # Initialize Client
     mcp = StorageMCPClient()
     token_reset = _mcp_ctx.set(mcp)
 
-    # Initialize Redis Publisher once
+    # Initialize Redis Publisher
     publisher = None
     if RedisEventPublisher:
         try:
             publisher = RedisEventPublisher("Storage Agent", "Cloud Storage Specialist")
             _redis_publisher_ctx.set(publisher)
         except Exception as e:
-            logging.error(f"Failed to initialize RedisEventPublisher: {e}")
+            logger.error(f"Failed to initialize RedisEventPublisher: {e}")
     
-    # Publish "Processing" event via standardized helper
-    _report_progress(f"Processing storage request: {prompt[:50]}...", icon="📦", display_type="toast")
+    # Publish processing status
+    await _report_progress(f"Processing storage request: {prompt[:50]}...", icon="📦", display_type="toast")
     
     try:
         await mcp.connect()
 
-        # Define run_once for fallback logic
         async def _run_once(app_instance):
             response_text = ""
             async with InMemoryRunner(app=app_instance) as runner:
@@ -435,3 +155,9 @@ async def send_message_async(prompt: str, user_email: str = None, session_id: st
 
 def send_message(prompt: str, user_email: str = None, session_id: str = "default") -> str:
     return asyncio.run(send_message_async(prompt, user_email, session_id))
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        print(send_message(" ".join(sys.argv[1:])))
+    else:
+        print("Usage: python agent.py <prompt>")

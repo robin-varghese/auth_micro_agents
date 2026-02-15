@@ -798,6 +798,43 @@ services:
     networks:
       - finopti-net
     # No ports needed as it's stdio-based usually, but expose for consistency/healthcheck if it had http
+
+  # --- Remediation Agent ---
+  remediation_agent:
+    build:
+      context: .
+      dockerfile: mats-agents/mats-remediation-agent/Dockerfile
+    container_name: finopti-remediation-agent
+    networks:
+      - finopti-net
+    depends_on:
+      - apisix
+    environment:
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID:-}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
+      - APISIX_URL=http://apisix:9080
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GOOGLE_GENAI_USE_VERTEXAI=TRUE
+      - BQ_ANALYTICS_ENABLED=${BQ_ANALYTICS_ENABLED:-}
+      - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces
+      # Agent URLs for Delegation
+      - PUPPETEER_AGENT_URL=http://finopti-puppeteer-agent:5009
+      - GCLOUD_AGENT_URL=http://finopti-gcloud-agent:5001
+      - MONITORING_AGENT_URL=http://finopti-monitoring-agent:5002
+      - STORAGE_AGENT_URL=http://finopti-storage-agent:5004
+      - GITHUB_AGENT_URL=http://finopti-github-agent:5003
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ./redis-sessions/common:/app/redis_common
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8085/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
     # But stdio server doesn't expose http healthcheck
     # We can rely on container running
     command: [] 

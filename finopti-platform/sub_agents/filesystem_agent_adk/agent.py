@@ -1,348 +1,117 @@
 """
 Filesystem ADK Agent
+
+This agent uses Google ADK to interact with the local filesystem.
+It integrates with the Filesystem MCP server via the `mcp` library.
 """
 
 import os
 import sys
 import asyncio
-import json
 import logging
-from typing import Dict, Any, List, Optional
 from pathlib import Path
-from contextlib import AsyncExitStack
 
-# Add parent directory to path for imports
+# Ensure parent path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-# Add Redis Publisher
-try:
-    if str(Path(__file__).parent) not in sys.path:
-        sys.path.append(str(Path(__file__).parent))
-
-    from redis_common.redis_publisher import RedisEventPublisher
-except ImportError as e:
-    sys.path.append(str(Path(__file__).parent.parent.parent / "redis-sessions" / "common"))
-    try:
-        from redis_publisher import RedisEventPublisher
-    except ImportError:
-        RedisEventPublisher = None
-
-try:
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
-except ImportError:
-    logging.error("mcp library not found. Please install it.")
-    sys.exit(1)
 
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.runners import InMemoryRunner
 from google.adk.plugins import ReflectAndRetryToolPlugin
-from google.adk.plugins.bigquery_agent_analytics_plugin import (
-    BigQueryAgentAnalyticsPlugin,
-    BigQueryLoggerConfig
-)
 from google.genai import types
-from config import config
-
-# Observability
-from phoenix.otel import register
-from openinference.instrumentation.google_adk import GoogleADKInstrumentor
-
-# Initialize tracing
-tracer_provider = register(
-    project_name="finoptiagents-FilesystemAgent",
-    endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
-    set_global_tracer_provider=True
-)
-GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-class FilesystemMCPClient:
-    def __init__(self):
-        self.image = os.getenv("FILESYSTEM_MCP_IMAGE", "filesystem")
-        self.host_path = os.getenv("FILESYSTEM_ROOT", "/tmp/agent_filesystem")
-        
-        # Ensure host path exists (if running locally or if mapped volume allows creation)
-        try:
-             if not os.path.exists(self.host_path):
-                os.makedirs(self.host_path, exist_ok=True)
-        except Exception as e:
-            logger.warning(f"Could not create host path {self.host_path}: {e}")
-
-        self.session: Optional[ClientSession] = None
-        self.exit_stack: Optional[AsyncExitStack] = None
-
-    async def connect(self):
-        if self.session:
-            return
-
-        logger.info(f"Connecting to Filesystem MCP (Image: {self.image}, Root: {self.host_path})...")
-        
-        # Define Docker run arguments
-        cmd = [
-            "docker", "run", "-i", "--rm",
-            "-v", f"{self.host_path}:/projects",
-            self.image,
-            "/projects"
-        ]
-
-        server_params = StdioServerParameters(
-            command=cmd[0],
-            args=cmd[1:],
-            env=None
-        )
-
-        self.exit_stack = AsyncExitStack()
-        
-        try:
-            # Enter stdio_client context with larger buffer (10MB)
-            read, write = await self.exit_stack.enter_async_context(
-                stdio_client(server_params)
-            )
-            # Enter ClientSession context
-            self.session = await self.exit_stack.enter_async_context(ClientSession(read, write))
-            await self.session.initialize()
-            logger.info("Connected to Filesystem MCP Server via mcp library!")
-            
-            # List tools to verify connection
-            tools_list = await self.session.list_tools()
-            logger.info(f"Available tools: {[t.name for t in tools_list.tools]}")
-            
-        except Exception as e:
-            logger.error(f"Failed to connect to MCP: {e}")
-            if self.exit_stack:
-                await self.exit_stack.aclose()
-            self.session = None
-            self.exit_stack = None
-            raise
-
-    async def call_tool(self, tool_name: str, arguments: dict) -> Dict[str, Any]:
-        if not self.session:
-            await self.connect()
-            
-        try:
-            # Note: We use the mcp library's session.call_tool which handles JSON
-            result = await self.session.call_tool(tool_name, arguments=arguments)
-            
-            output_text = ""
-            for content in result.content:
-                if content.type == "text":
-                    output_text += content.text
-                else:
-                    output_text += f"[{content.type} content]"
-            
-            return {"result": output_text}
-            
-        except Exception as e:
-            logger.error(f"Error calling tool {tool_name}: {e}")
-            return {"error": str(e)}
-
-    async def close(self):
-        logger.info("Closing MCP connection...")
-        if self.exit_stack:
-            try:
-                await self.exit_stack.aclose()
-            except Exception as e:
-                logger.warning(f"Error during exit_stack close: {e}")
-        self.session = None
-        self.exit_stack = None
-
-from contextvars import ContextVar
 from opentelemetry import trace
 from openinference.semconv.trace import SpanAttributes
 
-# ContextVar to store the MCP client for the current request
-_mcp_ctx: ContextVar["FilesystemMCPClient"] = ContextVar("mcp_client", default=None)
+from config import config
 
-# --- CONTEXT ISOLATION & PROGRESS (Rule 1 & 6) ---
-_session_id_ctx: ContextVar[str] = ContextVar("session_id", default=None)
-_user_email_ctx: ContextVar[str] = ContextVar("user_email", default=None)
-_redis_publisher_ctx: ContextVar = ContextVar("redis_publisher", default=None)
+# --- Refactored Modules ---
+from observability import setup_observability
+from context import (
+    _redis_publisher_ctx, 
+    _session_id_ctx, 
+    _user_email_ctx, 
+    _report_progress,
+    RedisEventPublisher
+)
+from instructions import AGENT_INSTRUCTIONS, AGENT_DESCRIPTION, AGENT_NAME
+from tools import (
+    read_text_file, read_media_file, read_multiple_files, write_file, 
+    edit_file, create_directory, list_directory, list_directory_with_sizes, 
+    move_file, search_files, directory_tree, get_file_info, list_allowed_directories
+)
+from mcp_client import FilesystemMCPClient, _mcp_ctx
 
-def _report_progress(message, event_type="STATUS_UPDATE", icon="🤖", display_type="markdown", metadata=None):
-    """Standardized progress reporting using context-bound session/user."""
-    pub = _redis_publisher_ctx.get()
-    sid = _session_id_ctx.get()
-    uid = _user_email_ctx.get() or "unknown"
-    if pub and sid:
-        try:
-            span_ctx = trace.get_current_span().get_span_context()
-            trace_id_hex = format(span_ctx.trace_id, '032x') if span_ctx.trace_id else "unknown"
-        except Exception:
-            trace_id_hex = "unknown"
-        pub.publish_event(
-            session_id=sid, user_id=uid, trace_id=trace_id_hex,
-            msg_type=event_type, message=message, display_type=display_type,
-            icon=icon, metadata=metadata
-        )
+# Configure Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-async def ensure_mcp():
-    """Retrieve the client for the CURRENT context."""
-    client = _mcp_ctx.get()
-    if not client:
-        raise RuntimeError("MCP Client not initialized for this context")
-    return client
-
-# --- Tool Wrappers ---
-
-async def read_text_file(path: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("read_text_file", {"path": path})
-
-async def read_media_file(path: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("read_media_file", {"path": path})
-
-async def read_multiple_files(paths: List[str]) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("read_multiple_files", {"paths": paths})
-
-async def write_file(path: str, content: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("write_file", {"path": path, "content": content})
-
-async def edit_file(path: str, edits: List[Dict[str, str]], dryRun: bool = False) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("edit_file", {"path": path, "edits": edits, "dryRun": dryRun})
-
-async def create_directory(path: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("create_directory", {"path": path})
-
-async def list_directory(path: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("list_directory", {"path": path})
-
-async def list_directory_with_sizes(path: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("list_directory_with_sizes", {"path": path})
-
-async def move_file(source: str, destination: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("move_file", {"source": source, "destination": destination})
-
-async def search_files(path: str, pattern: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("search_files", {"path": path, "pattern": pattern})
-
-async def directory_tree(path: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("directory_tree", {"path": path})
-
-async def get_file_info(path: str) -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("get_file_info", {"path": path})
-
-async def list_allowed_directories() -> Dict[str, Any]:
-    client = await ensure_mcp()
-    return await client.call_tool("list_allowed_directories", {})
-
-# Load Manifest
-manifest_path = Path(__file__).parent / "manifest.json"
-manifest = {}
-if manifest_path.exists():
-    with open(manifest_path, "r") as f:
-        manifest = json.load(f)
-
-# Load Instructions
-instructions_path = Path(__file__).parent / "instructions.json"
-if instructions_path.exists():
-    with open(instructions_path, "r") as f:
-        data = json.load(f)
-        instruction_str = data.get("instruction", "You can read/write files.")
-else:
-    instruction_str = "You can read/write files."
-
-# Ensure API Key is in environment for GenAI library
-if config.GOOGLE_API_KEY:
-    os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
-
+# Initialize Observability
+setup_observability()
 
 # -------------------------------------------------------------------------
 # IMPORT COMMON UTILS
 # -------------------------------------------------------------------------
 from common.model_resilience import run_with_model_fallback
 
+# -------------------------------------------------------------------------
+# AGENT DEFINITION
+# -------------------------------------------------------------------------
 def create_fs_agent(model_name: str = None) -> Agent:
     model_to_use = model_name or config.FINOPTIAGENTS_LLM
 
     return Agent(
-        name=manifest.get("agent_id", "filesystem_specialist"),
+        name=AGENT_NAME,
         model=model_to_use,
-        description=manifest.get("description", "Local Filesystem Specialist."),
-        instruction=instruction_str,
+        description=AGENT_DESCRIPTION,
+        instruction=AGENT_INSTRUCTIONS,
         tools=[
-            read_text_file,
-            read_media_file,
-            read_multiple_files,
-            write_file,
-            edit_file,
-            create_directory,
-            list_directory,
-            list_directory_with_sizes,
-            move_file,
-            search_files,
-            directory_tree,
-            get_file_info,
-            list_allowed_directories
+            read_text_file, read_media_file, read_multiple_files, write_file, 
+            edit_file, create_directory, list_directory, list_directory_with_sizes, 
+            move_file, search_files, directory_tree, get_file_info, list_allowed_directories
         ]
     )
 
 
 def create_app(model_name: str = None):
-    # Ensure API Key is in environment
-    if config.GOOGLE_API_KEY:
+    # Ensure API Key
+    if hasattr(config, "GOOGLE_API_KEY") and config.GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
-    # Create agent instance
     agent_instance = create_fs_agent(model_name)
 
     return App(
         name="finopti_filesystem_agent",
         root_agent=agent_instance,
         plugins=[
-            ReflectAndRetryToolPlugin(max_retries=3),
-            # BigQueryAgentAnalyticsPlugin(
-            #     project_id=config.GCP_PROJECT_ID,
-            #     dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-            #     table_id=config.BQ_ANALYTICS_TABLE,
-            #     config=BigQueryLoggerConfig(enabled=True)
-            # )
+            ReflectAndRetryToolPlugin(max_retries=3)
         ]
     )
 
 async def send_message_async(prompt: str, user_email: str = None, project_id: str = None, session_id: str = "default") -> str:
-    # --- CONTEXT SETTING (Rule 1 & 6) ---
+    # --- CONTEXT SETTING ---
     _session_id_ctx.set(session_id)
     _user_email_ctx.set(user_email or "unknown")
 
-    # Trace attribute setting (Rule 5)
     span = trace.get_current_span()
     if span and span.is_recording():
         span.set_attribute(SpanAttributes.SESSION_ID, session_id or "unknown")
         if user_email:
             span.set_attribute("user_id", user_email)
 
-    # Create new client for this request (and this event loop)
+    # Initialize Client
     mcp = FilesystemMCPClient()
     token_reset = _mcp_ctx.set(mcp)
 
-    # Initialize Redis Publisher once
+    # Initialize Redis Publisher
     publisher = None
     if RedisEventPublisher:
          try:
-             publisher = RedisEventPublisher(
-                 agent_name="Filesystem Agent",
-                 agent_role="Local IO Specialist"
-             )
+             publisher = RedisEventPublisher("Filesystem Agent", "Local IO Specialist")
              _redis_publisher_ctx.set(publisher)
-         except: pass
+         except Exception as e:
+             logger.warning(f"Failed to initialize RedisEventPublisher: {e}")
 
-    # Publish "Processing" event via standardized helper
+    # Publish "Processing" event
     _report_progress(f"Accessing Filesystem...", icon="📂", display_type="toast")
     
     try:
@@ -352,7 +121,6 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
         if project_id:
             prompt = f"Project ID: {project_id}\n{prompt}"
 
-        # Define run_once for fallback logic
         async def _run_once(app_instance):
             response_text = ""
             async with InMemoryRunner(app=app_instance) as runner:
@@ -362,10 +130,8 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
                 message = types.Content(parts=[types.Part(text=prompt)])
 
                 async for event in runner.run_async(session_id=sid, user_id=uid, new_message=message):
-                    # Stream Events
                     if publisher:
                         publisher.process_adk_event(event, session_id=sid, user_id=uid)
-
                     if hasattr(event, 'content') and event.content:
                         for part in event.content.parts:
                             if part.text: response_text += part.text
@@ -382,3 +148,9 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
 
 def send_message(prompt: str, user_email: str = None, project_id: str = None, session_id: str = "default") -> str:
     return asyncio.run(send_message_async(prompt, user_email, project_id, session_id))
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        print(send_message(" ".join(sys.argv[1:])))
+    else:
+        print("Usage: python agent.py <prompt>")

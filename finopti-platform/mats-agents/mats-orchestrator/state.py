@@ -210,6 +210,21 @@ async def create_session(user_id: str, project_id: str, repo_url: str, provided_
         "repo_url": repo_url
     }
     if provided_session_id:
+        # Try to load existing session first to preserve context (RCA, findings)
+        existing = await get_session(provided_session_id)
+        if existing:
+            logger.info(f"Loaded existing session context: {provided_session_id}")
+            # Update user info if changed
+            if user_id and user_id != "default":
+                existing.user_id = user_id
+            if project_id:
+                existing.project_id = project_id
+            if repo_url:
+                existing.repo_url = repo_url
+            # Save updates
+            await update_session(existing)
+            return existing
+            
         kwargs["session_id"] = provided_session_id
         
     session = InvestigationSession(**kwargs)

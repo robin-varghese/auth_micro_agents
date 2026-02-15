@@ -33,11 +33,14 @@ OPERATIONAL_ROUTES = [
     (r'\bdescribe\s+(the|my|a)?\s*(vm|instance|bucket|service|resource)', 'gcloud', "GCloud Agent"),
     # Generic GCloud Intent
     (r'\bgcloud\s+', 'gcloud', "GCloud Agent"),
+    # Remediation Intents
+    (r'\b(fix|remediate|solve|solution|apply fix)\b.*', 'remediation', "Remediation Agent"),
 ]
 
 # URL resolution map
 _URL_MAP = {
     'gcloud': lambda: GCLOUD_AGENT_URL,
+    'remediation': lambda: "http://mats-remediation-agent:8085",
 }
 
 

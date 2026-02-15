@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from schemas import SREOutput, InvestigatorOutput, ArchitectOutput
 from retry import retry_async, NonRetryableError
 from error_codes import ErrorCode, execute_recovery
+from planner import CLOUD_ISSUE_TAXONOMY
 
 logger = logging.getLogger(__name__)
 
@@ -60,38 +61,62 @@ async def delegate_to_sre(
     project_id: str,
     session_id: str = "unknown",
     job_id: str = None,
-    user_email: str = None
+    user_email: str = None,
+    issue_type: str = "compute"
 ) -> Dict[str, Any]:
     """
-    Delegate task to SRE Agent.
+    Delegate task to SRE Agent with cloud-specific context.
     
     Args:
         task_description: What the SRE should investigate
         project_id: GCP project ID
         session_id: Investigation session ID for logging
         job_id: Async Job ID for progress reporting
+        user_email: User's email for context
+        issue_type: Classified issue type from planner (compute, database, etc.)
         
     Returns:
         SREOutput schema dict
-        
-    Raises:
-        ValidationError: If output doesn't match schema
     """
+    taxonomy = CLOUD_ISSUE_TAXONOMY.get(issue_type, CLOUD_ISSUE_TAXONOMY["compute"])
+    filters_list = "\n".join(f"  - {f}" for f in taxonomy.get("log_filters", []))
+    metrics_list = "\n".join(f"  - {m}" for m in taxonomy.get("metrics", []))
+    
     prompt = f"""
 Project ID: {project_id}
+Issue Type: {issue_type}
 
-Task: {task_description}
+INVESTIGATION TASK:
+{task_description}
 
-Please analyze the logs and metrics. Return your findings in the following JSON format:
+RECOMMENDED LOG FILTERS (start with these):
+{filters_list}
+
+KEY METRICS TO CHECK:
+{metrics_list}
+
+INVESTIGATION PROTOCOL:
+1. Run the recommended log filters FIRST to establish the error window
+2. Extract the EXACT timestamp of the earliest error occurrence
+3. Check if any deployment/config change happened in the 30 min BEFORE that timestamp
+4. Collect metric anomalies for the same time window
+5. If no errors found with recommended filters, broaden to severity>=WARNING
+6. Look for correlating events: IAM changes, scaling events, config updates
+
+CRITICAL: Include the raw log entries (first 3) as evidence. Do not just summarize.
+
+Return your findings in the following JSON format:
 {{
     "status": "SUCCESS|PARTIAL|FAILURE",
     "confidence": 0.0-1.0,
     "evidence": {{
-        "timestamp": "ISO8601",
-        "error_signature": "string",
-        "stack_trace": "string",
+        "timestamp": "ISO8601 of earliest error",
+        "error_signature": "The exact error message or pattern",
+        "stack_trace": "Full stack trace if available",
         "version_sha": "string|null",
-        "metric_anomalies": []
+        "metric_anomalies": [],
+        "raw_log_samples": ["First 3 matching log entries"],
+        "correlated_events": ["Any deploy/config/IAM changes near the error window"]
     }},
     "blockers": [],
     "recommendations": []
@@ -292,6 +317,30 @@ async def delegate_to_architect(
     """
     import json
     
+    # Fetch RCA Template
+    template_content = None
+    try:
+        from google.cloud import storage
+        def _fetch_template():
+             client = storage.Client()
+             bucket = client.bucket("rca-reports-mats")
+             blob = bucket.blob("rca-templates/RCA-Template-V1.txt")
+             return blob.download_as_text()
+        
+        template_content = await asyncio.to_thread(_fetch_template)
+        logger.info(f"[{session_id}] Successfully loaded RCA-Template-V1 from GCS")
+    except Exception as e:
+        logger.warning(f"[{session_id}] Failed to load RCA template from GCS: {e}")
+        # Fallback to standard structure if GCS fails
+        template_content = """
+        ## 1. Executive Summary
+        ## 2. Timeline & Detection
+        ## 3. Root Cause
+        ## 4. Recommended Fix
+        ## 5. Prevention Plan
+        ## 6. Known Limitations
+        """
+
     prompt = f"""
 Please synthesize the following investigation reports into a formal Root Cause Analysis document.
 
@@ -304,13 +353,9 @@ Please synthesize the following investigation reports into a formal Root Cause A
 [INVESTIGATOR REPORT]
 {json.dumps(investigator_findings, indent=2)}
 
-Generate a complete RCA markdown document with these sections:
-## 1. Executive Summary
-## 2. Timeline & Detection
-## 3. Root Cause
-## 4. Recommended Fix
-## 5. Prevention Plan
-## 6. Known Limitations
+Generate a complete RCA markdown document strictly following this template:
+
+{template_content}
 
 Also return your response in this JSON format:
 {{
@@ -447,4 +492,84 @@ async def delegate_to_operational_agent(
         max_attempts=1, # Operational commands might not always be safe to retry
         session_id=session_id,
         agent_name=agent_name
+    )
+
+
+@trace_span("delegate_remediation", kind="AGENT")
+async def delegate_to_remediation(
+    session,
+    user_request: str
+) -> Dict[str, Any]:
+    """
+    Delegate fix execution to Remediation Agent.
+    
+    Args:
+        session: InvestigationSession object with context
+        user_request: The user's "fix it" command
+        
+    Returns:
+        Remediation agent response
+    """
+    REMEDIATION_AGENT_URL = os.getenv("REMEDIATION_AGENT_URL", "http://mats-remediation-agent:8085")
+    
+    # Extract Context
+    rca_doc = ""
+    resolution_plan = ""
+    
+    if session.architect_output:
+        rca_doc = session.architect_output.get("rca_content", "")
+    
+    # If Resolution Plan isn't explicit, we use the RCA recommendations
+    # Remediation Agent parses the RCA anyway.
+    
+    prompt = f"""
+    USER REQUEST: {user_request}
+    
+    CONTEXT:
+    RCA Document provided.
+    """
+    
+    async def _call():
+        logger.info(f"[{session.session_id}] Delegating to Remediation Agent")
+        
+        payload = {
+            "rca_document": rca_doc,
+            "resolution_plan": resolution_plan, # Optional, agent can parse RCA
+            "session_id": session.session_id,
+            "user_email": session.user_id,
+            "prompt": prompt
+        }
+        
+        # Inject Trace Headers
+        try:
+            from common.observability import FinOptiObservability
+            headers = {}
+            FinOptiObservability.inject_trace_to_headers(headers)
+            # Use headers? Remediation Agent is Flask, accepts standard headers?
+            # It accepts them via `request.headers` in main.py
+            # But we use `aiohttp` in `_http_post` style or direct?
+            # Remediation Agent `main.py` uses `request.headers`.
+            pass
+        except ImportError:
+            pass
+
+        # Direct AIOHTTP call to /execute
+        async with aiohttp.ClientSession() as client:
+            # We can pass headers here
+            async with client.post(
+                f"{REMEDIATION_AGENT_URL}/execute",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=600)
+            ) as resp:
+                if resp.status >= 400:
+                    text = await resp.text()
+                    raise Exception(f"Remediation Agent Error {resp.status}: {text}")
+                
+                return await resp.json()
+
+    return await retry_async(
+        _call,
+        max_attempts=1,
+        session_id=session.session_id,
+        agent_name="Remediation"
     )

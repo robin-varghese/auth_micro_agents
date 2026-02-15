@@ -44,7 +44,7 @@ from context import (
     _sequential_thinking_ctx, _report_progress
 )
 from mcp_client import SequentialThinkingClient
-from planner import generate_plan, load_agent_registry
+from planner import generate_plan, load_agent_registry, classify_issue
 from routing import match_operational_route, handle_operational_request
 from response_builder import format_investigation_response, safe_confidence
 
@@ -192,6 +192,28 @@ async def run_investigation_async(
     # --- OPERATIONAL ROUTING: Bypass investigation for simple commands ---
     matched, agent_url, agent_name = match_operational_route(user_request)
     if matched:
+        # Special handling for Remediation (Requires Context)
+        if agent_name == "Remediation Agent":
+            from delegation import delegate_to_remediation
+            
+            # Check if we have an RCA to act on
+            if not session.architect_output:
+                 return {
+                    "status": "FAILURE",
+                    "response": "⚠️ **No Active Investigation Found**\n\nI cannot suggest a solution because I don't have a Root Cause Analysis (RCA) context yet. Please ask me to investigate an issue first (e.g., 'Troubleshoot service X')."
+                }
+            
+            await _report_progress(f"Starting auto-remediation (Session: {session_id})...", event_type="STATUS_UPDATE", icon="🛠️", display_type="step_progress")
+            
+            rem_result = await delegate_to_remediation(session, user_request)
+            
+            return {
+                "status": "SUCCESS",
+                "orchestrator": {"target_agent": "Remediation Agent"},
+                "response": rem_result.get("response", "Remediation completed."),
+                "data": rem_result
+            }
+
         return await handle_operational_request(
             user_request=user_request,
             agent_url=agent_url,
@@ -217,9 +239,10 @@ async def run_investigation_async(
             session.workflow.transition_to(WorkflowPhase.PLANNING, "Generating investigation plan")
             agent_registry = load_agent_registry()
             try:
-                plan = await generate_plan(user_request, agent_registry)
+                plan = await generate_plan(user_request, agent_registry, seq_client=seq_client)
+                issue_type = plan.get('issue_type', 'unknown')
                 
-                plan_summary = f"**Investigation Plan**\n\nReasoning: {plan.get('reasoning', 'N/A')}\n\nSteps:\n"
+                plan_summary = f"**Investigation Plan** (Issue Type: `{issue_type}`)\n\nReasoning: {plan.get('reasoning', 'N/A')}\n\nSteps:\n"
                 for i, step in enumerate(plan.get('steps', []), 1):
                     plan_summary += f"{i}. {step.get('ui_label')} ({step.get('assigned_lead')})\n"
                 
@@ -253,6 +276,7 @@ async def run_investigation_async(
         session.workflow.transition_to(WorkflowPhase.TRIAGE, "Analyzing logs and metrics")
         
         sre_result = None
+        issue_type = plan.get('issue_type', 'unknown') if not resume_job_id else 'unknown'
         
         if resume_job_id and session.sre_findings:
             # RESUME SRE
@@ -310,7 +334,8 @@ async def run_investigation_async(
                 project_id,
                 session_id,
                 job_id=job_id,
-                user_email=user_email
+                user_email=user_email,
+                issue_type=issue_type
             )
             
         session.sre_findings = sre_result

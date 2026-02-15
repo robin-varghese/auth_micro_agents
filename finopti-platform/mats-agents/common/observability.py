@@ -4,7 +4,7 @@ import logging
 from typing import Optional, Dict
 
 from opentelemetry import trace, propagate
-from openinference.instrumentation.google_adk import AdkInstrumentor
+from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -31,7 +31,7 @@ class FinOptiObservability:
         
         # 1. Initialize ADK Instrumentation
         # This automatically captures agent execution steps (Chains)
-        AdkInstrumentor().instrument()
+        GoogleADKInstrumentor().instrument()
         
         # 2. (Optional) Custom OTel Global Config if needed
         # trace.set_tracer_provider(...) - handled by OpenInference auto-config usually
