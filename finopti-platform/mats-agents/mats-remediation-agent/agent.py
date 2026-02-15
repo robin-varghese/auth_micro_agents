@@ -16,7 +16,14 @@ from context import _session_id_ctx, _user_email_ctx, _report_progress
 from instructions import AGENT_INSTRUCTIONS, AGENT_NAME
 from tools import run_puppeteer_test, apply_gcloud_fix, check_monitoring, upload_to_gcs
 
+import re
+
 logger = logging.getLogger(__name__)
+
+def extract_field(doc: str, label: str) -> str:
+    """Extracts value after 'LABEL: ' in the RCA document."""
+    match = re.search(fr"{label}:\s*(.+)", doc)
+    return match.group(1).strip() if match else None
 
 # 1. Setup Observability
 setup_observability()
@@ -52,7 +59,8 @@ async def process_remediation_async(rca_document: str, resolution_plan: str, ses
         # Step 1: Pre-Verification (Reproduce Issue)
         await _report_progress("Phase 1: Pre-verification (Puppeteer)...", icon="🧪")
         # Heuristic: Extract URL from RCA or resolution
-        target_url = "http://test-app-url" # Placeholder - needs extraction logic
+        # Heuristic: Extract URL from RCA or resolution
+        target_url = extract_field(rca_document, "TARGET_URL") or "http://test-app-url"
         pre_verify = await run_puppeteer_test(scenario="Verify broken state", url=target_url)
         workflow_log.append(f"## Pre-Verification\nStatus: {pre_verify}")
         
@@ -63,12 +71,21 @@ async def process_remediation_async(rca_document: str, resolution_plan: str, ses
         await _report_progress("Phase 2: Applying Fix (GCloud)...", icon="🔧")
         # In a real scenario, we'd use the LLM to convert 'resolution_plan' to 'gcloud command'
         # For now, we assume the resolution plan *contains* the command or is the command
-        fix_result = await apply_gcloud_fix(command=resolution_plan)
+        remediation_command = extract_field(rca_document, "REMEDIATION_COMMAND")
+        if not remediation_command and resolution_plan:
+            remediation_command = resolution_plan
+            
+        if remediation_command:
+             fix_result = await apply_gcloud_fix(command=remediation_command)
+        else:
+             fix_result = {"status": "SKIPPED", "reason": "No REMEDIATION_COMMAND found"}
         workflow_log.append(f"## Fix Application\nResult: {fix_result}")
         
         # Step 3: Post-Verification (Monitoring)
         await _report_progress("Phase 3: Validation (Monitoring)...", icon="📊")
-        monitoring_result = await check_monitoring(query="error_rate")
+        await _report_progress("Phase 3: Validation (Monitoring)...", icon="📊")
+        validation_query = extract_field(rca_document, "VALIDATION_QUERY") or "error_rate"
+        monitoring_result = await check_monitoring(query=validation_query)
         workflow_log.append(f"## Validation\nMonitoring: {monitoring_result}")
         
         # Step 4: Documentation (Storage)

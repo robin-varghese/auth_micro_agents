@@ -63,3 +63,12 @@ How to use this for your AI Team:
 System Prompt: Feed the agent the "Agent Instructions" as part of its system prompt when it enters the "Reporting Phase" of its workflow.
 Data Extraction: The agent should use tool-calling (Function Calling) to fetch the variables inside the {{double_brackets}}.
 Validation: Use a secondary LLM "Critic" agent to read the generated RCA against the raw logs to ensure no hallucinations occurred in the Timeline or Technical Evidence sections.
+
+**8. Automation & Remediation Spec (Machine Readable)**
+*Directive: Provide executable commands and queries for the Remediation Agent.*
+
+TARGET_URL: {{url_to_test}}
+REPRODUCTION_SCENARIO: {{puppeteer_scenario_description}}
+REMEDIATION_COMMAND: {{gcloud_or_kubectl_command}}
+VALIDATION_QUERY: {{monitoring_query}}
+VALIDATION_THRESHOLD: {{success_criteria}}
