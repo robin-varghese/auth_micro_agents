@@ -36,7 +36,7 @@ class GitHubMCPClient:
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.STDOUT
         )
         await self._handshake()
 
@@ -48,8 +48,18 @@ class GitHubMCPClient:
         while True:
             line = await self.process.stdout.readline()
             if not line: break
-            msg = json.loads(line)
-            if msg.get("id") == 0: break
+            
+            line_str = line.decode().strip()
+            if not line_str.startswith("{"):
+                logger.debug(f"MCP LOG: {line_str}")
+                continue
+
+            try:
+                msg = json.loads(line)
+                if msg.get("id") == 0: break
+            except json.JSONDecodeError:
+                continue
+
         await self._send_json({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
 
     async def _send_json(self, payload):
@@ -70,9 +80,23 @@ class GitHubMCPClient:
         await self._send_json(payload)
         
         while True:
-            line = await self.process.stdout.readline()
+            try:
+                line = await asyncio.wait_for(self.process.stdout.readline(), timeout=60)
+            except asyncio.TimeoutError:
+                raise RuntimeError(f"Tool call {tool_name} timed out")
+                
             if not line: raise RuntimeError("MCP closed")
-            msg = json.loads(line)
+            
+            line_str = line.decode().strip()
+            if not line_str.startswith("{"):
+                logger.debug(f"MCP LOG: {line_str}")
+                continue
+
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
             if msg.get("id") == self.request_id:
                 if "error" in msg: return {"error": msg["error"]}
                 result = msg.get("result", {})

@@ -4,7 +4,7 @@ Google Database ADK Agent
 This agent uses Google ADK to handle Database interactions.
 It supports:
 1. PostgreSQL (via MCP Toolbox over SSE)
-2. BigQuery Agent Analytics (via Native Client)
+2. BigQuery (via Native Client)
 """
 
 import os
@@ -19,10 +19,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.plugins import ReflectAndRetryToolPlugin
-from google.adk.plugins.bigquery_agent_analytics_plugin import (
-    BigQueryAgentAnalyticsPlugin,
-    BigQueryLoggerConfig
-)
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 from opentelemetry import trace
@@ -86,23 +82,11 @@ def create_app(model_name: str = None):
 
     agent_instance = create_db_agent(model_name)
     
-    bq_plugin = BigQueryAgentAnalyticsPlugin(
-        project_id=config.GCP_PROJECT_ID,
-        dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-        table_id=config.BQ_ANALYTICS_TABLE,
-        config=BigQueryLoggerConfig(
-            enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-            batch_size=1
-        ),
-        location="US"
-    )
-
     return App(
         name="finopti_db_agent",
         root_agent=agent_instance,
         plugins=[
-            ReflectAndRetryToolPlugin(max_retries=3),
-            bq_plugin
+            ReflectAndRetryToolPlugin(max_retries=3)
         ]
     )
 

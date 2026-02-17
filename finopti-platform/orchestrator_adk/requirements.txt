@@ -5,7 +5,7 @@ requests>=2.32.4
 gunicorn>=21.2.0
 python-dotenv>=1.0.0
 google-cloud-secret-manager>=2.16.0
-google-cloud-bigquery>=3.0.0
+
 deprecated
 arize-phoenix>=4.0.0
 openinference-instrumentation-google-adk>=0.1.0

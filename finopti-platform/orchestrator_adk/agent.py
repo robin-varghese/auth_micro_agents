@@ -18,19 +18,20 @@ from google.adk.runners import InMemoryRunner
 from google.genai import types
 from google.adk.plugins import ReflectAndRetryToolPlugin
 
+from config import config
+
 # Force Vertex AI if configured
 if hasattr(config, "GOOGLE_GENAI_USE_VERTEXAI"):
     os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = str(config.GOOGLE_GENAI_USE_VERTEXAI)
 if hasattr(config, "GCP_PROJECT_ID"):
     os.environ["GOOGLE_CLOUD_PROJECT"] = config.GCP_PROJECT_ID
+
 from google.adk.plugins.bigquery_agent_analytics_plugin import (
     BigQueryAgentAnalyticsPlugin,
     BigQueryLoggerConfig
 )
 from opentelemetry import trace
 from opentelemetry.semconv.trace import SpanAttributes
-
-from config import config
 
 # --- Refactored Modules ---
 from observability import setup_observability

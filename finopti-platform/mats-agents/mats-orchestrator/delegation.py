@@ -324,22 +324,22 @@ async def delegate_to_architect(
         def _fetch_template():
              client = storage.Client()
              bucket = client.bucket("rca-reports-mats")
-             blob = bucket.blob("rca-templates/RCA-Template-V1.txt")
+             blob = bucket.blob("rca-templates/RCA-Template-V1.json")
              return blob.download_as_text()
         
         template_content = await asyncio.to_thread(_fetch_template)
-        logger.info(f"[{session_id}] Successfully loaded RCA-Template-V1 from GCS")
+        logger.info(f"[{session_id}] Successfully loaded RCA-Template-V1.json from GCS")
     except Exception as e:
         logger.warning(f"[{session_id}] Failed to load RCA template from GCS: {e}")
-        # Fallback to standard structure if GCS fails
+        # Fallback to standard JSON structure if GCS fails
         template_content = """
-        ## 1. Executive Summary
-        ## 2. Timeline & Detection
-        ## 3. Root Cause
-        ## 4. Recommended Fix
-        ## 5. Prevention Plan
-        ## 6. Known Limitations
-        """
+{
+  "docs": { "title": "RCA Report", "description": "Fallback Template" },
+  "metadata": { "incident_id": "UNKNOWN", "status": "Pending" },
+  "root_cause_analysis": { "root_cause": "UNKNOWN" },
+  "remediation_spec": { "remediation_command": "" }
+}
+"""
 
     prompt = f"""
 Please synthesize the following investigation reports into a formal Root Cause Analysis document.

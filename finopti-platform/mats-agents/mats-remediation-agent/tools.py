@@ -126,3 +126,39 @@ async def upload_file_to_gcs(local_path: str, destination_name: str, bucket: str
         return match.group(1)
         
     return response_text
+
+async def read_from_gcs(bucket: str, filename: str) -> Dict[str, Any]:
+    """Delegates file reading to Storage Agent."""
+    prompt = f"Read the content of bucket '{bucket}' file '{filename}'. Return the raw content of the file as your response. Do not wrap in markdown blocks if possible, or use standard json blocks."
+    
+    # Delegate to Storage Agent
+    result = await _delegate("Storage", STORAGE_URL, {"prompt": prompt})
+    
+    response_text = result.get("response", "")
+    if isinstance(result, str): response_text = result
+    
+    # Parsing Logic: Try to extract JSON from Markdown
+    clean_text = response_text.strip()
+    
+    if "```json" in clean_text:
+        clean_text = clean_text.split("```json")[1].split("```")[0].strip()
+    elif "```" in clean_text:
+        clean_text = clean_text.split("```")[1].split("```")[0].strip()
+        
+    import json
+    try:
+        data = json.loads(clean_text)
+        return data
+    except json.JSONDecodeError:
+        # Maybe the agent returned some text before the JSON?
+        # Try to find the first { and last }
+        try:
+            start = clean_text.find("{")
+            end = clean_text.rfind("}")
+            if start != -1 and end != -1:
+                json_str = clean_text[start:end+1]
+                return json.loads(json_str)
+        except: pass
+        
+        logger.warning(f"Failed to parse JSON from Storage Agent response. returning raw text.")
+        return {"raw_content": response_text}

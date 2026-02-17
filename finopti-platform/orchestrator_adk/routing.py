@@ -5,7 +5,7 @@ import requests
 import json
 import logging
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from config import config
 from structured_logging import propagate_request_id

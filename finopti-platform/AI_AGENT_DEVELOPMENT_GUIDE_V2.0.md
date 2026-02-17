@@ -67,9 +67,15 @@
 ### Rule 10: Vertex AI as LLM Standard
 **CRITICAL:** All agents MUST use Vertex AI for LLM interactions. The Google AI (Gemini) API key is NOT supported in production.
 **Requirement:**
-1. Use `config.GOOGLE_GENAI_USE_VERTEXAI = "TRUE"`.
-2. Ensure the agent runner is configured to use Vertex AI by setting appropriate environment variables or utilizing the `config` module.
-3. Local verification should also prioritize Vertex AI where feasible.
+1. Set `GOOGLE_GENAI_USE_VERTEXAI = "TRUE"` in `config/__init__.py` or via environment variable.
+2. In `agent.py`, ensure these variables are exported BEFORE initializing any ADK components:
+   ```python
+   if hasattr(config, "GOOGLE_GENAI_USE_VERTEXAI"):
+       os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = str(config.GOOGLE_GENAI_USE_VERTEXAI)
+   if hasattr(config, "GCP_PROJECT_ID"):
+       os.environ["GOOGLE_CLOUD_PROJECT"] = config.GCP_PROJECT_ID
+   ```
+3. Local verification (`verify_agent_internal.py`) MUST also force Vertex AI.
 
 ---
 
@@ -94,22 +100,45 @@ sub_agents/{agent_name}_adk/
 
 ## Core Modules Implementation
 
-### 1. `observability.py` (Boilerplate)
-*Copy this exactly, changing only the `project_name`.*
+### 1. `observability.py` (Resilient Boilerplate)
+*Ensures the agent boots even if Phoenix or OTel is unavailable.*
 
 ```python
 import os
-from phoenix.otel import register
-from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+import logging
+
+try:
+    from phoenix.otel import register
+except (ImportError, SyntaxError):
+    register = None
+
+try:
+    from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+except ImportError:
+    GoogleADKInstrumentor = None
+
+logger = logging.getLogger(__name__)
 
 def setup_observability():
-    """Initialize Phoenix tracing and ADK instrumentation."""
-    tracer_provider = register(
-        project_name="finoptiagents-MyAgent", # <--- CHANGE THIS
-        endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
-        set_global_tracer_provider=True
-    )
-    GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+    """Initialize Phoenix tracing and ADK instrumentation safely."""
+    endpoint = os.getenv("PHOENIX_COLLECTOR_ENDPOINT")
+    tracer_provider = None
+    
+    if endpoint and register:
+        try:
+            tracer_provider = register(
+                project_name=f"finoptiagents-{os.getenv('AGENT_ID', 'GenericAgent')}",
+                endpoint=endpoint,
+                set_global_tracer_provider=True
+            )
+        except Exception as e:
+            logger.warning(f"Failed to register Phoenix: {e}")
+
+    if GoogleADKInstrumentor:
+        try:
+            GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+        except Exception as e:
+            logger.warning(f"Failed to instrument ADK: {e}")
 ```
 
 ### 2. `context.py` (Boilerplate)
@@ -221,20 +250,21 @@ AGENT_NAME = "my_specialist"
 The `agent.py` file should now be **minimal**, purely wiring the modules together.
 
 ```python
-import os
-import sys
-import asyncio
-import logging
-from pathlib import Path
-from contextvars import ContextVar
+# 1. Load Config FIRST (Critical for environment overrides)
+from config import config
 
-# Imports
+# 2. Set Vertex AI preference BEFORE other imports use LLM libs
+if hasattr(config, "GOOGLE_GENAI_USE_VERTEXAI"):
+    os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = str(config.GOOGLE_GENAI_USE_VERTEXAI)
+if hasattr(config, "GCP_PROJECT_ID"):
+    os.environ["GOOGLE_CLOUD_PROJECT"] = config.GCP_PROJECT_ID
+
+# 3. Rest of the imports
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 from opentelemetry import trace
-from openinference.semconv.trace import SpanAttributes
 
 # Module Imports
 from observability import setup_observability
@@ -247,13 +277,11 @@ from context import (
 )
 from instructions import AGENT_INSTRUCTIONS, AGENT_NAME
 from tools import my_tool_function
-# Pattern A only:
-from mcp_client import MyMCPClient, _mcp_ctx
 
-# 1. Setup Observability
+# 4. Setup Observability
 setup_observability()
 
-# 2. Define Agent
+# 5. Define Agent
 def create_my_agent(model_name=None):
     return Agent(
         name=AGENT_NAME,
@@ -366,30 +394,43 @@ ENV PYTHONUNBUFFERED=1
 CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--timeout", "600", "main:app"]
 ```
 
-### 3. `verify_agent.py` (Verification)
-*Script to test the agent locally.*
+### 3. `requirements.txt` (Standard Dependencies)
+*Ensure version compatibility to avoid import/syntax errors.*
+
+```text
+google-adk>=0.1.0
+google-genai>=0.1.0
+Flask>=3.0.0
+gunicorn>=21.0.0
+requests>=2.31.0
+arize-phoenix>=4.0.0      # Critical for Python 3.11 compatibility
+opentelemetry-sdk>=1.20.0
+openinference-instrumentation-google-adk>=0.1.0
+```
+
+### 4. `verify_agent_internal.py` (Verification)
+*Script to test the agent logic locally without infrastructure.*
 
 ```python
-import requests
 import os
+import asyncio
+from agent import process_request
 
-URL = os.getenv("AGENT_URL", "http://localhost:8080/execute")
-
-def verify():
-    print(f"Testing {URL}...")
-    try:
-        resp = requests.post(URL, json={
-            "prompt": "Test prompt",
-            "session_id": "test-session",
-            "user_email": "test@example.com"
-        }, timeout=60)
-        resp.raise_for_status()
-        print(f"Success: {resp.json()}")
-    except Exception as e:
-        print(f"Failed: {e}")
+async def verify():
+    # Force Vertex AI for local test
+    os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "TRUE"
+    os.environ["USE_SECRET_MANAGER"] = "FALSE"
+    
+    print("Testing Agent Logic...")
+    result = await process_request(
+        prompt="Hello",
+        session_id="test-session",
+        user_email="test@example.com"
+    )
+    print(f"Result: {result}")
 
 if __name__ == "__main__":
-    verify()
+    asyncio.run(verify())
 ```
 
 ---

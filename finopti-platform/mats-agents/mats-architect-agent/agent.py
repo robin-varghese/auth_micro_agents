@@ -11,10 +11,6 @@ from typing import Any
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.plugins import ReflectAndRetryToolPlugin
-from google.adk.plugins.bigquery_agent_analytics_plugin import (
-    BigQueryAgentAnalyticsPlugin,
-    BigQueryLoggerConfig
-)
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 from opentelemetry import trace, propagate
@@ -147,21 +143,11 @@ async def process_request(prompt_or_payload: Any, session_id: str = None, user_e
         def _create_app(model_name: str):
             architect_agent_instance = create_architect_agent(model_name)
             
-            bq_plugin = BigQueryAgentAnalyticsPlugin(
-                project_id=os.getenv("GCP_PROJECT_ID"),
-                dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-                table_id=config.BQ_ANALYTICS_TABLE,
-                config=BigQueryLoggerConfig(
-                    enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-                )
-            )
-            
             return App(
                 name="mats_architect_app",
                 root_agent=architect_agent_instance,
                 plugins=[
-                    ReflectAndRetryToolPlugin(),
-                    bq_plugin
+                    ReflectAndRetryToolPlugin()
                 ]
             )
             

@@ -26,13 +26,6 @@ from openinference.semconv.trace import SpanAttributes
 
 from config import config
 
-# Plugins
-from google.adk.plugins.bigquery_agent_analytics_plugin import (
-    BigQueryLoggerConfig
-)
-from fixed_bq_plugin import FixedBigQueryPlugin
-
-
 # --- Refactored Modules ---
 from observability import setup_observability
 from context import (
@@ -77,21 +70,10 @@ def create_app(model_name: str = None):
 
     agent_instance = create_code_agent(model_name)
 
-    # Initialize BigQuery Plugin locally
-    bq_config = BigQueryLoggerConfig(
-        enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-    )
-    bq_plugin = FixedBigQueryPlugin(
-        config=bq_config,
-        project_id=config.GCP_PROJECT_ID,
-        dataset_id=os.getenv("BIGQUERY_DATASET_ID", "finoptiagents"),
-        table_id=os.getenv("BIGQUERYAGENTANALYTICSPLUGIN_TABLE_ID", "agent_analytics_log")
-    )
-
     return App(
         name="finopti_code_execution_agent",
         root_agent=agent_instance,
-        plugins=[bq_plugin]
+        plugins=[]
     )
 
 async def send_message_async(prompt: str, user_email: str = None, session_id: str = "default") -> str:

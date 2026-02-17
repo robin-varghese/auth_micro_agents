@@ -24,7 +24,7 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/1" \
     "upstream": {
       "type": "roundrobin",
       "nodes": {
-        "orchestrator:5000": 1
+        "finopti-orchestrator:5000": 1
       },
       "timeout": {
         "connect": 10,
@@ -621,6 +621,33 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/22" \
     "plugins": {
       "proxy-rewrite": {
         "regex_uri": ["^/agent/remediation/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
+# Route 23: IAM Verification Agent
+echo "Creating route: /agent/iam -> iam_agent:8080"
+curl -i -X PUT "${APISIX_ADMIN}/routes/23" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "iam_agent_route",
+    "uri": "/agent/iam/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "finopti-iam-agent:8080": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 600,
+        "read": 600
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/agent/iam/(.*)", "/$1"]
       }
     }
   }'

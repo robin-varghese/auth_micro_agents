@@ -1,0 +1,45 @@
+{
+    "docs": {
+        "title": "Autonomous Remediation Report",
+        "description": "Structured record of autonomous remediation actions, verification, and outcomes."
+    },
+    "metadata": {
+        "incident_id": "{{incident_id}}",
+        "session_id": "{{session_id}}",
+        "timestamp_utc": "{{timestamp}}",
+        "agent_version": "mats-remediation-1.0",
+        "status": "{{status}}"
+    },
+    "executive_summary": {
+        "instruction": "Briefly describe the remediation attempt and the final outcome.",
+        "summary_text": "{{summary_text}}"
+    },
+    "pre_verification": {
+        "instruction": "Evidence of the issue before applying any fix.",
+        "target_url": "{{target_url}}",
+        "reproduction_scenario": "{{reproduction_scenario}}",
+        "status": "{{status}}",
+        "evidence": {
+            "screenshot_url": "{{screenshot_url}}",
+            "logs": "{{logs}}"
+        }
+    },
+    "remediation_action": {
+        "instruction": "Details of the fix applied to the system.",
+        "action_type": "{{action_type}}",
+        "command_executed": "{{command_executed}}",
+        "output_log": "{{output_log}}",
+        "status": "{{status}}"
+    },
+    "post_verification": {
+        "instruction": "Validation results after applying the fix.",
+        "validation_query": "{{validation_query}}",
+        "monitoring_result": "{{monitoring_result}}",
+        "status": "{{status}}"
+    },
+    "next_steps": {
+        "instruction": "Recommendations for future prevention or manual follow-up.",
+        "manual_intervention_required": "{{manual_intervention_required}}",
+        "recommendations": "{{recommendations}}"
+    }
+}

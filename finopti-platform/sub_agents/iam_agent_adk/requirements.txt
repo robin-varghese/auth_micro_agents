@@ -3,7 +3,7 @@ google-genai
 opentelemetry-api
 opentelemetry-sdk
 openinference-instrumentation-google-adk
-phoenix
+arize-phoenix>=4.0.0
 flask
 requests
 gunicorn
