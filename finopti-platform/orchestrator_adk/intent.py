@@ -54,11 +54,14 @@ def detect_intent(prompt: str) -> str:
             "investigate the crash",
             "investigate the issue",
             "investigate the problem",
+            "diagnose the",
+            "debug the",
             "fix the issue",
             "fix the bug",
             "fix the problem",
-            "diagnose the",
-            "debug the"
+            "apply the fix",
+            "remediate",
+            "apply solution"
         ]
         
         # Check for MATS triggers

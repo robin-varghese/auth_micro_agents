@@ -399,6 +399,10 @@ def send_message(prompt: str) -> dict:
             "message": str(e)
         }
 
+def set_prompt(txt: str):
+    """Set the pending prompt in session state"""
+    st.session_state.pending_prompt = txt
+
 def format_response(response_data: dict) -> str:
     """Format the agent response for display"""
     if not response_data.get("success", False):
@@ -491,9 +495,23 @@ with st.sidebar:
     if st.session_state.authenticated:
         st.markdown("---")
         st.subheader("⚡ Sample Prompts")
+
+        st.markdown("**Remediation**")
+
+        if st.button("Apply Remediation (RCA)", use_container_width=True, help="Apply fix using an RCA document or Automation Spec"):
+            template = (
+                "Apply remediation for the following RCA Automation Spec:\n"
+                "gcp project: vector-search-poc\n"
+                "service name:calculator-app\n"
+                "Region: us-central1\n"
+                "TARGET_URL: https://calculator-app-912533822336.us-central1.run.app\n"
+                "RCA Document: https://storage.cloud.google.com/rca-reports-mats/MATS-RCA-calculator-app-20260210.md\n" 
+                "Automation Spec: https://storage.cloud.google.com/rca-reports-mats/MATS-RCA-calculator-app-20260210.md\n"
+            )
+            set_prompt(template)
+            st.rerun()
         
-        def set_prompt(txt):
-            st.session_state.pending_prompt = txt
+
         
         if st.button("List GCloud VMs", use_container_width=True):
             set_prompt("List all VMs in my google cloud project vector-search-poc")
@@ -542,6 +560,7 @@ with st.sidebar:
         if st.button("Debug Deployment", use_container_width=True):
             set_prompt("Debug the failed deployment in project 'vector-search-poc'. Why did it fail?")
             st.rerun()
+
 
         st.markdown("**Infrastructure**")
 

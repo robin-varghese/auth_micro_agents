@@ -29,6 +29,9 @@ def execute():
     session_id = data.get('session_id')
     user_email = data.get('user_email')
     
+    # Extract auth_token from header
+    auth_token = request.headers.get('Authorization')
+    
     if not rca or not resolution:
         return jsonify({"error": "rca_document and resolution_plan are required"}), 400
 
@@ -40,7 +43,8 @@ def execute():
             rca_document=rca,
             resolution_plan=resolution,
             session_id=session_id,
-            user_email=user_email
+            user_email=user_email,
+            auth_token=auth_token
         ))
         return jsonify(result)
 

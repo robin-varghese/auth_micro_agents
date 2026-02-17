@@ -18,13 +18,11 @@ def safe_confidence(value) -> float:
     return value if value is not None else 0.0
 
 
-def extract_executive_summary(rca_content: str, max_length: int = 2000) -> str:
-    """Extract executive summary from RCA content.
-    
-    Tries multiple header formats, falls back to truncation.
+def extract_executive_summary(rca_content: Any, max_length: int = 2000) -> str:
+    """Extract executive summary from RCA content (String or Dict).
     
     Args:
-        rca_content: Full RCA markdown content
+        rca_content: Full RCA content (JSON dict or Markdown string)
         max_length: Maximum summary length for UI safety
         
     Returns:
@@ -33,24 +31,41 @@ def extract_executive_summary(rca_content: str, max_length: int = 2000) -> str:
     if not rca_content:
         return "No details available."
     
-    summary_text = rca_content
+    summary_text = ""
     
-    # Try to find Executive Summary section (## 1. format)
-    if "## 1. Executive Summary" in rca_content:
-        parts = rca_content.split("## 1. Executive Summary")
-        if len(parts) > 1:
-            # Take content after header, stop at next header
-            summary_text = parts[1].split("##")[0].strip()
-    elif "Executive Summary" in rca_content:
-        parts = rca_content.split("Executive Summary")
-        if len(parts) > 1:
-            # If using standard markdown headers, split on next header
-            if "##" in parts[1]:
+    # Handle Dictionary (JSON RCA)
+    if isinstance(rca_content, dict):
+        # Try to extract from standard JSON schema
+        exec_sum = rca_content.get("executive_summary", {})
+        if isinstance(exec_sum, dict):
+            summary_text = exec_sum.get("summary_text", "")
+        elif isinstance(exec_sum, str):
+            summary_text = exec_sum
+            
+        # Fallback: if empty, try to dump whole dict (truncated)
+        if not summary_text:
+            summary_text = str(rca_content)
+            
+    else:
+        # Handle String (Legacy Markdown)
+        summary_text = str(rca_content)
+        
+        # Try to find Executive Summary section (## 1. format)
+        if "## 1. Executive Summary" in summary_text:
+            parts = summary_text.split("## 1. Executive Summary")
+            if len(parts) > 1:
+                # Take content after header, stop at next header
                 summary_text = parts[1].split("##")[0].strip()
-            else:
-                # Fallback for plain text, take first 2 paragraphs
-                paragraphs = parts[1].strip().split("\n\n")
-                summary_text = "\n\n".join(paragraphs[:2])
+        elif "Executive Summary" in summary_text:
+            parts = summary_text.split("Executive Summary")
+            if len(parts) > 1:
+                # If using standard markdown headers, split on next header
+                if "##" in parts[1]:
+                    summary_text = parts[1].split("##")[0].strip()
+                else:
+                    # Fallback for plain text, take first 2 paragraphs
+                    paragraphs = parts[1].strip().split("\n\n")
+                    summary_text = "\n\n".join(paragraphs[:2])
     
     # Truncate for UI safety
     if len(summary_text) > max_length:

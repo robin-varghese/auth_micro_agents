@@ -1,74 +1,107 @@
-
-Model
-ThinkingThoughts
-Expand to view model thoughts
-
-chevron_right
-To enable AI agents to populate this document effectively, I have added "Agent Directives" to each section. These directives serve as prompt-engineering constraints to ensure the agent provides structured, data-backed technical analysis rather than generic summaries.
-[Incident ID] - Autonomous Root Cause Analysis
-Metadata (Auto-Generated)
-Incident ID: {{incident_id}}
-Primary System: {{impacted_service_name}}
-Detection Source: {{alerting_source_e.g._Prometheus_CloudWatch}}
-Agent Version: {{agent_version_id}}
-Status: Pending Human Review
-1. Executive Summary
-Agent Instruction: Summarize the incident in under 150 words. Focus on the Primary Trigger and the Ultimate Resolution. Avoid jargon in the first sentence for stakeholder readability.
-{{summary_text}}
-2. Impact & Scope Analysis
-Agent Instruction: Query observability APIs (Datadog/NewRelic/CloudWatch) to provide hard numbers. Specifically identify the blast radius.
-Service(s) Affected: {{list_affected_microservices}}
-Error Rate Peak: {{peak_error_percentage}}%
-Latency Impact: {{p99_latency_increase}}ms
-Cloud Resources Affected: {{e.g._AWS_RDS_instance_id_or_K8s_Namespace}}
-User Impact: {{count_of_4xx_5xx_responses}} total failed requests.
-3. Autonomous Troubleshooting Timeline (UTC)
-Agent Instruction: Reconstruct the timeline based on your internal execution logs and system event logs. Use ISO 8601 format. Match system alerts to your autonomous actions.
-Timestamp	Event/Action	Source/Component
-{{T1}}	Incident Start: First deviation from baseline detected.	{{metric_name}}
-{{T2}}	Detection: Automated alert triggered.	{{alert_rule_id}}
-{{T3}}	Agent Engagement: Autonomous diagnosis started.	{{agent_id}}
-{{T4}}	Hypothesis Formed: {{describe_first_hypothesis}}	Agent Reasoning
-{{T5}}	Mitigation Applied: {{describe_action_e.g._Restart_Pod}}	Agent Action
-{{T6}}	Verification: Metrics returned to baseline.	{{metric_name}}
-4. Root Cause Analysis (The 5 Whys)
-Agent Instruction: Use logical chaining. Ensure the "Final Root Cause" is a systemic failure (e.g., a missing policy or lack of circuit breaker) rather than just a "human error" or "temporary glitch."
-Direct Symptom: {{why_1}}
-Immediate Cause: {{why_2}}
-Contributory Factor: {{why_3}}
-Underlying Process Gap: {{why_4}}
-Root Cause: {{final_systemic_root_cause}}
-5. Technical Evidence & Logs
-Agent Instruction: Attach the specific log snippets or trace IDs that confirmed your hypothesis. If Cloud Infrastructure changed (IaC), provide the diff or the event log.
-Log Snippet:
-code
-Text
-{{insert_critical_log_lines}}
-Trace ID: {{distributed_trace_link_or_id}}
-Infrastructure Diff: {{terraform_or_k8s_spec_changes_detected}}
-6. Autonomous Mitigation vs. Permanent Fixes
-Agent Instruction: Differentiate between the "Band-aid" the agent applied and the "Permanent Surgery" a human engineer must perform.
-🛠 Actions Taken by Agent (Mitigation)
-{{action_1}} (e.g., Flushed Redis Cache)
-{{action_2}} (e.g., Scaled EKS Replicas from 3 to 10)
-📋 Recommended Permanent Actions (Prevention)
-Infrastructure: {{e.g._Update_HPA_targets_in_Terraform}}
-Application: {{e.g._Implement_exponential_backoff_on_Database_client}}
-Monitoring: {{e.g._Add_anomaly_detection_alert_for_memory_leak_patterns}}
-7. Agent Confidence Score & Reasoning
-Agent Instruction: Self-assess the accuracy of this RCA. If confidence is below 80%, flag specific "Unknowns" for the human reviewer.
-Confidence Score: {{0-100}}%
-Unknowns/Assumptions: {{describe_any_data_gaps_or_ambiguities}}
-How to use this for your AI Team:
-System Prompt: Feed the agent the "Agent Instructions" as part of its system prompt when it enters the "Reporting Phase" of its workflow.
-Data Extraction: The agent should use tool-calling (Function Calling) to fetch the variables inside the {{double_brackets}}.
-Validation: Use a secondary LLM "Critic" agent to read the generated RCA against the raw logs to ensure no hallucinations occurred in the Timeline or Technical Evidence sections.
-
-**8. Automation & Remediation Spec (Machine Readable)**
-*Directive: Provide executable commands and queries for the Remediation Agent.*
-
-TARGET_URL: {{url_to_test}}
-REPRODUCTION_SCENARIO: {{puppeteer_scenario_description}}
-REMEDIATION_COMMAND: {{gcloud_or_kubectl_command}}
-VALIDATION_QUERY: {{monitoring_query}}
-VALIDATION_THRESHOLD: {{success_criteria}}
+{
+  "docs": {
+    "title": "[Incident ID] - Autonomous Root Cause Analysis",
+    "description": "JSON Schema for MATS Root Cause Analysis Document"
+  },
+  "metadata": {
+    "incident_id": "{{incident_id}}",
+    "primary_system": "{{impacted_service_name}}",
+    "detection_source": "{{alerting_source_e.g._Prometheus_CloudWatch}}",
+    "agent_version": "{{agent_version_id}}",
+    "status": "Pending Human Review"
+  },
+  "executive_summary": {
+    "instruction": "Summarize the incident in under 150 words. Focus on the Primary Trigger and the Ultimate Resolution. Avoid jargon in the first sentence for stakeholder readability.",
+    "summary_text": "{{summary_text}}"
+  },
+  "impact_and_scope_analysis": {
+    "instruction": "Query observability APIs (Datadog/NewRelic/CloudWatch) to provide hard numbers. Specifically identify the blast radius.",
+    "services_affected": [
+      "{{list_affected_microservices}}"
+    ],
+    "error_rate_peak_percentage": "{{peak_error_percentage}}",
+    "latency_impact_ms": "{{p99_latency_increase}}",
+    "cloud_resources_affected": [
+      "{{e.g._AWS_RDS_instance_id_or_K8s_Namespace}}"
+    ],
+    "user_impact_failed_requests_count": "{{count_of_4xx_5xx_responses}}"
+  },
+  "autonomous_troubleshooting_timeline_utc": {
+    "instruction": "Reconstruct the timeline based on your internal execution logs and system event logs. Use ISO 8601 format. Match system alerts to your autonomous actions.",
+    "timeline_events": [
+      {
+        "timestamp": "{{T1}}",
+        "event_action": "Incident Start: First deviation from baseline detected.",
+        "source_component": "{{metric_name}}"
+      },
+      {
+        "timestamp": "{{T2}}",
+        "event_action": "Detection: Automated alert triggered.",
+        "source_component": "{{alert_rule_id}}"
+      },
+      {
+        "timestamp": "{{T3}}",
+        "event_action": "Agent Engagement: Autonomous diagnosis started.",
+        "source_component": "{{agent_id}}"
+      },
+      {
+        "timestamp": "{{T4}}",
+        "event_action": "Hypothesis Formed: {{describe_first_hypothesis}}",
+        "source_component": "Agent Reasoning"
+      },
+      {
+        "timestamp": "{{T5}}",
+        "event_action": "Mitigation Applied: {{describe_action_e.g._Restart_Pod}}",
+        "source_component": "Agent Action"
+      },
+      {
+        "timestamp": "{{T6}}",
+        "event_action": "Verification: Metrics returned to baseline.",
+        "source_component": "{{metric_name}}"
+      }
+    ]
+  },
+  "root_cause_analysis_5_whys": {
+    "instruction": "Use logical chaining. Ensure the 'Final Root Cause' is a systemic failure (e.g., a missing policy or lack of circuit breaker) rather than just a 'human error' or 'temporary glitch'.",
+    "direct_symptom": "{{why_1}}",
+    "immediate_cause": "{{why_2}}",
+    "contributory_factor": "{{why_3}}",
+    "underlying_process_gap": "{{why_4}}",
+    "root_cause": "{{final_systemic_root_cause}}"
+  },
+  "technical_evidence_and_logs": {
+    "instruction": "Attach the specific log snippets or trace IDs that confirmed your hypothesis. If Cloud Infrastructure changed (IaC), provide the diff or the event log.",
+    "log_snippets": [
+      "{{insert_critical_log_lines}}"
+    ],
+    "trace_ids": [
+      "{{distributed_trace_link_or_id}}"
+    ],
+    "infrastructure_diff": "{{terraform_or_k8s_spec_changes_detected}}"
+  },
+  "autonomous_mitigation_vs_permanent_fixes": {
+    "instruction": "Differentiate between the 'Band-aid' the agent applied and the 'Permanent Surgery' a human engineer must perform.",
+    "agent_mitigation_actions": [
+      "{{action_1}}",
+      "{{action_2}}"
+    ],
+    "recommended_permanent_actions": {
+      "infrastructure": "{{e.g._Update_HPA_targets_in_Terraform}}",
+      "application": "{{e.g._Implement_exponential_backoff_on_Database_client}}",
+      "monitoring": "{{e.g._Add_anomaly_detection_alert_for_memory_leak_patterns}}"
+    }
+  },
+  "agent_confidence_score_and_reasoning": {
+    "instruction": "Self-assess the accuracy of this RCA. If confidence is below 80%, flag specific 'Unknowns' for the human reviewer.",
+    "confidence_score_percentage": "{{0-100}}",
+    "unknowns_assumptions": "{{describe_any_data_gaps_or_ambiguities}}"
+  },
+  "remediation_spec": {
+    "instruction": "Provide executable commands and queries for the Remediation Agent.",
+    "target_url": "{{url_to_test}}",
+    "reproduction_scenario": "{{puppeteer_scenario_description}}",
+    "remediation_command": "{{gcloud_or_kubectl_command}}",
+    "validation_query": "{{monitoring_query}}",
+    "validation_threshold": "{{success_criteria}}"
+  }
+}

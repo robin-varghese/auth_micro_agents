@@ -53,11 +53,11 @@ async def _report_progress(
              
              user_id = _user_email_ctx.get() or "storage_admin"
              
-             await publisher.publish_event(
+             publisher.publish_event(
                  session_id=session_id, user_id=user_id, trace_id="unknown",
                  msg_type=mapped_type, message=message,
-                 display_type=display_type,
-                 icon=icon or "📦"
+                 display_type="markdown" if mapped_type == "THOUGHT" else "console_log",
+                 icon="📦"
              )
         except Exception as e:
             logger.warning(f"Redis publish failed: {e}")

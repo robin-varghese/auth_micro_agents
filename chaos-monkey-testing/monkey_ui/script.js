@@ -38,6 +38,13 @@ async function fetchScenarios() {
 // Render List
 function renderScenarioList() {
     scenarioListEl.innerHTML = '';
+
+    if (!Array.isArray(scenarios)) {
+        console.error('Scenarios is not an array:', scenarios);
+        scenarioListEl.innerHTML = `<div class="error-msg">Error: Scenarios data is invalid (Expected Array, got ${typeof scenarios})</div>`;
+        return;
+    }
+
     scenarioCountEl.textContent = scenarios.length;
 
     scenarios.forEach(scenario => {
@@ -101,17 +108,17 @@ async function executeAction(action) {
         const response = await fetch(`${API_BASE}/execute`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: activeScenarioId, action: action })
+            body: JSON.stringify({ scenario_id: activeScenarioId, action: action })
         });
 
         const data = await response.json();
 
         if (response.ok) {
-            orchestratorOutputEl.textContent = JSON.stringify(data.orchestrator_response, null, 2);
+            orchestratorOutputEl.textContent = JSON.stringify(data.output || data, null, 2);
             showToast(`${action.toUpperCase()} Completed!`);
             showInput(); // Allow user to reply if needed
         } else {
-            orchestratorOutputEl.textContent = `Error: ${data.message || 'Unknown error'}`;
+            orchestratorOutputEl.textContent = `Error: ${data.error || data.message || 'Unknown error'}`;
             showToast('Execution Failed', true);
         }
     } catch (error) {
@@ -167,7 +174,7 @@ async function sendReply() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                id: activeScenarioId,
+                scenario_id: activeScenarioId,
                 action: action,
                 message: message
             })
@@ -176,11 +183,16 @@ async function sendReply() {
         const data = await response.json();
 
         if (response.ok) {
-            orchestratorOutputEl.textContent += `\n> Agent: ` + JSON.stringify(data.orchestrator_response.response || data.orchestrator_response, null, 2);
+            // Orchestrator response usually has a 'response' field, but it could be the top-level object
+            const agentResponse = data.response || data.output || data;
+            const outputText = typeof agentResponse === 'object' ? JSON.stringify(agentResponse, null, 2) : agentResponse;
+
+            orchestratorOutputEl.textContent += `\n> Agent: ${outputText}`;
             showToast(`Reply Sent!`);
             userInputEl.value = ''; // Clear after send
         } else {
-            orchestratorOutputEl.textContent += `\n> Error: ${data.message || 'Unknown error'}`;
+            const errorText = data.error || data.message || JSON.stringify(data);
+            orchestratorOutputEl.textContent += `\n> Error: ${errorText}`;
             showToast('Reply Failed', true);
         }
     } catch (error) {

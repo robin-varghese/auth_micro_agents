@@ -344,6 +344,8 @@ async def delegate_to_architect(
     prompt = f"""
 Please synthesize the following investigation reports into a formal Root Cause Analysis document.
 
+CRITICAL: You MUST use the following Session ID for constructing the GCS folder path when calling upload_rca_to_gcs: {session_id}
+
 [ORIGINAL USER REQUEST]
 {user_request}
 
@@ -353,15 +355,15 @@ Please synthesize the following investigation reports into a formal Root Cause A
 [INVESTIGATOR REPORT]
 {json.dumps(investigator_findings, indent=2)}
 
-Generate a complete RCA markdown document strictly following this template:
+Generate a complete RCA as a **Valid JSON Object** strictly following the structure defined in the template above.
 
 {template_content}
 
-Also return your response in this JSON format:
+Also return your final agent response in this specific JSON wrapper:
 {{
     "status": "SUCCESS|PARTIAL|FAILURE",
     "confidence": 0.0-1.0,
-    "rca_content": "full markdown content",
+    "rca_content": (The full RCA JSON Object),
     "rca_url": "The link returned by upload_rca_to_gcs",
     "limitations": [],
     "recommendations": []
@@ -510,11 +512,11 @@ async def delegate_to_remediation(
     Returns:
         Remediation agent response
     """
-    REMEDIATION_AGENT_URL = os.getenv("REMEDIATION_AGENT_URL", "http://mats-remediation-agent:8085")
+    REMEDIATION_AGENT_URL = os.getenv("REMEDIATION_AGENT_URL", "http://finopti-remediation-agent:8085")
     
     # Extract Context
     rca_doc = ""
-    resolution_plan = ""
+    resolution_plan = user_request
     
     if session.architect_output:
         rca_doc = session.architect_output.get("rca_content", "")
@@ -527,6 +529,7 @@ async def delegate_to_remediation(
     
     CONTEXT:
     RCA Document provided.
+    SESSION_ID: {session.session_id}
     """
     
     async def _call():
@@ -534,7 +537,7 @@ async def delegate_to_remediation(
         
         payload = {
             "rca_document": rca_doc,
-            "resolution_plan": resolution_plan, # Optional, agent can parse RCA
+            "resolution_plan": resolution_plan,
             "session_id": session.session_id,
             "user_email": session.user_id,
             "prompt": prompt

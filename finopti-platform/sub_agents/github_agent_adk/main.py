@@ -54,13 +54,17 @@ def execute():
         logger.info(f"Processing GitHub request for {user_email}")
         
         response = send_message(prompt, user_email)
-        print(f"DEBUG: Response received: {len(response)} chars", flush=True)
+        print(f"DEBUG: Response received: {len(str(response))} chars", flush=True)
+        
+        is_error = "Error processing request:" in str(response)
         
         return jsonify({
-            "success": True,
+            "success": not is_error,
+            "error": is_error,
             "response": response,
+            "message": response if is_error else None,
             "agent": "github_agent"
-        }), 200
+        }), 200 if not is_error else 500
         
     except Exception as e:
         print(f"DEBUG: Exception: {e}", flush=True)

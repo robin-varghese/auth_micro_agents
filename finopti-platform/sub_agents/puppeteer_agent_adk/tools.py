@@ -5,6 +5,7 @@ import logging
 import base64
 from pathlib import Path
 from typing import Dict, Any
+from context import _session_id_ctx
 from mcp_client import ensure_mcp
 
 logger = logging.getLogger(__name__)
@@ -28,8 +29,9 @@ async def puppeteer_screenshot(name: str = "screenshot", width: int = 1200, heig
             if not filename.endswith(".png"):
                 filename += ".png"
                 
-            # Define path in shared volume
-            save_path = Path("/projects") / filename
+            # Define path in shared volume (Rule: always use session_id folder)
+            session_id = _session_id_ctx.get() or "default"
+            save_path = Path("/projects") / session_id / filename
             save_path.parent.mkdir(parents=True, exist_ok=True)
             
             # Decode and write

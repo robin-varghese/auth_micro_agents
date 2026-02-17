@@ -145,7 +145,7 @@ async def run_investigation_async(
         Investigation results with RCA URL
     """
     import re
-    from state import create_session, WorkflowPhase
+    from state import create_session, WorkflowPhase, update_session
     from delegation import (
         delegate_to_sre, 
         delegate_to_investigator, 
@@ -196,21 +196,85 @@ async def run_investigation_async(
         if agent_name == "Remediation Agent":
             from delegation import delegate_to_remediation
             
-            # Check if we have an RCA to act on
+            # 1. Try to find RCA context from current session
+            if not session.architect_output:
+                 # 2. Check if the prompt itself contains self-contained RCA details (Literal Spec)
+                 if "TARGET_URL" in user_request and "REMEDIATION_COMMAND" in user_request:
+                     logger.info(f"[{session_id}] Detected self-contained remediation prompt. Mocking architect_output.")
+                     session.architect_output = {
+                         "rca_content": user_request,
+                         "status": "SUCCESS",
+                         "confidence": 1.0
+                     }
+                 else:
+                     # 3. Check for external RCA links (e.g. GCS or HTTP)
+                     url_match = re.search(r'https?://[^\s{}()<>"]+', user_request)
+                     if url_match:
+                         url = url_match.group(0)
+                         # Heuristic: Is it pointing to an rca.json or our bucket?
+                         if "rca.json" in url or "rca-reports-mats" in url:
+                             await _report_progress(f"Detected external RCA link. Fetching context...", icon="📥", display_type="toast")
+                             
+                             # Extract GS path if applicable
+                             gs_match = re.search(r"storage\.(?:cloud\.google|googleapis)\.com/(rca-reports-mats/[^?\s]+)", url)
+                             gs_path = f"gs://{gs_match.group(1)}" if gs_match else (url if url.startswith("gs://") else None)
+                             
+                             try:
+                                 if gs_path:
+                                     from google.cloud import storage
+                                     path_parts = gs_path.replace("gs://", "").split("/")
+                                     bucket_name = path_parts[0]
+                                     blob_name = "/".join(path_parts[1:])
+                                     
+                                     def _fetch():
+                                         client = storage.Client()
+                                         return client.bucket(bucket_name).blob(blob_name).download_as_text()
+                                     
+                                     rca_text = await asyncio.to_thread(_fetch)
+                                 else:
+                                     import aiohttp
+                                     async with aiohttp.ClientSession() as http_client:
+                                         async with http_client.get(url, timeout=10) as resp:
+                                             rca_text = await resp.text()
+                                 
+                                 # Parse and validate
+                                 rca_data = json.loads(rca_text)
+                                 # Remediation agent expects "rca_content" as string or the whole thing
+                                 session.architect_output = {
+                                     "rca_content": json.dumps(rca_data) if isinstance(rca_data, dict) else rca_text,
+                                     "status": "SUCCESS",
+                                     "confidence": 1.0,
+                                     "external_source": url
+                                 }
+                                 logger.info(f"[{session_id}] Successfully loaded external RCA from {url}")
+                             except Exception as e:
+                                 logger.warning(f"[{session_id}] Failed to load external RCA from {url}: {e}")
+
+            # Re-check if we found an RCA
             if not session.architect_output:
                  return {
                     "status": "FAILURE",
-                    "response": "⚠️ **No Active Investigation Found**\n\nI cannot suggest a solution because I don't have a Root Cause Analysis (RCA) context yet. Please ask me to investigate an issue first (e.g., 'Troubleshoot service X')."
+                    "response": "⚠️ **No Active Investigation Found**\n\nI cannot suggest a solution because I don't have a Root Cause Analysis (RCA) context yet. Please ask me to investigate an issue first (e.g., 'Troubleshoot service X') or provide a self-contained RCA spec with TARGET_URL and REMEDIATION_COMMAND."
                 }
             
             await _report_progress(f"Starting auto-remediation (Session: {session_id})...", event_type="STATUS_UPDATE", icon="🛠️", display_type="step_progress")
             
             rem_result = await delegate_to_remediation(session, user_request)
             
+            status = rem_result.get("status", "UNKNOWN")
+            if status == "FAILURE":
+                response = f"❌ **Remediation Failed**\n\n{rem_result.get('error', 'Unknown error occurred.')}"
+            elif status == "MANUAL_INTERVENTION":
+                response = f"⚠️ **Manual Intervention Required**\n\n{rem_result.get('message', 'The fix requires manual steps.')}\n\nReport: {rem_result.get('report_url')}"
+            else:
+                response = rem_result.get("response", "✅ **Remediation Completed Successfully**")
+                if "report_url" in rem_result:
+                    response += f"\n\n[View Detailed Remediation Report]({rem_result['report_url']})"
+            
             return {
-                "status": "SUCCESS",
+                "status": status,
                 "orchestrator": {"target_agent": "Remediation Agent"},
-                "response": rem_result.get("response", "Remediation completed."),
+                "response": response,
                 "data": rem_result
             }
 
@@ -384,16 +448,21 @@ async def run_investigation_async(
                 arch_result = await delegate_to_architect(sre_result, inv_result_skipped, session_id, user_request=user_request)
                 return format_investigation_response(session, arch_result, sre_result, session_id)
 
-            # Genuine Failure
-            session.add_blocker("E001", reason)
-            session.mark_completed("PARTIAL_SUCCESS")
-            return {
-                "status": "PARTIAL", 
-                "sre_findings": sre_result, 
-                "error": reason,
-                "response": f"⚠️ **Triage Incomplete**\n\nSRE found issues but could not proceed to code analysis.\n\nReason: {reason}",
-                "execution_trace": sre_result.get("execution_trace", [])
+            # Genuine Failure / Inconclusive Triage
+            # Instead of stopping, we pass what we have to the Architect to generate a report on the findings so far.
+            logger.info(f"[{session_id}] SRE Triage failed/inconclusive: {reason}. Proceeding to RCA with available evidence.")
+            session.workflow.transition_to(WorkflowPhase.SYNTHESIS, "Generating RCA (Partial Triage)")
+
+            inv_result_skipped = {
+                "status": "SKIPPED",
+                "confidence": 0.5, 
+                "root_cause": None,
+                "hypothesis": f"Triage Incomplete/Inconclusive: {reason}",
+                "evidence": json.dumps(sre_result.get('evidence', {}))
             }
+
+            arch_result = await delegate_to_architect(sre_result, inv_result_skipped, session_id, user_request=user_request)
+            return format_investigation_response(session, arch_result, sre_result, session_id)
         
         # --- SHORTCUT: SRE found root cause, skip Investigator ---
         if sre_result.get("root_cause_found"):
@@ -459,6 +528,8 @@ async def run_investigation_async(
         }
         
     finally:
+        if 'session' in locals():
+            await update_session(session)
         await seq_client.close()
         _sequential_thinking_ctx.reset(token_reset)
 

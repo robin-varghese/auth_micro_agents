@@ -46,18 +46,23 @@ def execute():
         data = request.get_json()
         prompt = data.get('prompt')
         user_email = data.get('user_email', 'unknown')
+        session_id = data.get('session_id', 'default')
         
         if not prompt:
             return jsonify({"error": True, "message": "Missing prompt"}), 400
             
-        logger.info(f"Processing Storage request for {user_email}")
-        response = send_message(prompt, user_email)
+        logger.info(f"Processing Storage request for {user_email} (session: {session_id})")
+        response = send_message(prompt, user_email, session_id=session_id)
+        
+        is_error = "Error processing request:" in str(response)
         
         return jsonify({
-            "success": True,
+            "success": not is_error,
+            "error": is_error,
             "response": response,
+            "message": response if is_error else None,
             "agent": "storage_agent"
-        }), 200
+        }), 200 if not is_error else 500
         
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)

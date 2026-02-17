@@ -1,0 +1,17 @@
+{
+    "metadata": {
+        "incident_id": "INC-12345",
+        "primary_system": "calculator-app",
+        "detection_source": "Prometheus",
+        "agent_version": "v1.0",
+        "status": "Pending Human Review"
+    },
+    "remediation_spec": {
+        "instruction": "Provide executable commands and queries for the Remediation Agent.",
+        "target_url": "http://calculator-service:8080",
+        "reproduction_scenario": "Check for HTTP 500 on /add endpoint",
+        "remediation_command": "gcloud run services update calculator --memory=1Gi --region=us-central1",
+        "validation_query": "rate(http_requests_total{status='500'}[1m]) < 0.1",
+        "validation_threshold": "0.1"
+    }
+}

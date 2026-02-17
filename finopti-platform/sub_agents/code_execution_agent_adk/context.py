@@ -41,16 +41,10 @@ async def _report_progress(message: str, event_type: str = "INFO"):
         try:
              # Map internal event types
              msg_type_map = {
-                 "INFO": "STATUS_UPDATE", "TOOL_USE": "TOOL_CALL", "OBSERVATION": "OBSERVATION", 
+                 "INFO": "STATUS_UPDATE", "TOOL_CALL": "TOOL_CALL", "OBSERVATION": "OBSERVATION", 
                  "ERROR": "ERROR", "THOUGHT": "THOUGHT"
              }
              mapped_type = msg_type_map.get(event_type, "STATUS_UPDATE")
-             
-             # Icons
-             icons = {
-                 "INFO": "ℹ️", "TOOL_USE": "🛠️", "OBSERVATION": "👁️", 
-                 "ERROR": "❌", "THOUGHT": "🧠"
-             }
              
              user_id = _user_email_ctx.get() or "code_execution_bot"
              
@@ -58,7 +52,7 @@ async def _report_progress(message: str, event_type: str = "INFO"):
                  session_id=session_id, user_id=user_id, trace_id="unknown",
                  msg_type=mapped_type, message=message,
                  display_type="markdown" if mapped_type == "THOUGHT" else "console_log",
-                 icon=icons.get(event_type, "🐍")
+                 icon="⚙️"
              )
         except Exception as e:
             logger.warning(f"Redis publish failed: {e}")

@@ -8,7 +8,7 @@ import asyncio
 import logging
 from typing import Dict, Any, Optional
 from common.observability import FinOptiObservability
-from context import _session_id_ctx, _user_email_ctx
+from context import _session_id_ctx, _user_email_ctx, _auth_token_ctx
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +31,16 @@ async def _delegate(
     # 1. Inject Context
     session_id = _session_id_ctx.get()
     user_email = _user_email_ctx.get()
+    auth_token = _auth_token_ctx.get()
     
     payload["session_id"] = session_id
     payload["user_email"] = user_email
     
-    # 2. Inject Tracing
+    # 2. Inject Tracing and Auth
     headers = {}
+    if auth_token:
+        headers["Authorization"] = auth_token
+        
     try:
         FinOptiObservability.inject_trace_to_headers(headers)
     except Exception:
@@ -97,4 +101,28 @@ async def upload_to_gcs(content: str, filename: str, bucket: str = "finopti-veri
     result = await _delegate("Storage", STORAGE_URL, {"prompt": prompt})
     
     # Extract URL from response text using heuristic or return raw
-    return result.get("response", "URL not found")
+    if isinstance(result, dict) and "signed_url" in result:
+        return result["signed_url"]
+    
+    response_text = result.get("response", str(result))
+    import re
+    match = re.search(r"(https://[^\s)]+)", response_text)
+    if match:
+        return match.group(1)
+        
+    return response_text
+async def upload_file_to_gcs(local_path: str, destination_name: str, bucket: str = "rca-reports-mats") -> str:
+    """Delegates local file upload to Storage Agent."""
+    prompt = f"Upload the local file '{local_path}' to bucket '{bucket}' as '{destination_name}'. Return the signed URL."
+    result = await _delegate("Storage", STORAGE_URL, {"prompt": prompt})
+    
+    if isinstance(result, dict) and "signed_url" in result:
+        return result["signed_url"]
+        
+    response_text = result.get("response", str(result))
+    import re
+    match = re.search(r"(https://[^\s)]+)", response_text)
+    if match:
+        return match.group(1)
+        
+    return response_text

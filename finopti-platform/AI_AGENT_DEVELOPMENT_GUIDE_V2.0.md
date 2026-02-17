@@ -36,6 +36,13 @@
 **CRITICAL:** Agents must never be "silent." All internal thoughts and tools must be published to Redis.
 **Requirement:** Use the `_report_progress` helper in `context.py` to stream events standardized as `STATUS_UPDATE`, `TOOL_CALL`, `THOUGHT`, etc.
 
+### Rule 6: Orchestrator Registration (Master Registry)
+**CRITICAL:** New agents are not reachable until registered in the Master Registry.
+**Requirement:**
+1. Create a `manifest.json` in your agent folder defining your `agent_id`, `keywords`, and `capabilities`.
+2. Run the registry generator: `python3 tools/generate_master_registry.py`
+3. Verify the agent appears in `orchestrator_adk/master_agent_registry.json`.
+
 ---
 
 ## Standard Module Structure
@@ -376,6 +383,7 @@ Phoenix UI (groups all traces by session.id)
 ```
 
 ### Verification Checklist
+- [ ] Registered in `orchestrator_adk/master_agent_registry.json`
 - [ ] Phoenix registration uses correct project name (matches system)
 - [ ] `session_id` is extracted from payload (if delegated agent)
 - [ ] `session.id` attribute is set on main span

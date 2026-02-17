@@ -2,3 +2,10 @@ flask
 flask-cors
 requests
 gunicorn
+google-adk
+google-genai
+mcp
+python-dotenv
+opentelemetry-api
+opentelemetry-sdk
+openinference-instrumentation-google-adk

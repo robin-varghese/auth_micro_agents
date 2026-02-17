@@ -50,11 +50,12 @@ def execute():
         
         prompt = data['prompt']
         user_email = data.get('user_email', 'unknown')
+        session_id = data.get('session_id', 'default')
         
         if STRUCTURED_LOGGING_AVAILABLE:
-            logger.info("Received execution request", user_email=user_email)
+            logger.info("Received execution request", user_email=user_email, session_id=session_id)
         
-        response_text = send_message(prompt, user_email)
+        response_text = send_message(prompt, user_email, session_id=session_id)
         
         return jsonify({
             "success": True,

@@ -43,6 +43,9 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
              if len(parts) > 1 and parts[-1].endswith("_agent_adk"):
                  short_name = parts[-1].replace("_agent_adk", "")
                  endpoint = f"{config.APISIX_URL}/agent/{short_name}/execute"
+             elif len(parts) > 1 and parts[-1].startswith("mats-") and parts[-1].endswith("-agent"):
+                 short_name = parts[-1].replace("mats-", "").replace("-agent", "")
+                 endpoint = f"{config.APISIX_URL}/agent/{short_name}/execute"
              else:
                  pass
                  

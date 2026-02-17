@@ -350,14 +350,37 @@ body {
 /* TERMINAL / CODE */
 .code-block {
     background-color: #0d1117;
-    padding: 12px;
-    border-radius: 6px;
+    padding: 18px;
+    border-radius: 8px;
     font-family: var(--font-mono);
     font-size: 0.9rem;
+    line-height: 1.5;
     overflow-x: auto;
+    overflow-y: auto;
+    max-height: 500px;
     white-space: pre-wrap;
     color: #e6edf3;
-    min-height: 80px;
+    min-height: 150px;
+    border: 1px solid var(--border-color);
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.code-block::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+.code-block::-webkit-scrollbar-track {
+    background: #0d1117;
+}
+
+.code-block::-webkit-scrollbar-thumb {
+    background: #30363d;
+    border-radius: 10px;
+}
+
+.code-block::-webkit-scrollbar-thumb:hover {
+    background: #484f58;
 }
 
 .logs-container-wrapper {

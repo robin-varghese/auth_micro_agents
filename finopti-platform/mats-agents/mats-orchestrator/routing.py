@@ -24,6 +24,9 @@ except ImportError:
 # Format: (regex_pattern, agent_url_key, agent_name)
 # Using URL keys resolved at match time so imports work correctly
 OPERATIONAL_ROUTES = [
+    # Remediation Intents (High Priority)
+    # Remediation Intents (High Priority)
+    (r'\b(fix|remediate|remediation|solve|solution|apply fix)\b.*', 'remediation', "Remediation Agent"),
     # GCloud Patterns
     (r'\blist\s+(all|my|the)?\s*(vms?|instances?|buckets?|services?|projects?|resources?)', 'gcloud', "GCloud Agent"),
     (r'\bshow\s+(all|my|the)?\s*(vms?|instances?|buckets?|services?|projects?|resources?)', 'gcloud', "GCloud Agent"),
@@ -33,8 +36,6 @@ OPERATIONAL_ROUTES = [
     (r'\bdescribe\s+(the|my|a)?\s*(vm|instance|bucket|service|resource)', 'gcloud', "GCloud Agent"),
     # Generic GCloud Intent
     (r'\bgcloud\s+', 'gcloud', "GCloud Agent"),
-    # Remediation Intents
-    (r'\b(fix|remediate|solve|solution|apply fix)\b.*', 'remediation', "Remediation Agent"),
 ]
 
 # URL resolution map

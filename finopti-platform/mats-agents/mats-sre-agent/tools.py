@@ -14,50 +14,18 @@ from context import _report_progress
 
 logger = logging.getLogger(__name__)
 
-# -------------------------------------------------------------------------
-# GCLOUD CONFIG HELPER (Fix for Read-Only Filesystem)
-# -------------------------------------------------------------------------
-_gcloud_config_setup = False
-
-def setup_gcloud_config():
-    """Copy mounted gcloud config to writable temp location to avoid Read-Only errors"""
-    global _gcloud_config_setup
-    if _gcloud_config_setup:
-        return
-
-    src = "/root/.config/gcloud"
-    dst = "/tmp/gcloud_config"
-    
-    if os.path.exists(dst):
-        try:
-            shutil.rmtree(dst)
-        except Exception as e:
-            logger.warning(f"Could not clear temp gcloud dir: {e}")
-        
-    if os.path.exists(src):
-        try:
-            logger.info(f"Copying gcloud config from {src} to {dst}")
-            # ignore_dangling_symlinks=True to avoid crashing on broken symlinks (common in some docker volume mounts)
-            shutil.copytree(src, dst, symlinks=True, ignore=shutil.ignore_patterns('*.lock'), dirs_exist_ok=True, ignore_dangling_symlinks=True)
-            _gcloud_config_setup = True
-        except Exception as e:
-            logger.error(f"Failed to copy gcloud config: {e}")
-            # Mark as setup anyway to prevent infinite retry loops in tool calls
-            _gcloud_config_setup = True
-    else:
-        logger.warning(f"GCloud config source {src} not found. Proceeding without copying.")
-        _gcloud_config_setup = True
-
-async def read_logs(project_id: str, filter_str: str, hours_ago: int = 1) -> Dict[str, Any]:
+async def read_logs(project_id: str, filter_str: str, hours_ago: int = 48) -> Dict[str, Any]:
     """
-    Fetch logs from Cloud Logging using gcloud CLI.
+    Fetch logs by delegating to the Monitoring Agent via APISIX.
     
     Args:
         project_id: GCP Project ID
         filter_str: Cloud Logging filter (e.g., 'severity=ERROR')
         hours_ago: How far back to search in hours
     """
-    setup_gcloud_config()
+    from config import config
+    import requests
+    import asyncio
     
     # Enforce Environment Project ID to prevent hallucinations
     env_project_id = os.environ.get("GCP_PROJECT_ID")
@@ -67,72 +35,64 @@ async def read_logs(project_id: str, filter_str: str, hours_ago: int = 1) -> Dic
         override_warning = f" [WARNING: Project '{project_id}' does not exist or is restricted. Query was executed against '{env_project_id}' instead.]"
         project_id = env_project_id
 
-    await _report_progress(f"Querying Cloud Logging for project {project_id} (filter='{filter_str}')", "TOOL_USE")
+    await _report_progress(f"Delegating log query for {project_id} to Monitoring Agent...\nFilter: {filter_str}\nHours Ago: {hours_ago}", "TOOL_USE")
     
-    # Calculate timestamp
-    cutoff_time = datetime.datetime.utcnow() - datetime.timedelta(hours=hours_ago)
-    time_str = cutoff_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = f"{config.APISIX_URL}/agent/monitoring/execute"
     
-    # Combine filter
-    # Use parentheses to ensure precedence if filter_str has ORs
-    full_filter = f'({filter_str}) AND timestamp >= "{time_str}"'
+    # Construct robust prompt for Monitoring Agent
+    # We explicitly ask for JSON format if possible, but handle text.
+    prompt = (
+        f"Please query logs for project '{project_id}'.\n"
+        f"Filter: {filter_str}\n"
+        f"Time Range: Last {hours_ago} hours.\n"
+        f"Instruction: Return a detailed summary of the logs found, including severity, timestamp, and textPayload. "
+        f"If specific errors are found, list them explicitly."
+    )
     
-    cmd = [
-        "gcloud", "logging", "read",
-        full_filter,
-        f"--project={project_id}",
-        "--format=json",
-        "--limit=20",
-        "--order=desc" # Newest first
-    ]
+    payload = {
+        "prompt": prompt,
+        "user_email": "mats-sre@system.local",
+        "project_id": project_id
+    }
     
-    # Prepare environment
-    env = os.environ.copy()
-    env["CLOUDSDK_CONFIG"] = "/tmp/gcloud_config"
-    env["CLOUDSDK_CORE_DISABLE_FILE_LOGGING"] = "1"
-    
-    logger.info(f"Executing Log Query: {' '.join(cmd)}")
+    # Inject Trace Headers
+    try:
+        from common.observability import FinOptiObservability
+        headers = {}
+        FinOptiObservability.inject_trace_to_headers(headers)
+        payload["headers"] = headers
+    except ImportError:
+        pass
+        
+    logger.info(f"Calling Monitoring Agent at {url}")
     
     try:
-        # Run subprocess (blocking is acceptable here as we are in a thread/process for this request)
-        # Using run_in_executor to avoid blocking the loop
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None, 
-            lambda: subprocess.run(
-                cmd, 
-                capture_output=True, 
-                text=True, 
-                timeout=60, # 60s timeout for log query
-                env=env
-            )
-        )
         
-        if result.returncode == 0:
-            try:
-                logs = json.loads(result.stdout)
-                # Simplify logs to save context window
-                simplified_logs = []
-                for log in logs:
-                    simplified_logs.append({
-                        "timestamp": log.get("timestamp"),
-                        "severity": log.get("severity"),
-                        "textPayload": log.get("textPayload"),
-                        "jsonPayload": log.get("jsonPayload"),
-                        "protoPayload": log.get("protoPayload"), # Crucial for Audit Logs (IAM)
-                        "resource": log.get("resource"),
-                        "insertId": log.get("insertId")
-                    })
-                
-                log_count = len(simplified_logs)
-                await _report_progress(f"Found {log_count} relevant logs.", "OBSERVATION")
-                return {"logs": simplified_logs, "count": log_count, "note": override_warning if override_warning else None}
-            except json.JSONDecodeError:
-                return {"error": "Failed to parse gcloud output JSON", "raw_output": result.stdout[:500]}
-        else:
-            await _report_progress(f"GCloud command failed: {result.stderr[:100]}", "ERROR")
-            return {"error": f"gcloud failed: {result.stderr}"}
+        def _call_svc():
+            resp = requests.post(url, json=payload, timeout=120) # 2 min timeout for monitoring agent
+            return resp
+            
+        response = await loop.run_in_executor(None, _call_svc)
+        
+        if response.status_code != 200:
+            return {"error": f"Monitoring Agent failed: {response.status_code} - {response.text}"}
+            
+        data = response.json()
+        
+        # monitoring agent returns {"response": "..."} usually
+        agent_response = data.get("response", str(data))
+        
+        summary_text = agent_response[:1000] + "..." if len(agent_response) > 1000 else agent_response
+        await _report_progress(f"Monitoring Agent returned results:\n{summary_text}", "OBSERVATION")
+        
+        return {
+            "summary": agent_response, 
+            "note": "Logs fetched via Monitoring Agent." + override_warning,
+            "raw_data": data
+        }
 
     except Exception as e:
-        await _report_progress(f"Execution failed: {str(e)}", "ERROR")
-        return {"error": f"Execution exception: {str(e)}"}
+        logger.error(f"Failed to call Monitoring Agent: {e}")
+        await _report_progress(f"Monitoring Agent call failed: {e}", "ERROR")
+        return {"error": f"Delegation failed: {str(e)}"}

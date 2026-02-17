@@ -6,6 +6,13 @@ services:
       - "5007:5007"
     environment:
       - ORCHESTRATOR_URL=http://apisix:9080/orchestrator/ask
+      - MATS_ORCHESTRATOR_URL=http://apisix:9080/agent/mats/jobs
+      - GCP_PROJECT_ID=vector-search-poc
+      - GCLOUD_MCP_DOCKER_IMAGE=finopti-gcloud-mcp
+      - GCLOUD_MOUNT_PATH=${HOME}/.config/gcloud:/root/.config/gcloud
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.config/gcloud:/root/.config/gcloud:ro
     networks:
       - finopti-net
 

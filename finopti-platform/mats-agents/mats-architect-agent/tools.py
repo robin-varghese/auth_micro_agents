@@ -13,23 +13,51 @@ def upload_rca_to_gcs(filename: str, content: str, bucket_name: str = "rca-repor
     Uploads the RCA document to Google Cloud Storage via the Storage Agent.
     
     Args:
-        filename: Name of the file (e.g., "rca-2024-01-01.md")
-        content: The Markdown content of the RCA.
-        bucket_name: Target GCS bucket name (default: "finopti-reports")
+        filename: Optional incident ID or base name. Used to create the folder structure.
+        content: The JSON content of the RCA (string or dict).
+        bucket_name: Target GCS bucket name (default: "rca-reports-mats")
         
     Returns:
         The public URL or path of the uploaded file.
     """
     try:
+        import datetime
+        
+        # Parse content if it's a string, just to validate it's JSON
+        if isinstance(content, str):
+            try:
+                # verify it is valid json
+                json.loads(content)
+            except:
+                logger.warning("Content is not valid JSON. Proceeding anyway but treating as text.")
+        elif isinstance(content, dict):
+            content = json.dumps(content, indent=2)
+
+        # Generate Folder Structure: {incident_id}/{timestamp}/rca.json
+        # If filename is not provided, use a generic 'incident' prefix
+        # FORCE .json extension to avoid .md uploads
+        from context import _session_id_ctx
+        ctx_session_id = _session_id_ctx.get()
+        
+        # Use session_id from context if available, fallback to filename base
+        base_name = ctx_session_id if ctx_session_id else (filename.replace(".md", "").replace(".json", "") if filename else "incident")
+        incident_id = base_name
+        timestamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        
+        # Logic: Clean up incident ID to be folder-safe
+        import re
+        safe_id = re.sub(r'[^a-zA-Z0-9-_]', '_', incident_id)
+        
+        target_path = f"{safe_id}/{timestamp}/rca.json"
+        
         # Route via APISIX to Storage Agent
         url = f"{config.APISIX_URL}/agent/storage/execute"
-        logger.info(f"Initiating RCA Upload to {bucket_name}/{filename} via {url}")
+        logger.info(f"Initiating RCA Upload to {bucket_name}/{target_path} via {url}")
 
-        
         # Robust prompt for Storage Agent
         prompt = (
             f"Please ensure the GCS bucket '{bucket_name}' exists (create it in location US if it doesn't). "
-            f"Then, upload the following content as object '{filename}' to that bucket:\n\n{content}"
+            f"Then, upload the following content as object '{target_path}' to that bucket:\n\n{content}"
         )
         
         payload = {
@@ -56,12 +84,12 @@ def upload_rca_to_gcs(filename: str, content: str, bucket_name: str = "rca-repor
                 # The prompt execution might return a JSON string in 'response'
                 inner_data = json.loads(data["response"])
                 if isinstance(inner_data, dict) and "signed_url" in inner_data:
-                    return f"RCA Uploaded. Secure Link: {inner_data['signed_url']}"
+                    return f"https://storage.cloud.google.com/{bucket_name}/{target_path}"
             except:
                 pass
-            return f"RCA Uploaded. Details: {data['response']}"
+            return f"https://storage.cloud.google.com/{bucket_name}/{target_path}"
             
-        return f"Upload requested. Response: {data}"
+        return f"https://storage.cloud.google.com/{bucket_name}/{target_path}"
     except Exception as e:
         return f"Failed to upload RCA: {e}"
 

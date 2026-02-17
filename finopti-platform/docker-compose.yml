@@ -827,6 +827,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.config/gcloud:/root/.config/gcloud:ro
       - ./redis-sessions/common:/app/redis_common
+      - finopti-agent-shared-data:/projects
     ports:
       - "8085:8085"
     healthcheck:

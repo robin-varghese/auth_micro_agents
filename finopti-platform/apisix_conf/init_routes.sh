@@ -599,6 +599,33 @@ curl -i -X PUT "${APISIX_ADMIN}/routes/21" \
   }'
 
 echo ""
+# Route 22: Remediation Agent
+echo "Creating route: /agent/remediation -> finopti-remediation-agent:8085"
+curl -i -X PUT "${APISIX_ADMIN}/routes/22" \
+  -H "X-API-KEY: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "remediation_agent_route",
+    "uri": "/agent/remediation/*",
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "finopti-remediation-agent:8085": 1
+      },
+      "timeout": {
+        "connect": 6,
+        "send": 600,
+        "read": 600
+      }
+    },
+    "plugins": {
+      "proxy-rewrite": {
+        "regex_uri": ["^/agent/remediation/(.*)", "/$1"]
+      }
+    }
+  }'
+
+echo ""
 echo "All routes initialized successfully!"
 
 # List all routes

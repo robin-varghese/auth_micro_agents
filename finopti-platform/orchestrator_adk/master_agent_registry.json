@@ -141,10 +141,7 @@
       "gcs",
       "upload",
       "download",
-      "storage",
-      "save",
-      "store",
-      "archive"
+      "storage"
     ],
     "_source_path": "sub_agents/storage_agent_adk"
   },
@@ -563,5 +560,26 @@
       "gcloud"
     ],
     "_source_path": "mats-agents/mats-sre-agent"
+  },
+  {
+    "agent_id": "mats-remediation-agent",
+    "display_name": "Remediation Agent",
+    "icon": "auto_fix_high",
+    "description": "Executes automated fixes, applies code patches, and triggers remediation workflows based on RCA specifications.",
+    "capabilities": [
+      "apply_fix",
+      "execute_remediation",
+      "validate_fix"
+    ],
+    "keywords": [
+      "fix",
+      "remediate",
+      "patch",
+      "solve",
+      "solution",
+      "apply",
+      "execute fix"
+    ],
+    "_source_path": "mats-agents/mats-remediation-agent"
   }
 ]

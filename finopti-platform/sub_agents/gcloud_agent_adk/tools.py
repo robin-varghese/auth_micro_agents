@@ -21,6 +21,8 @@ async def execute_gcloud_command(args: List[str]) -> Dict[str, Any]:
     try:
         client = await get_mcp_client()
         result_text = await client.run_gcloud_command(args)
+        logger.info(f"GCloud Command executed: gcloud {' '.join(args)}")
+        logger.info(f"GCloud Output: {result_text[:500]}")
         
         return {
             "success": True,

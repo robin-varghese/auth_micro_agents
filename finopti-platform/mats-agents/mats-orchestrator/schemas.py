@@ -74,7 +74,7 @@ class ArchitectOutput(BaseModel):
     status: str = Field(..., description="SUCCESS|PARTIAL|FAILURE")
     confidence: Optional[float] = Field(0.0, ge=0.0, le=1.0)
     
-    rca_content: str = Field(..., description="Full RCA markdown content")
+    rca_content: Any = Field(..., description="Full RCA content (JSON or Markdown)")
     rca_url: Optional[str] = Field(None, description="GCS URL to RCA document")
     
     limitations: List[str] = Field(default_factory=list, description="Known gaps in analysis")

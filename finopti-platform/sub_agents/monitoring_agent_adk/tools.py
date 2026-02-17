@@ -8,11 +8,11 @@ from mcp_client import ensure_mcp
 logger = logging.getLogger(__name__)
 
 async def query_logs(project_id: str, filter: str = "", limit: int = 10, minutes_ago: int = 2) -> Dict[str, Any]:
-    # HARD CAP: Force max 24 hours (1440m) to allow finding older errors while preventing 30-day queries.
+    # HARD CAP: Force max 7 days (10080m) to allow finding older errors while preventing 30-day queries.
     # Buffer fix (10MB) handles the volume.
-    if minutes_ago > 1440:
-        logger.warning(f"Capping minutes_ago from {minutes_ago} to 1440 to prevent timeout.")
-        minutes_ago = 1440
+    if minutes_ago > 10080:
+        logger.warning(f"Capping minutes_ago from {minutes_ago} to 10080 to prevent timeout.")
+        minutes_ago = 10080
         
     client = await ensure_mcp()
     # Tool name in MCP is 'query_logs'

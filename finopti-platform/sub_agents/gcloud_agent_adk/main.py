@@ -99,22 +99,28 @@ def execute():
         # Process with ADK agent
         response_text = send_message(prompt, user_email, session_id=session_id)
         
-        # Log success
+        # Check if response_text contains an error message from ADK agent.py catch block
+        is_error = "Error processing request:" in str(response_text)
+        
+        # Log status
         if STRUCTURED_LOGGING_AVAILABLE:
             logger.info(
-                "Request processed successfully",
+                "Request processed",
                 user_email=user_email,
-                response_length=len(response_text)
+                success=not is_error,
+                response_length=len(str(response_text))
             )
         else:
-            logger.info(f"Request processed for {user_email}")
+            logger.info(f"Request processed for {user_email}. Success: {not is_error}")
         
         return jsonify({
-            "success": True,
+            "success": not is_error,
+            "error": is_error,
             "response": response_text,
+            "message": response_text if is_error else None,
             "agent": "gcloud_adk",
             "model": config.FINOPTIAGENTS_LLM
-        }), 200
+        }), 200 if not is_error else 500
     
     except Exception as e:
         # Log error
