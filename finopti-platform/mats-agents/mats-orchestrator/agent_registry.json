@@ -1,80 +1,585 @@
 [
-    {
-        "agent_id": "analytics_specialist",
-        "name": "Google Analytics 4 Specialist",
-        "capabilities": "run_report, run_realtime_report, get_account_summaries, get_property_details, get_custom_dimensions_and_metrics",
-        "anti_patterns": "Do NOT use for general web search. Do NOT infer traffic numbers without running a report. Do NOT attempt to configure GA4 properties (read-only)."
-    },
-    {
-        "agent_id": "brave_search_specialist",
-        "name": "Brave Search Specialist",
-        "capabilities": "brave_web_search, brave_local_search, brave_news_search, brave_video_search, brave_image_search",
-        "anti_patterns": "Do NOT use for internal codebase search. Do NOT use for specific database queries."
-    },
-    {
-        "agent_id": "cloud_run_specialist",
-        "name": "Cloud Run Specialist",
-        "capabilities": "list_services, get_service, get_service_log, deploy_file_contents, deploy_local_folder, list_projects, create_project",
-        "anti_patterns": "Do NOT use for general GCP operations outside Cloud Run. Do NOT deploy without user confirmation."
-    },
-    {
-        "agent_id": "code_execution_specialist",
-        "name": "Code Execution Specialist",
-        "capabilities": "execute_python_code, solve_math_problems, process_data, generate_text_programmatically",
-        "anti_patterns": "Do NOT use for system-level operations (e.g. installing packages) unless explicitly allowed. Do NOT access external APIs unless network access is confirmed."
-    },
-    {
-        "agent_id": "database_specialist",
-        "name": "Database Specialist",
-        "capabilities": "postgres_execute_sql, postgres_list_tables, postgres_list_indexes, postgres_database_overview, postgres_list_active_queries, query_agent_analytics",
-        "anti_patterns": "Do NOT drop tables without explicit user confirmation. Do NOT execute unrestricted DELETE/UPDATE queries without WHERE clauses."
-    },
-    {
-        "agent_id": "filesystem_specialist",
-        "name": "Filesystem Specialist",
-        "capabilities": "read_text_file, read_media_file, read_multiple_files, write_file, edit_file, create_directory, list_directory, list_directory_with_sizes, move_file, search_files, directory_tree, get_file_info, list_allowed_directories",
-        "anti_patterns": "Do NOT access files outside the allowed directories. Do NOT overwrite critical configuration files without backup. Use `dryRun` first when using `edit_file`."
-    },
-    {
-        "agent_id": "gcloud_infrastructure_specialist",
-        "name": "GCloud Specialist",
-        "capabilities": "run_gcloud_command",
-        "anti_patterns": "Do NOT run interactive commands. Do NOT execute destructive commands without confirmation."
-    },
-    {
-        "agent_id": "github_specialist",
-        "name": "GitHub Specialist",
-        "capabilities": "search_repositories, list_repositories, get_file_contents, create_or_update_file, push_files, create_issue, list_issues, update_issue, add_issue_comment, create_pull_request, list_pull_requests, merge_pull_request, get_pull_request, create_branch, list_branches, get_commit, search_code, search_issues",
-        "anti_patterns": "Do NOT commit secrets or sensitive data. Do NOT force push to main/master branches."
-    },
-    {
-        "agent_id": "google_search_specialist",
-        "name": "Google Search Specialist",
-        "capabilities": "google_search",
-        "anti_patterns": "Do NOT hallucinate search results. Always rely on the tool output."
-    },
-    {
-        "agent_id": "cloud_monitoring_specialist",
-        "name": "Monitoring & Observability Specialist",
-        "capabilities": "list_log_entries, list_log_names, list_buckets, list_views, list_sinks, list_log_scopes, list_metric_descriptors, list_time_series, list_alert_policies, list_traces, get_trace, list_group_stats",
-        "anti_patterns": "Do NOT fetch excessive amounts of log data without limits."
-    },
-    {
-        "agent_id": "browser_automation_specialist",
-        "name": "Puppeteer Browser Automation Specialist",
-        "capabilities": "puppeteer_navigate, puppeteer_screenshot, puppeteer_click, puppeteer_fill, puppeteer_evaluate, puppeteer_hover",
-        "anti_patterns": "Do NOT use for highly interactive sites requiring complex login flows without careful script management."
-    },
-    {
-        "agent_id": "sequential_thinking_specialist",
-        "name": "Sequential Thinking Specialist",
-        "capabilities": "sequentialthinking",
-        "anti_patterns": "Do NOT rush to a conclusion without going through the necessary thinking steps. Do NOT stop thinking until `nextThoughtNeeded` is false."
-    },
-    {
-        "agent_id": "storage_specialist",
-        "name": "Google Cloud Storage Specialist",
-        "capabilities": "list_objects, read_object_metadata, read_object_content, delete_object, write_object, update_object_metadata, copy_object, move_object, upload_object, download_object, list_buckets, create_bucket, delete_bucket, get_bucket_metadata, update_bucket_labels, get_bucket_location, view_iam_policy, check_iam_permissions, get_metadata_table_schema, execute_insights_query, list_insights_configs",
-        "anti_patterns": "Do NOT download large objects without confirmation. Do NOT delete buckets regardless if they are empty without explicit user consent."
-    }
+  {
+    "agent_id": "gcloud_infrastructure_specialist",
+    "display_name": "GCloud Specialist",
+    "icon": "cloud",
+    "description": "General purpose Google Cloud Platform CLI specialist.",
+    "capabilities": [
+      "run_gcloud_command"
+    ],
+    "dependencies": [
+      "gcloud-mcp"
+    ],
+    "anti_patterns": [
+      "Do NOT run interactive commands.",
+      "Do NOT execute destructive commands without confirmation."
+    ],
+    "keywords": [
+      "vm",
+      "instance",
+      "create",
+      "delete",
+      "compute",
+      "gcp",
+      "cloud",
+      "provision",
+      "machine",
+      "disk",
+      "network",
+      "firewall",
+      "operations",
+      "project",
+      "region",
+      "zone",
+      "google cloud"
+    ],
+    "_source_path": "sub_agents/gcloud_agent_adk"
+  },
+  {
+    "agent_id": "code_execution_specialist",
+    "display_name": "Code Execution Specialist",
+    "icon": "terminal",
+    "description": "Writes and executes Python code to solve complex problems, perform data analysis, and handle computational tasks.",
+    "capabilities": [
+      "execute_python_code",
+      "solve_math_problems",
+      "process_data",
+      "generate_text_programmatically"
+    ],
+    "dependencies": [
+      "google-adk",
+      "google-genai"
+    ],
+    "anti_patterns": [
+      "Do NOT use for system-level operations (e.g. installing packages) unless explicitly allowed.",
+      "Do NOT access external APIs unless network access is confirmed."
+    ],
+    "keywords": [
+      "code",
+      "execute",
+      "calculate",
+      "python",
+      "script",
+      "math",
+      "function",
+      "snippet"
+    ],
+    "_source_path": "sub_agents/code_execution_agent_adk"
+  },
+  {
+    "agent_id": "analytics_specialist",
+    "display_name": "Google Analytics 4 Specialist",
+    "icon": "analytics",
+    "description": "Analyzes web traffic, user sessions, and conversion metrics using Google Analytics 4 Data API.",
+    "capabilities": [
+      "run_report",
+      "run_realtime_report",
+      "get_account_summaries",
+      "get_property_details",
+      "get_custom_dimensions_and_metrics"
+    ],
+    "dependencies": [
+      "google-analytics-data-api",
+      "google-analytics-admin-api"
+    ],
+    "anti_patterns": [
+      "Do NOT use for general web search.",
+      "Do NOT infer traffic numbers without running a report.",
+      "Do NOT attempt to configure GA4 properties (read-only)."
+    ],
+    "keywords": [
+      "analytics",
+      "traffic",
+      "users",
+      "sessions",
+      "pageviews",
+      "ga4",
+      "report",
+      "visitor"
+    ],
+    "_source_path": "sub_agents/analytics_agent_adk"
+  },
+  {
+    "agent_id": "storage_specialist",
+    "display_name": "Google Cloud Storage Specialist",
+    "icon": "storage",
+    "description": "Specialist for Google Cloud Storage management and operations.",
+    "capabilities": [
+      "list_objects",
+      "read_object_metadata",
+      "read_object_content",
+      "delete_object",
+      "write_object",
+      "update_object_metadata",
+      "copy_object",
+      "move_object",
+      "upload_object",
+      "download_object",
+      "list_buckets",
+      "create_bucket",
+      "delete_bucket",
+      "get_bucket_metadata",
+      "update_bucket_labels",
+      "get_bucket_location",
+      "view_iam_policy",
+      "check_iam_permissions",
+      "get_metadata_table_schema",
+      "execute_insights_query",
+      "list_insights_configs"
+    ],
+    "dependencies": [
+      "gcloud-mcp"
+    ],
+    "anti_patterns": [
+      "Do NOT download large objects without confirmation.",
+      "Do NOT delete buckets regardless if they are empty without explicit user consent."
+    ],
+    "keywords": [
+      "bucket",
+      "object",
+      "blob",
+      "gcs",
+      "upload",
+      "download",
+      "storage"
+    ],
+    "_source_path": "sub_agents/storage_agent_adk"
+  },
+  {
+    "agent_id": "cloud_run_specialist",
+    "display_name": "Cloud Run Specialist",
+    "icon": "cloud_upload",
+    "description": "Deploys and manages Cloud Run services using the Cloud Run MCP server.",
+    "capabilities": [
+      "list_services",
+      "get_service",
+      "get_service_log",
+      "deploy_file_contents",
+      "deploy_local_folder",
+      "list_projects",
+      "create_project"
+    ],
+    "dependencies": [
+      "cloud-run-mcp"
+    ],
+    "anti_patterns": [
+      "Do NOT use for general GCP operations outside Cloud Run.",
+      "Do NOT deploy without user confirmation."
+    ],
+    "keywords": [
+      "cloud run",
+      "service",
+      "revision",
+      "container",
+      "serverless",
+      "deploy",
+      "traffic",
+      "image",
+      "knative",
+      "job"
+    ],
+    "_source_path": "sub_agents/cloud_run_agent_adk"
+  },
+  {
+    "agent_id": "browser_automation_specialist",
+    "display_name": "Puppeteer Browser Automation Specialist",
+    "icon": "browser",
+    "description": "Specialist for automating browser interactions, navigating, clicking, and extracting data using Puppeteer.",
+    "capabilities": [
+      "puppeteer_navigate",
+      "puppeteer_screenshot",
+      "puppeteer_click",
+      "puppeteer_fill",
+      "puppeteer_evaluate",
+      "puppeteer_hover"
+    ],
+    "dependencies": [
+      "finopti-puppeteer"
+    ],
+    "anti_patterns": [
+      "Do NOT use for highly interactive sites requiring complex login flows without careful script management."
+    ],
+    "keywords": [
+      "browser",
+      "screenshot",
+      "click",
+      "navigate",
+      "visit",
+      "scrape",
+      "form",
+      "webpage",
+      "puppeteer"
+    ],
+    "_source_path": "sub_agents/puppeteer_agent_adk"
+  },
+  {
+    "agent_id": "github_specialist",
+    "display_name": "GitHub Specialist",
+    "icon": "github",
+    "description": "Specialist for GitHub repository management, code operations, issues, and pull requests.",
+    "capabilities": [
+      "search_repositories",
+      "list_repositories",
+      "get_file_contents",
+      "create_or_update_file",
+      "push_files",
+      "create_issue",
+      "list_issues",
+      "update_issue",
+      "add_issue_comment",
+      "create_pull_request",
+      "list_pull_requests",
+      "merge_pull_request",
+      "get_pull_request",
+      "create_branch",
+      "list_branches",
+      "get_commit",
+      "search_code",
+      "search_issues"
+    ],
+    "dependencies": [
+      "github-mcp-server"
+    ],
+    "anti_patterns": [
+      "Do NOT commit secrets or sensitive data.",
+      "Do NOT force push to main/master branches."
+    ],
+    "keywords": [
+      "github",
+      "repo",
+      "repository",
+      "git",
+      "pull request",
+      "pr",
+      "issue",
+      "code",
+      "commit",
+      "push",
+      "pull"
+    ],
+    "_source_path": "sub_agents/github_agent_adk"
+  },
+  {
+    "agent_id": "cloud_monitoring_specialist",
+    "display_name": "Monitoring & Observability Specialist",
+    "icon": "analytics",
+    "description": "Specialist for Google Cloud Monitoring, Logging, and Trace.",
+    "capabilities": [
+      "list_log_entries",
+      "list_log_names",
+      "list_buckets",
+      "list_views",
+      "list_sinks",
+      "list_log_scopes",
+      "list_metric_descriptors",
+      "list_time_series",
+      "list_alert_policies",
+      "list_traces",
+      "get_trace",
+      "list_group_stats"
+    ],
+    "dependencies": [
+      "gcloud-mcp"
+    ],
+    "anti_patterns": [
+      "Do NOT fetch excessive amounts of log data without limits."
+    ],
+    "keywords": [
+      "cpu",
+      "memory",
+      "logs",
+      "metrics",
+      "monitor",
+      "alert",
+      "usage",
+      "check",
+      "performance",
+      "latency",
+      "error",
+      "log",
+      "trace",
+      "observability"
+    ],
+    "_source_path": "sub_agents/monitoring_agent_adk"
+  },
+  {
+    "agent_id": "database_specialist",
+    "display_name": "Database Specialist",
+    "icon": "database",
+    "description": "Specialist for executing SQL queries, managing PostgreSQL schemas, and analyzing agent operations via BigQuery.",
+    "capabilities": [
+      "postgres_execute_sql",
+      "postgres_list_tables",
+      "postgres_list_indexes",
+      "postgres_database_overview",
+      "postgres_list_active_queries",
+      "query_agent_analytics"
+    ],
+    "dependencies": [
+      "db-mcp-toolbox",
+      "google-cloud-bigquery"
+    ],
+    "anti_patterns": [
+      "Do NOT drop tables without explicit user confirmation.",
+      "Do NOT execute unrestricted DELETE/UPDATE queries without WHERE clauses."
+    ],
+    "keywords": [
+      "database",
+      "sql",
+      "query",
+      "table",
+      "postgres",
+      "postgresql",
+      "schema",
+      "select",
+      "insert",
+      "bigquery",
+      "bq",
+      "history"
+    ],
+    "_source_path": "sub_agents/db_agent_adk"
+  },
+  {
+    "agent_id": "sequential_thinking_specialist",
+    "display_name": "Sequential Thinking Specialist",
+    "icon": "thought_bubble",
+    "description": "Specialist for recursive and sequential problem solving using structured thinking steps.",
+    "capabilities": [
+      "sequentialthinking"
+    ],
+    "dependencies": [
+      "finopti-sequential-thinking"
+    ],
+    "anti_patterns": [
+      "Do NOT rush to a conclusion without going through the necessary thinking steps.",
+      "Do NOT stop thinking until `nextThoughtNeeded` is false."
+    ],
+    "keywords": [
+      "think",
+      "reason",
+      "plan",
+      "solve",
+      "analyze",
+      "complex",
+      "step by step"
+    ],
+    "_source_path": "sub_agents/sequential_thinking_agent_adk"
+  },
+  {
+    "agent_id": "google_search_specialist",
+    "display_name": "Google Search Specialist",
+    "icon": "search",
+    "description": "Specialist for retrieving real-time information from the web using Google Search.",
+    "capabilities": [
+      "google_search"
+    ],
+    "dependencies": [
+      "google-adk",
+      "google-genai"
+    ],
+    "anti_patterns": [
+      "Do NOT hallucinate search results. Always rely on the tool output."
+    ],
+    "keywords": [
+      "search",
+      "google",
+      "find",
+      "lookup",
+      "web",
+      "internet",
+      "scraping"
+    ],
+    "_source_path": "sub_agents/googlesearch_agent_adk"
+  },
+  {
+    "agent_id": "filesystem_specialist",
+    "display_name": "Filesystem Specialist",
+    "icon": "folder_open",
+    "description": "Manages local files and directories within the allowed sandbox using the full MCP Filesystem suite.",
+    "capabilities": [
+      "read_text_file",
+      "read_media_file",
+      "read_multiple_files",
+      "write_file",
+      "edit_file",
+      "create_directory",
+      "list_directory",
+      "list_directory_with_sizes",
+      "move_file",
+      "search_files",
+      "directory_tree",
+      "get_file_info",
+      "list_allowed_directories"
+    ],
+    "dependencies": [
+      "filesystem-mcp"
+    ],
+    "anti_patterns": [
+      "Do NOT access files outside the allowed directories.",
+      "Do NOT overwrite critical configuration files without backup.",
+      "Use `dryRun` first when using `edit_file`."
+    ],
+    "keywords": [
+      "file",
+      "directory",
+      "folder",
+      "cat",
+      "ls",
+      "local file",
+      "read",
+      "write"
+    ],
+    "_source_path": "sub_agents/filesystem_agent_adk"
+  },
+  {
+    "agent_id": "brave_search_specialist",
+    "display_name": "Brave Search Specialist",
+    "icon": "search",
+    "description": "Performs web, local, news, image, and video searches using Brave Search API.",
+    "capabilities": [
+      "brave_web_search",
+      "brave_local_search",
+      "brave_news_search",
+      "brave_video_search",
+      "brave_image_search"
+    ],
+    "dependencies": [
+      "brave-search-api"
+    ],
+    "anti_patterns": [
+      "Do NOT use for internal codebase search.",
+      "Do NOT use for specific database queries."
+    ],
+    "keywords": [
+      "search",
+      "find",
+      "lookup",
+      "web",
+      "internet",
+      "online",
+      "brave"
+    ],
+    "_source_path": "sub_agents/brave_search_agent_adk"
+  },
+  {
+    "agent_id": "mats-architect-agent",
+    "display_name": "Architect Agent",
+    "icon": "architecture",
+    "description": "Principal Software Architect. Synthesizes findings into an RCA and recommends fixes.",
+    "capabilities": [
+      "generate_rca",
+      "recommend_fix",
+      "prevention_plan"
+    ],
+    "keywords": [
+      "rca",
+      "root cause analysis",
+      "architecture",
+      "fix recommendation",
+      "design review"
+    ],
+    "dependencies": [],
+    "_source_path": "mats-agents/mats-architect-agent"
+  },
+  {
+    "agent_id": "mats-orchestrator",
+    "display_name": "MATS Orchestrator",
+    "icon": "bug_report",
+    "description": "Micro Agent Troubleshooting System (MATS) Orchestrator. Coordinates SRE, Investigator, and Architect agents to diagnose and fix failures.",
+    "capabilities": [
+      "troubleshoot",
+      "debug",
+      "root_cause_analysis",
+      "fix_code",
+      "investigate_failure"
+    ],
+    "dependencies": [
+      "mats-sre-agent",
+      "mats-investigator-agent",
+      "mats-architect-agent"
+    ],
+    "keywords": [
+      "troubleshoot",
+      "fix",
+      "debug",
+      "fail",
+      "error",
+      "investigate",
+      "crash",
+      "exception",
+      "broken",
+      "mats"
+    ],
+    "_source_path": "mats-agents/mats-orchestrator"
+  },
+  {
+    "agent_id": "mats-investigator-agent",
+    "display_name": "Investigator Agent",
+    "icon": "code",
+    "description": "Senior Backend Developer. Analyzes code repositories to locate bugs based on SRE findings.",
+    "capabilities": [
+      "analyze_code",
+      "find_bug",
+      "trace_execution",
+      "search_repo"
+    ],
+    "keywords": [
+      "code analysis",
+      "investigate code",
+      "find bug",
+      "repo search",
+      "trace",
+      "github"
+    ],
+    "dependencies": [
+      "github"
+    ],
+    "_source_path": "mats-agents/mats-investigator-agent"
+  },
+  {
+    "agent_id": "mats-sre-agent",
+    "display_name": "SRE Agent",
+    "icon": "analytics",
+    "description": "Senior Site Reliability Engineer. Triages incidents by analyzing logs and metrics.",
+    "capabilities": [
+      "analyze_logs",
+      "extract_error_signatures",
+      "find_stack_traces",
+      "check_metrics"
+    ],
+    "keywords": [
+      "logs",
+      "metrics",
+      "stack trace",
+      "error signature",
+      "sre",
+      "triage",
+      "monitor"
+    ],
+    "dependencies": [
+      "gcloud"
+    ],
+    "_source_path": "mats-agents/mats-sre-agent"
+  },
+  {
+    "agent_id": "mats-remediation-agent",
+    "display_name": "Remediation Agent",
+    "icon": "auto_fix_high",
+    "description": "Executes automated fixes, applies code patches, and triggers remediation workflows based on RCA specifications.",
+    "capabilities": [
+      "apply_fix",
+      "execute_remediation",
+      "validate_fix"
+    ],
+    "keywords": [
+      "fix",
+      "remediate",
+      "patch",
+      "solve",
+      "solution",
+      "apply",
+      "execute fix"
+    ],
+    "_source_path": "mats-agents/mats-remediation-agent"
+  }
 ]

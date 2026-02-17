@@ -41,7 +41,7 @@ def generate_master_registry():
             print(f"Error processing {manifest_path}: {e}")
             
     # Write master registry
-    output_path = base_dir / "orchestrator_adk" / "master_agent_registry.json"
+    output_path = base_dir / "mats-agents" / "mats-orchestrator" / "agent_registry.json"
     
     with open(output_path, 'w') as f:
         json.dump(registry, f, indent=2)

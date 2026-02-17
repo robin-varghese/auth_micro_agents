@@ -18,6 +18,7 @@ from google.genai import types
 
 from observability import setup_observability
 from context import _session_id_ctx, _user_email_ctx, _report_progress, _auth_token_ctx, _redis_publisher_ctx
+from config import config
 from instructions import AGENT_INSTRUCTIONS, AGENT_NAME
 from tools import run_puppeteer_test, apply_gcloud_fix, check_monitoring, upload_to_gcs, upload_file_to_gcs
 
@@ -75,7 +76,7 @@ def extract_remediation_spec(doc: Any) -> Dict[str, Any]:
 def create_remediation_agent(model_name=None):
     return Agent(
         name=AGENT_NAME,
-        model=model_name or "gemini-2.0-flash",
+        model=model_name or config.FINOPTIAGENTS_LLM,
         instruction=AGENT_INSTRUCTIONS,
         tools=[] # Tools are called via Python logic, not LLM tool use
     )

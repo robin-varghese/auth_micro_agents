@@ -36,12 +36,33 @@
 **CRITICAL:** Agents must never be "silent." All internal thoughts and tools must be published to Redis.
 **Requirement:** Use the `_report_progress` helper in `context.py` to stream events standardized as `STATUS_UPDATE`, `TOOL_CALL`, `THOUGHT`, etc.
 
-### Rule 6: Orchestrator Registration (Master Registry)
+### Rule 6: Orchestrator Registration & Master Registry
 **CRITICAL:** New agents are not reachable until registered in the Master Registry.
 **Requirement:**
 1. Create a `manifest.json` in your agent folder defining your `agent_id`, `keywords`, and `capabilities`.
 2. Run the registry generator: `python3 tools/generate_master_registry.py`
-3. Verify the agent appears in `orchestrator_adk/master_agent_registry.json`.
+3. Verify the agent appears in `mats-agents/mats-orchestrator/agent_registry.json`.
+
+### Rule 7: Authentication & Authorization (AuthN/AuthZ)
+**CRITICAL:** All agents are protected by APISix and OPA.
+**Requirement:**
+1. Agents must extract `user_email` and `session_id` from the incoming JSON request body.
+2. The `user_email` is passed from APISix after OIDC validation.
+3. Access is controlled via `opa_policy/authz.rego`. Ensure your `agent_id` is mapped to the correct roles in OPA.
+
+### Rule 8: Model Fallback & Resilience
+**CRITICAL:** Production agents must handle LLM quota exhaustion (429) gracefully.
+**Requirement:**
+1. Do NOT hardcode LLM models in `agent.py`. Use `config.FINOPTIAGENTS_LLM`.
+2. Wrap the `InMemoryRunner` logic in `run_with_model_fallback` from `common.model_resilience`.
+3. The fallback list is centrally managed in `config.FINOPTIAGENTS_MODEL_LIST`.
+
+### Rule 9: Secret Manager First
+**CRITICAL:** No secrets (API keys, tokens) in environment variables or code.
+**Requirement:**
+1. Add new secrets to Google Secret Manager in the `vector-search-poc` project.
+2. Use lowercase with hyphens (e.g., `google-api-key`).
+3. Fetch them in `config/__init__.py` using the `_fetch_config` helper.
 
 ---
 
@@ -113,21 +134,20 @@ _session_id_ctx: ContextVar[Optional[str]] = ContextVar("session_id", default=No
 _user_email_ctx: ContextVar[Optional[str]] = ContextVar("user_email", default=None)
 
 async def _report_progress(message: str, event_type: str = "INFO", icon: str = "🤖"):
-    """Helper to send progress to Orchestrator AND Redis"""
-    # Redis Publishing
+    """Helper to send progress to Orchestrator AND Redis for UI Sync"""
+    # Redis Publishing (channel:user_{user_id}:session_{session_id})
     publisher = _redis_publisher_ctx.get()
     session_id = _session_id_ctx.get()
+    user_id = _user_email_ctx.get() or "anonymous"
     
     if publisher and session_id:
         try:
-             # Map internal event types
+             # MAPPED_TYPES: STATUS_UPDATE, TOOL_CALL, OBSERVATION, ERROR, THOUGHT, ACTION
              msg_type_map = {
-                 "INFO": "STATUS_UPDATE", "TOOL_CALL": "TOOL_CALL", "OBSERVATION": "OBSERVATION", 
+                 "INFO": "STATUS_UPDATE", "TOOL_CALL": "ACTION", "OBSERVATION": "OBSERVATION", 
                  "ERROR": "ERROR", "THOUGHT": "THOUGHT"
              }
              mapped_type = msg_type_map.get(event_type, "STATUS_UPDATE")
-             
-             user_id = _user_email_ctx.get() or "unknown_agent"
              
              publisher.publish_event(
                  session_id=session_id, user_id=user_id, trace_id="unknown",
@@ -230,7 +250,7 @@ setup_observability()
 def create_my_agent(model_name=None):
     return Agent(
         name=AGENT_NAME,
-        model=model_name or "gemini-2.0-flash",
+        model=model_name or config.FINOPTIAGENTS_LLM,
         instruction=AGENT_INSTRUCTIONS,
         tools=[my_tool_function]
     )
