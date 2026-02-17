@@ -4,7 +4,7 @@ import redis.asyncio as redis
 import os
 import json
 import logging
-from app.models import AgentEvent, EventHeader, EventPayload, UIRendering
+from app.models import AgentEvent, EventHeader, EventPayload, UIRendering, TroubleshootingSessionContext
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
@@ -154,3 +154,30 @@ async def stream_events(user_id: str, session_id: str):
             "Connection": "keep-alive"
         }
     )
+@app.get("/session/{session_id}/context", response_model=TroubleshootingSessionContext)
+async def get_session_context(session_id: str):
+    """
+    Retrieve the structured troubleshooting context for a session.
+    """
+    try:
+        context_key = f"context:session:{session_id}"
+        data = await redis_client.get(context_key)
+        if not data:
+            return TroubleshootingSessionContext()
+        return TroubleshootingSessionContext.model_validate_json(data)
+    except Exception as e:
+        logger.error(f"Failed to get session context: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/session/{session_id}/context")
+async def update_session_context(session_id: str, context: TroubleshootingSessionContext):
+    """
+    Update the structured troubleshooting context for a session.
+    """
+    try:
+        context_key = f"context:session:{session_id}"
+        await redis_client.setex(context_key, 86400, context.model_dump_json())
+        return {"status": "updated", "session_id": session_id}
+    except Exception as e:
+        logger.error(f"Failed to update session context: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

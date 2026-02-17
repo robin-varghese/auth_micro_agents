@@ -1,0 +1,11 @@
+google-adk
+google-genai
+opentelemetry-api
+opentelemetry-sdk
+openinference-instrumentation-google-adk
+phoenix
+flask
+requests
+gunicorn
+pydantic
+pydantic-settings

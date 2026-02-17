@@ -14,10 +14,11 @@ def detect_intent(prompt: str) -> str:
     Dynamic intent detection based on Master Agent Registry keywords.
     
     Priority:
-    1. Simple CRUD operations → route to appropriate agent (bypass MATS)
-    2. Troubleshooting requests → route to MATS
-    3. Keyword-based scoring → find best matching agent
-    4. Default fallback → gcloud
+    1. Context information updates → route to Orchestrator for state update
+    2. Simple CRUD operations → route to appropriate agent (bypass MATS)
+    3. Troubleshooting requests → route to MATS
+    4. Keyword-based scoring → find best matching agent
+    5. Default fallback → gcloud
     """
     registry = load_registry()
     prompt_lower = prompt.lower()
@@ -36,6 +37,24 @@ def detect_intent(prompt: str) -> str:
     
     is_simple_operation = any(re.search(pattern, prompt_lower) for pattern in simple_operations)
     
+    # 0.5. Detect context-gathering responses (e.g., "The project is...", "Repo: ...")
+    context_patterns = [
+        r'\bproject is\s+',
+        r'\bproject id\s+(is|:)?\s*',
+        r'\benvironment\s+(is|:)?\s*',
+        r'\bproduction\b',
+        r'\bstaging\b',
+        r'\bapplication\s+(name\s+)?(is|:)?\s*',
+        r'\brepo\s*(url|is|:)?\s*',
+        r'\bgithub\s*pat\b',
+        r'\bbranch\s*(is|:)?\s*',
+    ]
+    
+    is_context_update = any(re.search(pattern, prompt_lower) for pattern in context_patterns)
+    if is_context_update:
+        logger.info(f"Routing to Orchestrator (Interactive Context Update): match found")
+        return "finopti_orchestrator"
+
     # 1. Check for explicit MATS triggers (only if NOT a simple operation)
     if not is_simple_operation:
         # MATS triggers - require clear troubleshooting intent with multi-word phrases

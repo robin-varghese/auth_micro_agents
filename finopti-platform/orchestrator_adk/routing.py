@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional
 from config import config
 from structured_logging import propagate_request_id
 from registry import get_agent_by_id
-from context import _redis_publisher_ctx, _report_progress
+from context import _redis_publisher_ctx, _report_progress, get_session_context, update_session_context
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,16 @@ async def route_to_agent(target_agent: str, prompt: str, user_email: str, projec
     """
     ADK tool: Route request to appropriate sub-agent using Master Registry.
     """
+    # 0. Self-Routing for Orchestrator Context Updates
+    if target_agent in ["finopti_orchestrator", "orchestrator"]:
+        # When routing to itself, it usually means the agent is updating context
+        # We handle this by returning a status that the agent.py loop can interpret
+        return {
+            "success": True,
+            "response": "Context updated successfully.",
+            "self_route": True
+        }
+
     try:
         agent_def = get_agent_by_id(target_agent)
         endpoint = None
@@ -292,3 +302,41 @@ async def chain_screenshot_upload(
             logger.error(f"Error in screenshot chaining: {chain_err}")
             
     return agent_response
+
+async def list_gcp_projects(user_email: str) -> List[Dict[str, str]]:
+    """
+    List GCP projects the user has access to.
+    Useful for helping the user select a project for troubleshooting.
+    """
+    await _report_progress(f"Fetching projects for {user_email}...", icon="📋")
+    
+    endpoint = f"{config.APISIX_URL}/agent/gcloud/execute"
+    payload = {
+        "prompt": "projects list --format=json",
+        "user_email": user_email
+    }
+    
+    try:
+        response = requests.post(endpoint, json=payload, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        
+        projects_text = data.get("response", "")
+        if isinstance(projects_text, dict):
+            projects = projects_text
+        else:
+            try:
+                # Basic cleaning
+                if "```json" in str(projects_text):
+                    projects_text = str(projects_text).split("```json")[1].split("```")[0].strip()
+                projects = json.loads(str(projects_text))
+            except:
+                projects = []
+                
+        return [
+            {"name": p.get("name"), "id": p.get("projectId")} 
+            for p in projects if isinstance(p, dict)
+        ]
+    except Exception as e:
+        logger.error(f"Failed to list projects: {e}")
+        return []

@@ -254,6 +254,7 @@ GITHUB_MCP_DOCKER_IMAGE = _fetch_config("GITHUB_MCP_DOCKER_IMAGE", default="fino
 STORAGE_MCP_DOCKER_IMAGE = _fetch_config("STORAGE_MCP_DOCKER_IMAGE", default="finopti-storage-mcp")
 # DB Toolbox uses a direct image reference in docker-compose, but we can config the URL if needed
 DB_MCP_TOOLBOX_URL = _fetch_config("DB_MCP_TOOLBOX_URL", default=f"{APISIX_URL}/mcp/db")
+REDIS_GATEWAY_URL = _fetch_config("REDIS_GATEWAY_URL", default="http://redis-gateway:8080")
 
 # Observability
 LOG_LEVEL = _fetch_config("LOG_LEVEL", default="INFO")
@@ -311,6 +312,7 @@ class Config:
     GITHUB_MCP_DOCKER_IMAGE = GITHUB_MCP_DOCKER_IMAGE
     STORAGE_MCP_DOCKER_IMAGE = STORAGE_MCP_DOCKER_IMAGE
     DB_MCP_TOOLBOX_URL = DB_MCP_TOOLBOX_URL
+    REDIS_GATEWAY_URL = REDIS_GATEWAY_URL
     
     LOG_LEVEL = LOG_LEVEL
     ENABLE_STRUCTURED_LOGGING = ENABLE_STRUCTURED_LOGGING

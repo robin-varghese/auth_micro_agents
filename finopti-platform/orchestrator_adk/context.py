@@ -6,6 +6,8 @@ import logging
 from pathlib import Path
 from contextvars import ContextVar
 from opentelemetry import trace
+import requests
+from config import config
 
 logger = logging.getLogger(__name__)
 
@@ -57,3 +59,29 @@ async def _report_progress(
             icon=icon,
             metadata=metadata
         )
+
+async def get_session_context(session_id: str) -> dict:
+    """Fetch structured context from Redis Gateway."""
+    if not session_id:
+        return {}
+    
+    url = f"{config.REDIS_GATEWAY_URL}/session/{session_id}/context"
+    try:
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.warning(f"Failed to fetch session context: {e}")
+        return {}
+
+async def update_session_context(session_id: str, context: dict):
+    """Update structured context in Redis Gateway."""
+    if not session_id:
+        return
+    
+    url = f"{config.REDIS_GATEWAY_URL}/session/{session_id}/context"
+    try:
+        response = requests.post(url, json=context, timeout=5)
+        response.raise_for_status()
+    except Exception as e:
+        logger.warning(f"Failed to update session context: {e}")

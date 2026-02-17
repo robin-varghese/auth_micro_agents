@@ -31,8 +31,18 @@ class AgentEvent(BaseModel):
     payload: EventPayload
     ui_rendering: UIRendering
     
-    # We also need the routing key to know WHERE to publish
-    # In a real system, this might be inferred from context, 
-    # but for this specific Gateway, we'll ask the client to provide the target session
-    # OR we can keep it separate from the event payload. 
-    # Let's keep it separate in the API request model.
+class TroubleshootingSessionContext(BaseModel):
+    """
+    Structured context for a troubleshooting session.
+    """
+    environment: Optional[str] = None
+    project_id: Optional[str] = None
+    region: Optional[str] = None
+    application_name: Optional[str] = None
+    application_url: Optional[str] = None
+    repo_url: Optional[str] = None
+    repo_branch: Optional[str] = None
+    github_pat: Optional[str] = None
+    issue_details: Dict[str, Any] = {}
+    iam_status: Literal["VERIFIED", "PENDING_ACTION", "INSUFFICIENT_PERMISSIONS", "UNKNOWN"] = "UNKNOWN"
+    last_updated: str = Field(default_factory=lambda: datetime.utcnow().isoformat())

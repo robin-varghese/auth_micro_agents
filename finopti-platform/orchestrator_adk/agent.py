@@ -14,7 +14,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from google.adk.agents import Agent
 from google.adk.apps import App
+from google.adk.runners import InMemoryRunner
+from google.genai import types
 from google.adk.plugins import ReflectAndRetryToolPlugin
+
+# Force Vertex AI if configured
+if hasattr(config, "GOOGLE_GENAI_USE_VERTEXAI"):
+    os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = str(config.GOOGLE_GENAI_USE_VERTEXAI)
+if hasattr(config, "GCP_PROJECT_ID"):
+    os.environ["GOOGLE_CLOUD_PROJECT"] = config.GCP_PROJECT_ID
 from google.adk.plugins.bigquery_agent_analytics_plugin import (
     BigQueryAgentAnalyticsPlugin,
     BigQueryLoggerConfig
@@ -36,8 +44,9 @@ from context import (
 from registry import load_registry
 from intent import detect_intent
 from auth import check_opa_authorization
-from routing import route_to_agent, chain_screenshot_upload
+from routing import route_to_agent, chain_screenshot_upload, list_gcp_projects
 from instructions import ORCHESTRATOR_INSTRUCTIONS, ORCHESTRATOR_DESCRIPTION
+from context import get_session_context, update_session_context
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +67,7 @@ def create_app():
         model=config.FINOPTIAGENTS_LLM,
         description=ORCHESTRATOR_DESCRIPTION,
         instruction=ORCHESTRATOR_INSTRUCTIONS,
-        tools=[route_to_agent]
+        tools=[route_to_agent, get_session_context, update_session_context, list_gcp_projects]
     )
 
     # Configure BigQuery Analytics Plugin
@@ -123,9 +132,87 @@ async def process_request_async(
         # Create App per request
         app = create_app()
 
-        # Detect intent
+        # --- NEW STATEFUL LOGIC ---
+        # 1. Fetch Session Context from Redis
+        context = await get_session_context(session_id)
+        
+        # 2. Detect intent
         target_agent = detect_intent(prompt)
         
+        # 3. Check for Troubleshooting Flow Interactivity
+        is_troubleshooting = target_agent in ["mats-orchestrator", "mats_orchestrator", "iam_verification_specialist"]
+        
+        # If we are in a troubleshooting flow, ensure context is gathered
+        if is_troubleshooting:
+            # Update context with current project_id if provided but missing in Redis
+            if project_id and not context.get("project_id"):
+                context["project_id"] = project_id
+                await update_session_context(session_id, context)
+            
+            # Check for missing required fields
+            required_fields = {
+                "project_id": "GCP Project ID",
+                "environment": "Environment (Production, Staging, Dev)",
+                "application_name": "Application Name"
+            }
+            missing = [label for field, label in required_fields.items() if not context.get(field)]
+            
+            # Additional context for code-aware troubleshooting
+            github_fields = {
+                "repo_url": "GitHub Repository URL",
+                "repo_branch": "Branch Name",
+                "github_pat": "GitHub Personal Access Token"
+            }
+            # Only ask for GitHub if they haven't provided it and we are getting deeper
+            # For now, let's keep it minimal for the first turn
+            
+            if missing:
+                return {
+                    "success": True,
+                    "response": f"I'm ready to help with troubleshooting, but I need a few more details first. Could you please provide the following: **{', '.join(missing)}**?",
+                    "orchestrator": {
+                        "state": "COLLECTING_CONTEXT",
+                        "missing": missing
+                    }
+                }
+            
+            # 4. Check IAM Permissions Status
+            if context.get("iam_status") != "VERIFIED":
+                target_agent = "iam_verification_specialist"
+                # Refine prompt for IAM agent to be specific
+                prompt = f"Verify my current permissions in project {context.get('project_id')}. I need to perform troubleshooting for {context.get('application_name')}."
+                logger.info(f"Redirecting to {target_agent} because iam_status is {context.get('iam_status')}")
+
+        # --- ROUTING EXECUTION ---
+        if target_agent == "finopti_orchestrator":
+             # Self-routing: Let the Orchestrator LLM handle the context update or clarification
+             async def _run_once(app_instance):
+                 async with InMemoryRunner(app=app_instance) as runner:
+                     runner.auto_create_session = True
+                     sid = session_id or "default"
+                     uid = user_email or "unknown"
+                     await runner.session_service.create_session(session_id=sid, user_id=uid, app_name="finopti_orchestrator")
+                     message = types.Content(parts=[types.Part(text=prompt)])
+                     response_text = ""
+                     async for event in runner.run_async(user_id=uid, session_id=sid, new_message=message):
+                         if hasattr(event, 'content') and event.content and event.content.parts:
+                             for part in event.content.parts:
+                                 if part.text: response_text += part.text
+                     return response_text if response_text else "No response generated."
+
+             from common.model_resilience import run_with_model_fallback
+             final_response = await run_with_model_fallback(
+                 create_app_func=lambda m: create_app(), # Note: App factory should take model
+                 run_func=_run_once,
+                 context_name="Orchestrator"
+             )
+             
+             return {
+                 "success": True,
+                 "response": final_response,
+                 "orchestrator": {"target_agent": "self"}
+             }
+
         # Check authorization via OPA
         authz_result = check_opa_authorization(user_email, target_agent)
         
@@ -143,7 +230,7 @@ async def process_request_async(
             target_agent=target_agent,
             prompt=prompt,
             user_email=user_email,
-            project_id=project_id or config.GCP_PROJECT_ID,
+            project_id=context.get("project_id", project_id or config.GCP_PROJECT_ID),
             auth_token=auth_token,
             session_id=session_id
         )

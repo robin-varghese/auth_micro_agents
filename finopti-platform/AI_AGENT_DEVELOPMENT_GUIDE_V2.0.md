@@ -64,6 +64,13 @@
 2. Use lowercase with hyphens (e.g., `google-api-key`).
 3. Fetch them in `config/__init__.py` using the `_fetch_config` helper.
 
+### Rule 10: Vertex AI as LLM Standard
+**CRITICAL:** All agents MUST use Vertex AI for LLM interactions. The Google AI (Gemini) API key is NOT supported in production.
+**Requirement:**
+1. Use `config.GOOGLE_GENAI_USE_VERTEXAI = "TRUE"`.
+2. Ensure the agent runner is configured to use Vertex AI by setting appropriate environment variables or utilizing the `config` module.
+3. Local verification should also prioritize Vertex AI where feasible.
+
 ---
 
 ## Standard Module Structure
