@@ -13,28 +13,42 @@ logger = logging.getLogger(__name__)
 class MonitoringMCPClient:
     """Client for connecting to Monitoring MCP server via Docker Stdio"""
     
-    def __init__(self):
+    def __init__(self, auth_token: str = None):
         # Use monitoring-mcp image
         self.image = os.getenv('MONITORING_MCP_DOCKER_IMAGE', 'finopti-monitoring-mcp')
-        self.mount_path = os.getenv('GCLOUD_MOUNT_PATH', f"{os.path.expanduser('~')}/.config/gcloud:/root/.config/gcloud")
+        self.auth_token = auth_token
         self.process = None
         self.request_id = 0
     
+    async def __aenter__(self):
+        await self.connect()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
     async def connect(self):
         cmd = [
-            "docker", "run", "-i", "--rm", 
-            "-v", self.mount_path,
+            "docker", "run", "-i", "--rm",
+            # Inject OAuth Token
+            "-e", f"CLOUDSDK_AUTH_ACCESS_TOKEN={self.auth_token}" if self.auth_token else "",
+            # Inject Project ID
+            "-e", f"CLOUDSDK_CORE_PROJECT={os.getenv('GCP_PROJECT_ID', '')}",
             self.image
         ]
         
-        logger.info(f"Starting Monitoring MCP: {' '.join(cmd)}")
+        # Filter empty
+        cmd = [c for c in cmd if c]
+        safe_cmd = [c if not c.startswith("CLOUDSDK_AUTH_ACCESS_TOKEN=") else "CLOUDSDK_AUTH_ACCESS_TOKEN=***" for c in cmd]
+        
+        logger.info(f"Starting Monitoring MCP: {' '.join(safe_cmd)}")
         self.process = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        # Increase buffer limit to 10MB to avoid LimitOverrunError on large JSON responses
+        # Increase buffer limit to 10MB to avoid LimitOverrunError
         if self.process.stdout:
             self.process.stdout._limit = 10 * 1024 * 1024 
         
@@ -100,12 +114,4 @@ class MonitoringMCPClient:
             except Exception as e:
                 logging.warning(f"Error closing MCP process: {e}")
 
-# ContextVar to store the MCP client for the current request
-_mcp_ctx: ContextVar["MonitoringMCPClient"] = ContextVar("mcp_client", default=None)
-
-async def ensure_mcp():
-    """Retrieve the client for the CURRENT context."""
-    client = _mcp_ctx.get()
-    if not client:
-        raise RuntimeError("MCP Client not initialized for this context")
-    return client
+# Removed global context var as we use ephemeral instances in tools.py

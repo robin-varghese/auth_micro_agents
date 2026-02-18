@@ -17,10 +17,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.plugins import ReflectAndRetryToolPlugin
-from google.adk.plugins.bigquery_agent_analytics_plugin import (
-    BigQueryAgentAnalyticsPlugin,
-    BigQueryLoggerConfig
-)
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 from opentelemetry import trace
@@ -39,7 +35,7 @@ from context import (
 )
 from instructions import AGENT_INSTRUCTIONS, AGENT_DESCRIPTION, AGENT_NAME
 from tools import query_logs, list_metrics, query_time_series
-from mcp_client import MonitoringMCPClient, _mcp_ctx
+# from mcp_client import MonitoringMCPClient (Removed, now managed in tools.py)
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -71,19 +67,6 @@ def create_app(model_name: str = None):
     if config.GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
-    bq_config = BigQueryLoggerConfig(
-        enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-        shutdown_timeout=5.0
-    )
-
-    bq_plugin = BigQueryAgentAnalyticsPlugin(
-        project_id=config.GCP_PROJECT_ID,
-        dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-        table_id=config.BQ_ANALYTICS_TABLE,
-        config=bq_config,
-        location="US"
-    )
-    
     # Create agent instance
     agent_instance = create_monitoring_agent(model_name)
 
@@ -91,17 +74,19 @@ def create_app(model_name: str = None):
         name="finopti_monitoring_agent",
         root_agent=agent_instance,
         plugins=[
-            ReflectAndRetryToolPlugin(max_retries=3),
-            bq_plugin
+            ReflectAndRetryToolPlugin(max_retries=3)
         ]
     )
 
 
-async def send_message_async(prompt: str, user_email: str = None, project_id: str = None, session_id: str = "default") -> str:
+async def send_message_async(prompt: str, user_email: str = None, project_id: str = None, session_id: str = "default", auth_token: str = None) -> str:
     try:
         # --- CONTEXT SETTING ---
+        from context import _auth_token_ctx
         _session_id_ctx.set(session_id)
         _user_email_ctx.set(user_email or "unknown")
+        if auth_token:
+            _auth_token_ctx.set(auth_token)
 
         span = trace.get_current_span()
         if span and span.is_recording():
@@ -109,10 +94,7 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
             if user_email:
                 span.set_attribute("user_id", user_email)
 
-        # Create new client for this request (and this event loop)
-        mcp = MonitoringMCPClient()
-        token_reset = _mcp_ctx.set(mcp)
-        
+        # MCP is now managed per-tool in tools.py
         # Initialize Redis Publisher once
         publisher = None
         if RedisEventPublisher:
@@ -122,16 +104,13 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
             except Exception as e:
                 logger.error(f"Failed to initialize RedisEventPublisher: {e}")
 
-        try:
-            await mcp.connect()
-            
-            # Prepend project context if provided
-            if project_id:
-                prompt = f"Project ID: {project_id}\n{prompt}"
+        # Prepend project context if provided
+        if project_id:
+            prompt = f"Project ID: {project_id}\n{prompt}"
 
-            # Publish "Processing" event
-            if _user_email_ctx.get():
-                await _report_progress(f"Processing: {prompt[:50]}...", icon="🔍", display_type="toast")
+        # Publish "Processing" event
+        if _user_email_ctx.get():
+            await _report_progress(f"Processing: {prompt[:50]}...", icon="🔍", display_type="toast")
                 
             # Define run_once for fallback logic
             async def _run_once(app_instance):
@@ -144,9 +123,8 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
                     message = types.Content(parts=[types.Part(text=prompt)])
 
                     async for event in runner.run_async(session_id=sid, user_id=uid, new_message=message):
-                        # Stream event via Publisher
-                        if publisher:
-                            publisher.process_adk_event(event, session_id=sid, user_id=uid)
+                        # Stream event via Publisher (Internal to ADK - not used here as mcp is tool-based)
+                        pass
 
                         if hasattr(event, 'content') and event.content:
                             for part in event.content.parts:
@@ -159,14 +137,13 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
                 context_name="Monitoring Agent"
             )
         finally:
-            await mcp.close()
-            _mcp_ctx.reset(token_reset)
+            pass
 
     except Exception as e:
         return f"Error: {str(e)}"
 
-def send_message(prompt: str, user_email: str = None, project_id: str = None, session_id: str = "default") -> str:
-    return asyncio.run(send_message_async(prompt, user_email, project_id, session_id))
+def send_message(prompt: str, user_email: str = None, project_id: str = None, session_id: str = "default", auth_token: str = None) -> str:
+    return asyncio.run(send_message_async(prompt, user_email, project_id, session_id, auth_token))
 
 if __name__ == "__main__":
     import sys

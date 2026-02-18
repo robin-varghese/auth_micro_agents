@@ -106,27 +106,11 @@ def ask():
         
         # Extract Session ID (default to trace ID or generated if missing)
         session_id = request.headers.get('X-Session-ID')
-        
-        # [DEFENSIVE FIX] Detect and reject hardcoded session ID
-        if session_id == "session_12345":
-            msg = "Rejected hardcoded session ID 'session_12345' from X-Session-ID header"
-            if STRUCTURED_LOGGING_AVAILABLE:
-                logger.warning(msg, source="header")
-            else:
-                logger.warning(msg)
-            session_id = None
 
         if not session_id:
              session_id = request.headers.get('X-Request-ID')
              
-             # Check X-Request-ID too
-             if session_id == "session_12345":
-                 msg = "Rejected hardcoded session ID 'session_12345' from X-Request-ID header"
-                 if STRUCTURED_LOGGING_AVAILABLE:
-                     logger.warning(msg, source="header_request_id")
-                 else:
-                     logger.warning(msg)
-                 session_id = None
+
             
              if not session_id:
                  # Generate a clean session ID if missing or rejected

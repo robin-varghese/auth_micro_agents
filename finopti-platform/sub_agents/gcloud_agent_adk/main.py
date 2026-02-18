@@ -85,6 +85,16 @@ def execute():
         user_email = data.get('user_email', 'unknown')
         session_id = data.get('session_id', 'default') # Extract session_id
         
+        from context import _auth_token_ctx
+        
+        # Extract Auth Token
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            _auth_token_ctx.set(token)
+            if STRUCTURED_LOGGING_AVAILABLE:
+                logger.info("Captured OAuth token from request headers")
+        
         # Log request
         if STRUCTURED_LOGGING_AVAILABLE:
             logger.info(
@@ -97,7 +107,8 @@ def execute():
             logger.info(f"Received request from {user_email} (session: {session_id}): {prompt[:100]}")
         
         # Process with ADK agent
-        response_text = send_message(prompt, user_email, session_id=session_id)
+        token = _auth_token_ctx.get()
+        response_text = send_message(prompt, user_email, session_id=session_id, auth_token=token)
         
         # Check if response_text contains an error message from ADK agent.py catch block
         is_error = "Error processing request:" in str(response_text)

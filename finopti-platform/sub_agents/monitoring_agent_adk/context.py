@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 _redis_publisher_ctx: ContextVar[Optional["RedisEventPublisher"]] = ContextVar("redis_publisher", default=None)
 _session_id_ctx: ContextVar[Optional[str]] = ContextVar("session_id", default=None)
 _user_email_ctx: ContextVar[Optional[str]] = ContextVar("user_email", default=None)
+_auth_token_ctx: ContextVar[Optional[str]] = ContextVar("auth_token", default=None)  # [NEW] OAuth Token Context
 
 async def _report_progress(message: str, event_type: str = "INFO", icon: str = None, display_type: str = None):
     """Helper to send progress to Orchestrator AND Redis"""

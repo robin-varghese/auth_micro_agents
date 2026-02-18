@@ -101,8 +101,19 @@ def execute():
             logger.info(f"Received request from {user_email} (session: {session_id}): {prompt[:100]}")
         
         # Process with ADK agent
+        from context import _auth_token_ctx
+        
+        # Extract Auth Token
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            _auth_token_ctx.set(token)
+            if STRUCTURED_LOGGING_AVAILABLE:
+                logger.info("Captured OAuth token from request headers")
+
+        token = _auth_token_ctx.get()
         from agent import send_message
-        response_text = send_message(prompt, user_email, project_id, session_id=session_id)
+        response_text = send_message(prompt, user_email, project_id, session_id=session_id, auth_token=token)
         
         # Log success
         if STRUCTURED_LOGGING_AVAILABLE:

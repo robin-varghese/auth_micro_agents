@@ -27,10 +27,6 @@ if hasattr(config, "GOOGLE_GENAI_USE_VERTEXAI"):
 if hasattr(config, "GCP_PROJECT_ID"):
     os.environ["GOOGLE_CLOUD_PROJECT"] = config.GCP_PROJECT_ID
 
-from google.adk.plugins.bigquery_agent_analytics_plugin import (
-    BigQueryAgentAnalyticsPlugin,
-    BigQueryLoggerConfig
-)
 from opentelemetry import trace
 from opentelemetry.semconv.trace import SpanAttributes
 
@@ -57,11 +53,22 @@ setup_observability()
 
 
 # --- App Factory ---
-def create_app():
+def create_app(session_id: Optional[str] = None):
     """Factory to create loop-safe App and Agent instances."""
     # Ensure API Key is in environment for GenAI library
     if config.GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
+
+    # [FIX] Wrapper to prevent LLM from hallucinating session ID (e.g. using email)
+    async def save_context_to_session(context: Dict[str, Any]):
+        """
+        Save/Update key-value context to the current user session.
+        Use this to store project_id, environment, application_name, etc.
+        """
+        if session_id:
+            await update_session_context(session_id, context)
+        else:
+            logger.warning("save_context_to_session called but no session_id bound.")
 
     # Create Orchestrator Agent (Rule 8: Move locally)
     orchestrator_agent = Agent(
@@ -69,20 +76,7 @@ def create_app():
         model=config.FINOPTIAGENTS_LLM,
         description=ORCHESTRATOR_DESCRIPTION,
         instruction=ORCHESTRATOR_INSTRUCTIONS,
-        tools=[route_to_agent, get_session_context, update_session_context, list_gcp_projects]
-    )
-
-    # Configure BigQuery Analytics Plugin
-    bq_config = BigQueryLoggerConfig(
-        enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true"
-    )
-
-    bq_plugin = BigQueryAgentAnalyticsPlugin(
-        project_id=config.GCP_PROJECT_ID,
-        dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-        table_id=config.BQ_ANALYTICS_TABLE,
-        config=bq_config,
-        location="US"
+        tools=[route_to_agent, get_session_context, save_context_to_session, list_gcp_projects]
     )
 
     # Create the App
@@ -93,8 +87,7 @@ def create_app():
             ReflectAndRetryToolPlugin(
                 max_retries=int(os.getenv("REFLECT_RETRY_MAX_ATTEMPTS", "3")),
                 throw_exception_if_retry_exceeded=os.getenv("REFLECT_RETRY_THROW_ON_FAIL", "true").lower() == "true"
-            ),
-            bq_plugin
+            )
         ]
     )
 
@@ -108,6 +101,7 @@ async def process_request_async(
 ) -> Dict[str, Any]:
     # ... (existing trace logic)
 
+    try:
         # --- NEW STATEFUL LOGIC ---
         # 1. Fetch Session Context from Redis
         context = await get_session_context(session_id)
@@ -238,7 +232,7 @@ async def process_request_async(
 
              from common.model_resilience import run_with_model_fallback
              final_response = await run_with_model_fallback(
-                 create_app_func=lambda m: create_app(), # Note: App factory should take model
+                 create_app_func=lambda m: create_app(session_id=session_id), # Note: App factory should take model
                  run_func=_run_once,
                  context_name="Orchestrator"
              )

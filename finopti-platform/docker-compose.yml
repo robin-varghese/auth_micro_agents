@@ -157,6 +157,7 @@ services:
       OPA_URL: "http://opa:8181"
       APISIX_URL: "http://apisix:9080"
       MATS_ORCHESTRATOR_URL: "http://mats-orchestrator:8084"  # NEW: URL for MATS delegation
+      REDIS_GATEWAY_URL: "http://finopti-redis-gateway:8000"
 
       REFLECT_RETRY_MAX_ATTEMPTS: "${REFLECT_RETRY_MAX_ATTEMPTS:-}"
       REFLECT_RETRY_THROW_ON_FAIL: "${REFLECT_RETRY_THROW_ON_FAIL:-}"
@@ -206,14 +207,14 @@ services:
       context: .
       dockerfile: sub_agents/gcloud_agent_adk/Dockerfile
     container_name: finopti-gcloud-agent
-    # ports:
-    #   - "15001:5001" # Mesh enforcement: Only accessible via APISIX
+    ports:
+      - "5001:5001" # Exposed for verification
     networks:
       - finopti-net
     depends_on:
       - apisix
     volumes:
-      - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ~/.config/gcloud:/root/.config/gcloud:ro  # Re-enabled for agent bootstrap (Secrets)
       - /var/run/docker.sock:/var/run/docker.sock
       - ./redis-sessions/common:/app/redis_common
     environment:

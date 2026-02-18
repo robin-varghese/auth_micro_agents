@@ -40,7 +40,7 @@ from context import (
 )
 from instructions import AGENT_INSTRUCTIONS, AGENT_DESCRIPTION, AGENT_NAME
 from tools import execute_gcloud_command
-from mcp_client import get_mcp_client, close_mcp_client
+# from mcp_client import get_mcp_client, close_mcp_client (Removed, now managed in tools.py)
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -100,12 +100,15 @@ def create_app(model_name: str = None) -> App:
 # -------------------------------------------------------------------------
 # RUNNER
 # -------------------------------------------------------------------------
-async def send_message_async(prompt: str, user_email: str = None, session_id: str = "default") -> str:
+async def send_message_async(prompt: str, user_email: str = None, session_id: str = "default", auth_token: str = None) -> str:
     """Send message with Model Fallback"""
     try:
         # --- Context Setup ---
+        from context import _auth_token_ctx
         _session_id_ctx.set(session_id)
         _user_email_ctx.set(user_email or "unknown")
+        if auth_token:
+            _auth_token_ctx.set(auth_token)
 
         span = trace.get_current_span()
         if span and span.is_recording():
@@ -114,7 +117,7 @@ async def send_message_async(prompt: str, user_email: str = None, session_id: st
                 span.set_attribute("user_id", user_email)
 
         # Initialize MCP Client
-        await get_mcp_client()
+        # await get_mcp_client() (Removed, handled in tools.py)
         
         # Initialize Redis Publisher
         publisher = None
@@ -155,11 +158,11 @@ async def send_message_async(prompt: str, user_email: str = None, session_id: st
     except Exception as e:
         return f"Error processing request: {str(e)}"
     finally:
-        await close_mcp_client()
+        pass # await close_mcp_client() (Removed, now managed in tools.py)
 
 
-def send_message(prompt: str, user_email: str = None, session_id: str = "default") -> str:
-    return asyncio.run(send_message_async(prompt, user_email, session_id))
+def send_message(prompt: str, user_email: str = None, session_id: str = "default", auth_token: str = None) -> str:
+    return asyncio.run(send_message_async(prompt, user_email, session_id, auth_token))
 
 if __name__ == "__main__":
     import sys

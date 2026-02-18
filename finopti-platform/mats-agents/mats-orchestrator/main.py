@@ -49,15 +49,10 @@ def start_job():
     # Extract Session ID from body (Preferred) or headers (Legacy/Fallback)
     provided_session_id = data.get('session_id') or request.headers.get('X-Session-ID')
     
-    # [DEFENSIVE FIX] Detect and reject hardcoded session ID
-    if provided_session_id == "session_12345":
-        logger.warning("Rejected hardcoded session ID 'session_12345'", extra={"source": "input"})
-        provided_session_id = None
+    logger.info(f"Received session ID from UI/Payload: {provided_session_id}")
         
     if not provided_session_id:
         provided_session_id = f"gen-{uuid.uuid4().hex[:12]}"
-
-    logger.info(f"Received session ID from UI/Payload: {provided_session_id}")
         
     if not user_request:
         return jsonify({"error": "Prompt/user_request is required"}), 400

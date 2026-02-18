@@ -46,6 +46,25 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+from opentelemetry import trace, propagate
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+# Simple OTel setup for UI (Trace Initiator)
+# Note: For full OTLP export, we would add OTLPSpanExporter here.
+# For now, we mainly need the ID generation logic.
+trace.set_tracer_provider(TracerProvider())
+tracer = trace.get_tracer(__name__)
+
+def _generate_trace_id():
+    """Generate a valid 32-char hex trace ID"""
+    return uuid.uuid4().hex
+
+def _get_trace_header(trace_id: str, span_id: str = None):
+    """Create W3C traceparent header"""
+    if not span_id:
+        span_id = uuid.uuid4().hex[:16]
+    return f"00-{trace_id}-{span_id}-01"
+
 # Initialize session state
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
@@ -67,8 +86,11 @@ if 'job_status' not in st.session_state:
     st.session_state.job_status = None
 if 'active_trace_id' not in st.session_state:
     st.session_state.active_trace_id = None
+# Initialize session state for persistent session ID
 if 'active_session_id' not in st.session_state:
-    st.session_state.active_session_id = None
+    st.session_state.active_session_id = _generate_trace_id()
+
+
 
 # ... (Configuration)
 APISIX_URL = "http://apisix:9080"
@@ -78,24 +100,7 @@ ORCHESTRATOR_JOBS = f"{APISIX_URL}/orchestrator/jobs" # Assuming this endpoint e
 
 # ... (Auth and Helpers)
 
-from opentelemetry import trace, propagate
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
-# Simple OTel setup for UI (Trace Initiator)
-# Note: For full OTLP export, we would add OTLPSpanExporter here.
-# For now, we mainly need the ID generation logic.
-trace.set_tracer_provider(TracerProvider())
-tracer = trace.get_tracer(__name__)
 
-def _generate_trace_id():
-    """Generate a valid 32-char hex trace ID"""
-    return uuid.uuid4().hex
-
-def _get_trace_header(trace_id: str, span_id: str = None):
-    """Create W3C traceparent header"""
-    if not span_id:
-        span_id = uuid.uuid4().hex[:16]
-    return f"00-{trace_id}-{span_id}-01"
 
 def start_job(prompt: str, user_email: str, trace_id: str = None, session_id: str = None, stream_ready_event: threading.Event = None) -> dict:
     """Send request to orchestrator for intelligent routing"""

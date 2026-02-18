@@ -12,13 +12,12 @@ logger = logging.getLogger(__name__)
 class GCloudMCPClient:
     """Client for connecting to GCloud MCP server via Docker Stdio"""
     
-    def __init__(self):
+    def __init__(self, auth_token: str = None):
         self.image = os.getenv('GCLOUD_MCP_DOCKER_IMAGE', 'finopti-gcloud-mcp')
-        self.mount_path = os.getenv('GCLOUD_MOUNT_PATH', f"{os.path.expanduser('~')}/.config/gcloud:/root/.config/gcloud")
+        self.auth_token = auth_token
         self.process = None
         self.request_id = 0
         logger.info(f"GCloudMCPClient initialized for image: {self.image}")
-        logger.info(f"GCloudMCPClient command mount path: {self.mount_path}")
     
     async def __aenter__(self):
         await self.connect()
@@ -30,15 +29,23 @@ class GCloudMCPClient:
     async def connect(self):
         """Start the MCP server container"""
         
-        # Check if running in a container with access to docker socket
+        # Build Docker command
         cmd = [
             "docker", "run", 
-            "-i", "--rm", 
-            "-v", self.mount_path,
+            "-i", "--rm",
+            # Inject OAuth Token if present
+            "-e", f"CLOUDSDK_AUTH_ACCESS_TOKEN={self.auth_token}" if self.auth_token else "",
+            # Inject Project ID if available (optional but good for context)
+            "-e", f"CLOUDSDK_CORE_PROJECT={os.getenv('GCP_PROJECT_ID', '')}",
             self.image
         ]
         
-        logger.info(f"Starting MCP server with command: {' '.join(cmd)}")
+        # Filter out empty strings from cmd list (e.g. if no token)
+        cmd = [c for c in cmd if c]
+        
+        # Mask token in logs
+        safe_cmd = [c if not c.startswith("CLOUDSDK_AUTH_ACCESS_TOKEN=") else "CLOUDSDK_AUTH_ACCESS_TOKEN=***" for c in cmd]
+        logger.info(f"Starting MCP server with command: {' '.join(safe_cmd)}")
         
         try:
             self.process = await asyncio.create_subprocess_exec(
@@ -182,18 +189,4 @@ class GCloudMCPClient:
         return str(result)
 
 
-# Global MCP client (will be initialized per-request)
-_mcp_client = None
-
-async def get_mcp_client():
-    global _mcp_client
-    if not _mcp_client:
-        _mcp_client = GCloudMCPClient()
-        await _mcp_client.connect()
-    return _mcp_client
-
-async def close_mcp_client():
-    global _mcp_client
-    if _mcp_client:
-        await _mcp_client.close()
-        _mcp_client = None
+# Removed global _mcp_client to force per-request usage via context wrapper in tools.py
