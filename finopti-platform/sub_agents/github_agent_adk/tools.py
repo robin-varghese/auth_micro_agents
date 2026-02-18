@@ -50,19 +50,21 @@ async def push_files(owner: str, repo: str, branch: str, files: str, message: st
     return await _call_gh_tool("push_files", {"owner": owner, "repo": repo, "branch": branch, "files": files_list, "message": message}, github_pat)
 
 async def create_issue(owner: str, repo: str, title: str, body: str = None, github_pat: str = None) -> Dict[str, Any]:
-    args = {"owner": owner, "repo": repo, "title": title}
+    # [Fix] MCP Server uses "issue_write" with method="create"
+    args = {"owner": owner, "repo": repo, "title": title, "method": "create"}
     if body: args["body"] = body
-    return await _call_gh_tool("create_issue", args, github_pat)
+    return await _call_gh_tool("issue_write", args, github_pat)
 
 async def list_issues(owner: str, repo: str, state: str = "open", github_pat: str = None) -> Dict[str, Any]:
     return await _call_gh_tool("list_issues", {"owner": owner, "repo": repo, "state": state}, github_pat)
 
 async def update_issue(owner: str, repo: str, issue_number: int, title: str = None, body: str = None, state: str = None, github_pat: str = None) -> Dict[str, Any]:
-    args = {"owner": owner, "repo": repo, "issue_number": issue_number}
+    # [Fix] MCP Server uses "issue_write" with method="update"
+    args = {"owner": owner, "repo": repo, "issue_number": issue_number, "method": "update"}
     if title: args["title"] = title
     if body: args["body"] = body
     if state: args["state"] = state
-    return await _call_gh_tool("update_issue", args, github_pat)
+    return await _call_gh_tool("issue_write", args, github_pat)
 
 async def add_issue_comment(owner: str, repo: str, issue_number: int, body: str, github_pat: str = None) -> Dict[str, Any]:
     return await _call_gh_tool("add_issue_comment", {"owner": owner, "repo": repo, "issue_number": issue_number, "body": body}, github_pat)

@@ -36,7 +36,8 @@ class GitHubMCPClient:
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT
+            stderr=asyncio.subprocess.STDOUT,
+            limit=10 * 1024 * 1024  # Increase buffer limit to 10MB
         )
         await self._handshake()
 

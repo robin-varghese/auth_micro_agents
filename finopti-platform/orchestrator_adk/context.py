@@ -79,6 +79,7 @@ async def update_session_context(session_id: str, context: dict):
     if not session_id:
         return
     
+    logger.info(f"Attempting to update session context for {session_id}. Payload: {context}")
     url = f"{config.REDIS_GATEWAY_URL}/session/{session_id}/context"
     try:
         response = requests.post(url, json=context, timeout=5)

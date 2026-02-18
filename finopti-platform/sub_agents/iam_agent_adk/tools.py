@@ -21,7 +21,8 @@ async def check_gcp_permissions(project_id: str, member_email: str) -> Dict[str,
     
     # We call the gcloud_agent to get high-level intent/info
     endpoint = f"{config.APISIX_URL}/agent/gcloud/execute"
-    prompt = f"projects get-iam-policy {project_id} --format=json"
+    # [Refactor] Semantic prompt focusing on the specific user's permissions
+    prompt = f"Check the IAM policy for project {project_id} and identify all roles assigned to user {member_email}. Return the specific bindings for this user in JSON format."
     
     try:
         response = requests.post(endpoint, json={

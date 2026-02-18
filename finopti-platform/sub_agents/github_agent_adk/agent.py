@@ -81,6 +81,10 @@ def create_app(model_name: str = None) -> App:
     if config.GCP_PROJECT_ID:
         os.environ["GOOGLE_CLOUD_PROJECT"] = config.GCP_PROJECT_ID
         os.environ["GCP_PROJECT_ID"] = config.GCP_PROJECT_ID
+    
+    # [NEW] Force Vertex AI if configured (User Request)
+    if os.environ.get("GOOGLE_GENAI_USE_VERTEXAI") == "TRUE" or (hasattr(config, "GOOGLE_GENAI_USE_VERTEXAI") and config.GOOGLE_GENAI_USE_VERTEXAI):
+        os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "TRUE"
 
     agent = create_github_agent(model_name)
 

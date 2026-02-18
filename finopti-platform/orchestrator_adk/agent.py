@@ -12,6 +12,7 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from google.auth import jwt
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.runners import InMemoryRunner
@@ -105,40 +106,61 @@ async def process_request_async(
     auth_token: Optional[str] = None,
     session_id: Optional[str] = None
 ) -> Dict[str, Any]:
-    """
-    Process a user request through the orchestrator
-    
-    Args:
-        prompt: User's natural language request
-        user_email: User's email address
-        project_id: Optional GCP project ID
-        auth_token: Optional OAuth token
-        session_id: Optional ADK Session ID
-    
-    Returns:
-        Dictionary with response and metadata
-    """
-    try:
-        # --- CONTEXT SETTING ---
-        _session_id_ctx.set(session_id)
-        _user_email_ctx.set(user_email or "unknown")
-
-        # Trace attribute setting
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            span.set_attribute(SpanAttributes.SESSION_ID, session_id or "unknown")
-            if user_email:
-                span.set_attribute("user_id", user_email)
-
-        # Create App per request
-        app = create_app()
+    # ... (existing trace logic)
 
         # --- NEW STATEFUL LOGIC ---
         # 1. Fetch Session Context from Redis
         context = await get_session_context(session_id)
         
+        # [NEW] Extract User Details from OAuth Token
+        if auth_token and auth_token.startswith("Bearer "):
+            try:
+                token = auth_token.split(" ")[1]
+                # Decode without verification (trusted internal service, verification done at Gateway/UI)
+                decoded = jwt.decode(token, verify=False)
+                
+                # Update context with available fields
+                updates = {}
+                if "name" in decoded and not context.get("user_name"):
+                    updates["user_name"] = decoded["name"]
+                if "picture" in decoded and not context.get("user_picture"):
+                    updates["user_picture"] = decoded["picture"]
+                if "email" in decoded and not context.get("user_email"):
+                    updates["user_email"] = decoded["email"]
+                    
+                if updates:
+                    logger.info(f"Enriched context from OAuth token: {list(updates.keys())}")
+                    context.update(updates)
+                    await update_session_context(session_id, context)
+            except Exception as e:
+                logger.warning(f"Failed to decode OAuth token for context enrichment: {e}")
+        
+        # [NEW] Extract User Details from OAuth Token
+        if auth_token and auth_token.startswith("Bearer "):
+            try:
+                token = auth_token.split(" ")[1]
+                # Decode without verification (trusted internal service, verification done at Gateway/UI)
+                decoded = jwt.decode(token, verify=False)
+                
+                # Update context with available fields
+                updates = {}
+                if "name" in decoded and not context.get("user_name"):
+                    updates["user_name"] = decoded["name"]
+                if "picture" in decoded and not context.get("user_picture"):
+                    updates["user_picture"] = decoded["picture"]
+                if "email" in decoded and not context.get("user_email"):
+                    updates["user_email"] = decoded["email"]
+                    
+                if updates:
+                    logger.info(f"Enriched context from OAuth token: {list(updates.keys())}")
+                    context.update(updates)
+                    await update_session_context(session_id, context)
+            except Exception as e:
+                logger.warning(f"Failed to decode OAuth token for context enrichment: {e}")
+
         # 2. Detect intent
         target_agent = detect_intent(prompt)
+
         
         # 3. Check for Troubleshooting Flow Interactivity
         is_troubleshooting = target_agent in ["mats-orchestrator", "mats_orchestrator", "iam_verification_specialist"]
@@ -200,7 +222,13 @@ async def process_request_async(
                      sid = session_id or "default"
                      uid = user_email or "unknown"
                      await runner.session_service.create_session(session_id=sid, user_id=uid, app_name="finopti_orchestrator")
-                     message = types.Content(parts=[types.Part(text=prompt)])
+                     
+                     # [FIX] Explicitly inject User Email into system context for the LLM
+                     full_prompt = prompt
+                     if uid and "unknown" not in uid:
+                         full_prompt += f"\n\n[System Context] User Email: {uid}"
+                     
+                     message = types.Content(parts=[types.Part(text=full_prompt)])
                      response_text = ""
                      async for event in runner.run_async(user_id=uid, session_id=sid, new_message=message):
                          if hasattr(event, 'content') and event.content and event.content.parts:
