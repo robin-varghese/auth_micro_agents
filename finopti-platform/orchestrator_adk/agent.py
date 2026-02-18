@@ -142,12 +142,27 @@ async def process_request_async(
         
         # 3. Check for Troubleshooting Flow Interactivity
         is_troubleshooting = target_agent in ["mats-orchestrator", "mats_orchestrator", "iam_verification_specialist"]
-        
+
+        # [FIX] Sticky Routing: If we have troubleshooting context, don't fall back to generic gcloud agent
+        has_context = bool(context.get('project_id') or context.get('application_name'))
+        if has_context and target_agent == "gcloud_infrastructure_specialist":
+            # Check if it's a specific gcloud command (simple heuristic or trust detect_intent's specific match)
+            # Since detect_intent returns gcloud as fallback (score 0), we override it here.
+            logger.info("Sticky Context: Overriding 'gcloud' default to 'mats-orchestrator'")
+            target_agent = "mats-orchestrator"
+            is_troubleshooting = True
+
         # If we are in a troubleshooting flow, ensure context is gathered
         if is_troubleshooting:
-            # Update context with current project_id if provided but missing in Redis
-            if project_id and not context.get("project_id"):
-                context["project_id"] = project_id
+            # Update context with current request metadata if missing in Redis
+            updates = {}
+            if project_id and not context.get("project_id"): 
+                updates["project_id"] = project_id
+            if user_email and not context.get("user_email"): 
+                updates["user_email"] = user_email
+            
+            if updates:
+                context.update(updates)
                 await update_session_context(session_id, context)
             
             # Check for missing required fields
@@ -158,31 +173,23 @@ async def process_request_async(
             }
             missing = [label for field, label in required_fields.items() if not context.get(field)]
             
-            # Additional context for code-aware troubleshooting
-            github_fields = {
-                "repo_url": "GitHub Repository URL",
-                "repo_branch": "Branch Name",
-                "github_pat": "GitHub Personal Access Token"
-            }
-            # Only ask for GitHub if they haven't provided it and we are getting deeper
-            # For now, let's keep it minimal for the first turn
-            
+            # If fields are missing, DON'T return error immediately.
+            # Route to finopti_orchestrator (LLM) to:
+            # 1. Parse the *current* prompt (which might contain the missing info)
+            # 2. Update context
+            # 3. Ask for remaining items
             if missing:
-                return {
-                    "success": True,
-                    "response": f"I'm ready to help with troubleshooting, but I need a few more details first. Could you please provide the following: **{', '.join(missing)}**?",
-                    "orchestrator": {
-                        "state": "COLLECTING_CONTEXT",
-                        "missing": missing
-                    }
-                }
+                logger.info(f"Context missing {missing}. Routing to Orchestrator LLM to parse/prompt.")
+                target_agent = "finopti_orchestrator"
+                # Fall through to 'finopti_orchestrator' block below
             
-            # 4. Check IAM Permissions Status
-            if context.get("iam_status") != "VERIFIED":
-                target_agent = "iam_verification_specialist"
-                # Refine prompt for IAM agent to be specific
-                prompt = f"Verify my current permissions in project {context.get('project_id')}. I need to perform troubleshooting for {context.get('application_name')}."
-                logger.info(f"Redirecting to {target_agent} because iam_status is {context.get('iam_status')}")
+            else:
+                # Context is full. Check IAM Permissions Status
+                if context.get("iam_status") != "VERIFIED":
+                    target_agent = "iam_verification_specialist"
+                    # Refine prompt for IAM agent to be specific
+                    prompt = f"Verify permissions for user {user_email} in project {context.get('project_id')}. I need to perform troubleshooting for {context.get('application_name')}."
+                    logger.info(f"Redirecting to {target_agent} because iam_status is {context.get('iam_status')}")
 
         # --- ROUTING EXECUTION ---
         if target_agent == "finopti_orchestrator":

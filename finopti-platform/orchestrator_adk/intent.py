@@ -80,14 +80,39 @@ def detect_intent(prompt: str) -> str:
             "fix the problem",
             "apply the fix",
             "remediate",
-            "apply solution"
+            "apply solution",
+            "not running",
+            "is down",
+            "stopped working",
+            "failing",
+            "exception",
+            "crashed",
+            "timeout",
+            "latency",
+            "slow",
+            "infinite loop",
+            "deadlock",
+            "out of memory"
         ]
         
-        # Check for MATS triggers
-        for trigger in mats_triggers:
-            if trigger in prompt_lower:
-                logger.info(f"Routing to MATS: matched trigger '{trigger}'")
-                return "mats-orchestrator"
+        if any(trigger in prompt_lower for trigger in mats_triggers):
+            logger.info(f"Routing to MATS: matched keyword trigger")
+            return "mats-orchestrator"
+
+        # Regex triggers for robustness (catch typos like 'runnig')
+        mats_regex = [
+            r'\bnot\s+run[a-z]*\b',     # not running, runnig
+            r'\bnot\s+work[a-z]*\b',    # not working
+            r'\bnot\s+start[a-z]*\b',   # not starting
+            r'\bfailed?\b',             # fail, failed
+            r'\bcrashed?\b',            # crash, crashed
+            r'\berror(s)?\b',           # error, errors (careful, might be too broad but safer for RCA)
+            r'\bexception(s)?\b',       # exception
+        ]
+
+        if any(re.search(p, prompt_lower) for p in mats_regex):
+            logger.info(f"Routing to MATS: matched regex trigger")
+            return "mats-orchestrator"
     
     # 2. Score based on keywords in registry
     scores = {}

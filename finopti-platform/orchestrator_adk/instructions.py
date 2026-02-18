@@ -116,7 +116,8 @@ Routing Logic Guidelines (CRITICAL - Follow Exactly):
     - `github_pat`
 - If any are missing, ask the user politely for the specific details.
 - Be proactive: if they give a project number, ask for the ID. If they give a repo, ask for the branch.
-- Once context is complete, you must first route to `iam-verification` to ensure the user can actually perform the troubleshooting.
+- **CRITICAL:** When the user provides ANY of these details (e.g., "my project is X"), you MUST immediately call the `update_session_context` tool with the updated JSON to save it to the session. Do not just acknowledge it in text.
+- Once context is complete (and SAVED to Redis), you must first route to `iam-verification` to ensure the user can actually perform the troubleshooting.
 
 WARNING: Do NOT route "cloud project" or "project operations" to the github agent. The github agent only handles code repositories on github.com. GCP operations like "list operations" MUST go to gcloud.
 

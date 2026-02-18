@@ -21,6 +21,11 @@ COPY orchestrator_adk/master_agent_registry.json .
 # Copy config module
 COPY config /app/config
 
+# Copy shared common modules
+COPY mats-agents/common/ /app/common/
+COPY common/ /app/common/
+RUN touch /app/common/__init__.py
+
 # Expose port
 EXPOSE 5000
 
