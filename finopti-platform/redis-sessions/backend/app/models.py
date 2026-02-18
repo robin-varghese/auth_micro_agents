@@ -9,6 +9,7 @@ class EventHeader(BaseModel):
     trace_id: str
     agent_name: str
     agent_role: str
+    session_id: Optional[str] = None
 
 class EventPayload(BaseModel):
     message: str

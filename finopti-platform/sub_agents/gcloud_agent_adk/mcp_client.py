@@ -30,18 +30,18 @@ class GCloudMCPClient:
         """Start the MCP server container"""
         
         # Build Docker command
-        cmd = [
-            "docker", "run", 
-            "-i", "--rm",
-            # Inject OAuth Token if present
-            "-e", f"CLOUDSDK_AUTH_ACCESS_TOKEN={self.auth_token}" if self.auth_token else "",
-            # Inject Project ID if available (optional but good for context)
-            "-e", f"CLOUDSDK_CORE_PROJECT={os.getenv('GCP_PROJECT_ID', '')}",
-            self.image
-        ]
+        cmd = ["docker", "run", "-i", "--rm"]
         
-        # Filter out empty strings from cmd list (e.g. if no token)
-        cmd = [c for c in cmd if c]
+        # Inject OAuth Token if present
+        if self.auth_token:
+            cmd.extend(["-e", f"CLOUDSDK_AUTH_ACCESS_TOKEN={self.auth_token}"])
+            
+        # Inject Project ID if available (optional but good for context)
+        project_id = os.getenv('GCP_PROJECT_ID', '')
+        if project_id:
+            cmd.extend(["-e", f"CLOUDSDK_CORE_PROJECT={project_id}"])
+            
+        cmd.append(self.image)
         
         # Mask token in logs
         safe_cmd = [c if not c.startswith("CLOUDSDK_AUTH_ACCESS_TOKEN=") else "CLOUDSDK_AUTH_ACCESS_TOKEN=***" for c in cmd]

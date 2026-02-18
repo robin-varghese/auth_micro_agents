@@ -44,11 +44,12 @@
 3. Verify the agent appears in `mats-agents/mats-orchestrator/agent_registry.json`.
 
 ### Rule 7: Authentication & Authorization (AuthN/AuthZ)
-**CRITICAL:** All agents are protected by APISix and OPA.
+**CRITICAL:** All agents are protected by APISix and OPA. Credentials MUST be propagated end-to-end to enable tool execution (e.g., GCloud calls).
 **Requirement:**
-1. Agents must extract `user_email` and `session_id` from the incoming JSON request body.
-2. The `user_email` is passed from APISix after OIDC validation.
-3. Access is controlled via `opa_policy/authz.rego`. Ensure your `agent_id` is mapped to the correct roles in OPA.
+1. Agents must extract `user_email`, `session_id`, and the `Authorization` (Bearer) token from incoming requests.
+2. The `Authorization` header contains the user's active OIDC/OAuth token.
+3. This token MUST be propagated to internal tools and MCP clients (Pattern A) to authenticate against GCP.
+4. Access is controlled via `opa_policy/authz.rego`. Ensure your `agent_id` is mapped to the correct roles in OPA.
 
 ### Rule 8: Model Fallback & Resilience
 **CRITICAL:** Production agents must handle LLM quota exhaustion (429) gracefully.
@@ -168,6 +169,7 @@ logger = logging.getLogger(__name__)
 _redis_publisher_ctx: ContextVar[Optional["RedisEventPublisher"]] = ContextVar("redis_publisher", default=None)
 _session_id_ctx: ContextVar[Optional[str]] = ContextVar("session_id", default=None)
 _user_email_ctx: ContextVar[Optional[str]] = ContextVar("user_email", default=None)
+_auth_token_ctx: ContextVar[Optional[str]] = ContextVar("auth_token", default=None)
 
 async def _report_progress(message: str, event_type: str = "INFO", icon: str = "🤖"):
     """Helper to send progress to Orchestrator AND Redis for UI Sync"""
@@ -299,10 +301,11 @@ def create_app(model_name=None):
     )
 
 # 4. Request Handler
-async def send_message_async(prompt: str, user_email: str = None, session_id: str = "default"):
+async def send_message_async(prompt: str, user_email: str = None, session_id: str = "default", auth_token: str = None):
     # Context Propagation
     _session_id_ctx.set(session_id)
     _user_email_ctx.set(user_email)
+    _auth_token_ctx.set(auth_token)
     
     # Initialize Client (Pattern A) - ContextVar SET
     mcp = MyMCPClient()
@@ -356,8 +359,14 @@ def execute():
     session_id = data.get('session_id')
     user_email = data.get('user_email')
     
+    # Extract Auth Token from Authorization Header
+    auth_header = request.headers.get('Authorization')
+    auth_token = None
+    if auth_header and auth_header.startswith("Bearer "):
+        auth_token = auth_header.split(" ")[1]
+
     try:
-        result = asyncio.run(process_request(prompt, session_id=session_id, user_email=user_email))
+        result = asyncio.run(process_request(prompt, session_id=session_id, user_email=user_email, auth_token=auth_token))
         return jsonify({"response": result})
     except Exception as e:
         logger.error(f"Error: {e}")
@@ -444,10 +453,12 @@ User Request (session_id: abc-123)
 Orchestrator (sets session.id on span)
   ↓
 Delegation (passes session_id in payload)
-  ↓
-Sub-Agent (extracts session_id, sets on span)
-  ↓
-Phoenix UI (groups all traces by session.id)
+4.  Sub-Agent Standard Span Attributes:
+    - `session.id`: Captured from `_session_id_ctx`.
+    - `user.email`: Captured from `_user_email_ctx`.
+    - `enduser.id`: For audit trails.
+
+5.  Phoenix UI (groups all traces by session.id)
 ```
 
 ### Verification Checklist
@@ -475,6 +486,20 @@ Phoenix UI (groups all traces by session.id)
 ### 3. "Phoenix not showing traces"
 - **Symptom**: Agent works but no traces appear.
 - **Fix**: Verify `PHOENIX_COLLECTOR_ENDPOINT` is correct and Phoenix container is running.
+
+---
+### 4. "Permission Denied" in GCloud MCP
+- **Symptom**: `gcloud` commands fail inside the spawned container.
+- **Cause**: Active OAuth token is not passed to the container.
+- **Fix**: In your `mcp_client.py`, inject the token into the environment:
+  ```python
+  auth_token = _auth_token_ctx.get()
+  cmd = [
+      "docker", "run", "-i", "--rm",
+      "-e", f"CLOUDSDK_AUTH_ACCESS_TOKEN={auth_token}",
+      "finopti-gcloud-mcp"
+  ]
+  ```
 
 ---
 **End of V2.1 Guide**

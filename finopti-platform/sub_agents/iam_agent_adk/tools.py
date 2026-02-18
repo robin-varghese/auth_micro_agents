@@ -20,22 +20,35 @@ async def check_gcp_permissions(project_id: str, member_email: str) -> Dict[str,
     await _report_progress(f"Checking IAM permissions for {member_email} in {project_id}...", icon="🔍")
     
     # We call the gcloud_agent to get high-level intent/info
-    endpoint = f"{config.APISIX_URL}/agent/gcloud/execute"
+    # [Refactor] Using direct container name to avoid circular APISIX dependency/timeouts
+    endpoint = "http://finopti-gcloud-agent:5001/execute"
     # [Refactor] Semantic prompt focusing on the specific user's permissions
     prompt = f"Check the IAM policy for project {project_id} and identify all roles assigned to user {member_email}. Return the specific bindings for this user in JSON format."
     
     try:
+        from context import _auth_token_ctx
+        token = _auth_token_ctx.get()
+        headers = {
+            "X-User-Email": member_email,
+            "Content-Type": "application/json"
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
         response = requests.post(endpoint, json={
             "prompt": prompt,
             "user_email": member_email,
             "project_id": project_id
-        }, timeout=30)
+        }, headers=headers, timeout=120)
         
         response.raise_for_status()
         res_data = response.json()
         
         # The gcloud agent returns results in a 'response' field or 'data.response'
         policy_text = res_data.get("response", "")
+        
+        logger.info(f"Raw policy text from gcloud_agent: {policy_text[:500]}...")
+        
         if not policy_text and "data" in res_data:
             policy_text = res_data["data"].get("response", "")
             
@@ -57,11 +70,24 @@ async def check_gcp_permissions(project_id: str, member_email: str) -> Dict[str,
 
         # Extract roles for the user
         user_roles = []
-        if "bindings" in policy:
-            for binding in policy["bindings"]:
+        
+        # Handle list of bindings or dict with 'bindings' key
+        bindings = []
+        if isinstance(policy, list):
+            bindings = policy
+        elif isinstance(policy, dict):
+            bindings = policy.get("bindings", [])
+            
+        for binding in bindings:
+            if isinstance(binding, dict):
                 members = binding.get("members", [])
                 if any(member_email in member for member in members):
-                    user_roles.append(binding["role"])
+                    user_roles.append(binding.get("role"))
+        
+        # [FIX] Deduplicate and filter None
+        user_roles = list(set([r for r in user_roles if r]))
+        
+        logger.info(f"Extracted roles for {member_email}: {user_roles}")
         
         return {
             "success": True,

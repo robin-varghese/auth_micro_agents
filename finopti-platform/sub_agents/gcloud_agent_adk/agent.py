@@ -18,10 +18,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.plugins import ReflectAndRetryToolPlugin
-from google.adk.plugins.bigquery_agent_analytics_plugin import (
-    BigQueryAgentAnalyticsPlugin,
-    BigQueryLoggerConfig
-)
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 from opentelemetry import trace, propagate
@@ -73,26 +69,13 @@ def create_app(model_name: str = None) -> App:
         
     gcloud_agent = create_gcloud_agent(model_name)
 
-    # Configure Analytics
-    bq_plugin = BigQueryAgentAnalyticsPlugin(
-        project_id=config.GCP_PROJECT_ID,
-        dataset_id=os.getenv("BQ_ANALYTICS_DATASET", "agent_analytics"),
-        table_id=config.BQ_ANALYTICS_TABLE,
-        config=BigQueryLoggerConfig(
-            enabled=os.getenv("BQ_ANALYTICS_ENABLED", "true").lower() == "true",
-            batch_size=1
-        ),
-        location="US"
-    )
-
     return App(
         name="finopti_gcloud_agent",
         root_agent=gcloud_agent,
         plugins=[
             ReflectAndRetryToolPlugin(
                 max_retries=int(os.getenv("REFLECT_RETRY_MAX_ATTEMPTS", "3"))
-            ),
-            bq_plugin
+            )
         ]
     )
 

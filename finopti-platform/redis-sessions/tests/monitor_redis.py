@@ -20,6 +20,11 @@ Usage Examples
 4. Monitor a custom channel pattern:
    $ python3 monitor_redis.py --channel "system:*"
 
+5. Monitor a specific session:
+   $ python3 monitor_redis.py 
+   --session-id 519152d5ce3947c08e7edb53e5e2a15e 
+   --channel all
+
 Arguments
 ---------
 --session-id <ID>   : Only show events matching this Session ID.
@@ -82,13 +87,18 @@ def monitor_redis():
                 try:
                     data = json.loads(data_str)
                     
-                    # session_id check
-                    msg_session_id = data.get("session_id")
+                    # session_id check - look in top level or in header
+                    msg_session_id = data.get("session_id") or data.get("header", {}).get("session_id")
                     
+                    # If still not found, try to extract from channel name (session_<uuid>)
+                    if not msg_session_id and "session_" in channel:
+                        msg_session_id = channel.split("session_")[-1]
+
                     # Filter logic
                     if session_filter:
                         # If a filter is set, strict matching
-                        if str(msg_session_id) != session_filter:
+                        # We also check if the filter is contained in the channel or session ID
+                        if session_filter != msg_session_id and session_filter not in channel:
                             continue
                             
                     print(f"[{timestamp}] 📦 Channel: {channel}")

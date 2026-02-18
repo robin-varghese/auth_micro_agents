@@ -100,6 +100,19 @@ async def process_request_async(
     session_id: Optional[str] = None
 ) -> Dict[str, Any]:
     # ... (existing trace logic)
+    
+    # --- CONTEXT INITIALIZATION ---
+    # Set context variables for Redis publishing and progress reporting
+    _session_id_ctx.set(session_id)
+    _user_email_ctx.set(user_email)
+    
+    # Initialize Redis Publisher if available
+    if RedisEventPublisher and session_id:
+        try:
+            pub = RedisEventPublisher("Orchestrator", "System Coordinator")
+            _redis_publisher_ctx.set(pub)
+        except Exception as e:
+            logger.warning(f"Failed to initialize Redis publisher: {e}")
 
     try:
         # --- NEW STATEFUL LOGIC ---
@@ -265,13 +278,8 @@ async def process_request_async(
             session_id=session_id
         )
         
-        # Publish routing event
-        if RedisEventPublisher and session_id:
-            try:
-                pub = RedisEventPublisher("Orchestrator", "System Coordinator")
-                _redis_publisher_ctx.set(pub)
-                await _report_progress(f"Routing request to {target_agent}...", event_type="STATUS_UPDATE", icon="🔀", display_type="step_progress")
-            except Exception: pass
+        # [FIX] Simplified progress reporting using context-bound publisher
+        await _report_progress(f"Routing request to {target_agent}...", event_type="STATUS_UPDATE", icon="🔀", display_type="step_progress")
         
         # Propagate error if present
         if not agent_response.get('success', False):

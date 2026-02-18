@@ -392,6 +392,25 @@
     "_source_path": "sub_agents/googlesearch_agent_adk"
   },
   {
+    "agent_id": "iam_verification_specialist",
+    "name": "IAM Verification Specialist",
+    "description": "Validates user permissions and provides remediation commands for GCP access.",
+    "keywords": [
+      "iam",
+      "permissions",
+      "access",
+      "gcloud iam",
+      "identity",
+      "authorization"
+    ],
+    "capabilities": [
+      "Check GCP IAM policy bindings",
+      "Validate permissions for troubleshooting roles",
+      "Generate remediation gcloud commands"
+    ],
+    "_source_path": "sub_agents/iam_agent_adk"
+  },
+  {
     "agent_id": "filesystem_specialist",
     "display_name": "Filesystem Specialist",
     "icon": "folder_open",

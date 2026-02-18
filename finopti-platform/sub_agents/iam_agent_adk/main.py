@@ -25,6 +25,12 @@ def execute():
     user_email = data.get('user_email')
     project_id = data.get('project_id')
     
+    # Extract Auth Token
+    auth_token = None
+    auth_header = request.headers.get('Authorization')
+    if auth_header and auth_header.startswith("Bearer "):
+        auth_token = auth_header.split(" ")[1]
+
     try:
         # Run async process in a new event loop for this thread
         loop = asyncio.new_event_loop()
@@ -34,7 +40,8 @@ def execute():
                 prompt, 
                 user_email=user_email, 
                 session_id=session_id,
-                project_id=project_id
+                project_id=project_id,
+                auth_token=auth_token
             ))
             return jsonify({
                 "success": True,

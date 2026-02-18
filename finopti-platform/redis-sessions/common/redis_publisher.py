@@ -43,7 +43,8 @@ class RedisEventPublisher:
                 header=EventHeader(
                     trace_id=trace_id,
                     agent_name=self.agent_name,
-                    agent_role=self.agent_role
+                    agent_role=self.agent_role,
+                    session_id=session_id
                 ),
                 type=msg_type,
                 payload=EventPayload(

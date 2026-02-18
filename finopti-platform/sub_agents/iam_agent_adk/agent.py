@@ -28,6 +28,7 @@ from context import (
     _redis_publisher_ctx, 
     _session_id_ctx, 
     _user_email_ctx, 
+    _auth_token_ctx,
     _report_progress,
     RedisEventPublisher
 )
@@ -57,10 +58,12 @@ def create_app(model_name=None):
     )
 
 # 4. Request Handler
-async def process_request(prompt: str, user_email: str = None, session_id: str = "default", project_id: str = None):
+async def process_request(prompt: str, user_email: str = None, session_id: str = "default", project_id: str = None, auth_token: str = None):
     # Context Propagation
     _session_id_ctx.set(session_id)
     _user_email_ctx.set(user_email)
+    if auth_token:
+        _auth_token_ctx.set(auth_token)
     
     # Setup Redis Publisher if available
     pub = None

@@ -1,11 +1,10 @@
-"""
-GCloud Agent Tools
-"""
 import logging
 from typing import Dict, Any, List
 
 from context import _auth_token_ctx
 from mcp_client import GCloudMCPClient
+
+logger = logging.getLogger(__name__)
 
 async def execute_gcloud_command(args: List[str]) -> Dict[str, Any]:
     """
@@ -19,6 +18,7 @@ async def execute_gcloud_command(args: List[str]) -> Dict[str, Any]:
     """
     # Retrieve Auth Token from Context
     auth_token = _auth_token_ctx.get()
+    logger.info(f"Retrieved auth_token from context in tool: {auth_token[:10] if auth_token else 'None'}...")
     
     try:
         # Use Ephemeral Client per request
