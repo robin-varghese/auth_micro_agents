@@ -59,7 +59,7 @@ def create_sre_agent(model_name: str = None) -> Agent:
 # -------------------------------------------------------------------------
 # RUNNER
 # -------------------------------------------------------------------------
-async def process_request(prompt_or_payload: Any, session_id: str = None, user_email: str = None):
+async def process_request(prompt_or_payload: Any, session_id: str = None, user_email: str = None, auth_token: str = None):
     # Ensure API Key state is consistent
     if config.GOOGLE_API_KEY and not (config.GOOGLE_GENAI_USE_VERTEXAI and config.GOOGLE_GENAI_USE_VERTEXAI.upper() == "TRUE"):
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
@@ -136,6 +136,14 @@ async def process_request(prompt_or_payload: Any, session_id: str = None, user_e
     if user_email:
         _user_email_ctx.set(user_email)
         
+    if auth_token:
+        try:
+            from context import _auth_token_ctx
+            _auth_token_ctx.set(auth_token)
+        except ImportError:
+            pass
+        os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] = auth_token
+        
     # Initialize Redis Publisher for this context
     try:
         if RedisEventPublisher:
@@ -188,11 +196,12 @@ async def process_request(prompt_or_payload: Any, session_id: str = None, user_e
             execution_trace = []
             try:
                 async with InMemoryRunner(app=app_instance) as runner:
-                    sid = "default"
-                    await runner.session_service.create_session(session_id=sid, user_id="user", app_name="mats_sre_agent_app")
+                    sid = session_id or "default"
+                    current_user_email = user_email or _user_email_ctx.get() or "unknown"
+                    await runner.session_service.create_session(session_id=sid, user_id=current_user_email, app_name="mats_sre_agent_app")
                     msg = types.Content(parts=[types.Part(text=prompt)])
                     
-                    async for event in runner.run_async(user_id="user", session_id=sid, new_message=msg):
+                    async for event in runner.run_async(user_id=current_user_email, session_id=sid, new_message=msg):
                         # Capture Trace Events
                         
                         # 1. Thought (Model generating plan)

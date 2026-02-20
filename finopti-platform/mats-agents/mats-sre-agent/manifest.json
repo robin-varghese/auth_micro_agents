@@ -1,6 +1,7 @@
 {
     "agent_id": "mats-sre-agent",
     "display_name": "SRE Agent",
+    "name": "SRE Agent",
     "icon": "analytics",
     "description": "Senior Site Reliability Engineer. Triages incidents by analyzing logs and metrics.",
     "capabilities": [

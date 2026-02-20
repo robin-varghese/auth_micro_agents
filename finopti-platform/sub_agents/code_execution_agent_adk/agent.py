@@ -76,7 +76,7 @@ def create_app(model_name: str = None):
         plugins=[]
     )
 
-async def send_message_async(prompt: str, user_email: str = None, session_id: str = "default") -> str:
+async def send_message_async(prompt: str, user_email: str = None, session_id: str = "default", auth_token: str = None) -> str:
     # --- CONTEXT SETTING ---
     _session_id_ctx.set(session_id)
     _user_email_ctx.set(user_email or "unknown")
@@ -136,12 +136,12 @@ async def send_message_async(prompt: str, user_email: str = None, session_id: st
     finally:
         pass
 
-def send_message(prompt: str, user_email: str = None, session_id: str = "default") -> str:
-    return asyncio.run(send_message_async(prompt, user_email, session_id))
+def send_message(prompt: str, user_email: str = None, session_id: str = "default", auth_token: str = None) -> str:
+    return asyncio.run(send_message_async(prompt, user_email, session_id, auth_token))
 
-def process_request(prompt: str, user_email: str = None, session_id: str = "default") -> str:
+def process_request(prompt: str, user_email: str = None, session_id: str = "default", auth_token: str = None) -> str:
     """Synchronous wrapper for run_agent."""
-    return send_message(prompt, user_email, session_id)
+    return send_message(prompt, user_email, session_id, auth_token)
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:

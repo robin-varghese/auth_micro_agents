@@ -1,5 +1,6 @@
 {
     "agent_id": "iam_verification_specialist",
+    "display_name": "IAM Verification Specialist",
     "name": "IAM Verification Specialist",
     "description": "Validates user permissions and provides remediation commands for GCP access.",
     "keywords": [

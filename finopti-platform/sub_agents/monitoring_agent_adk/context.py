@@ -60,6 +60,7 @@ async def _report_progress(message: str, event_type: str = "INFO", icon: str = N
              if not display_type:
                  display_type = "markdown" if mapped_type == "THOUGHT" else "console_log"
 
+             logger.info(f"Reporting {event_type} event: {message[:100]}...")
              publisher.publish_event(
                  session_id=session_id, user_id=user_id, trace_id="unknown",
                  msg_type=mapped_type, message=message,

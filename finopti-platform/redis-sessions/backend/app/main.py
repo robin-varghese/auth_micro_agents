@@ -45,8 +45,8 @@ async def init_session(request: SessionInitRequest):
     Logic: Defines the canonical channel name.
     """
     try:
-        # Canonical format: channel:user_{user_id}:session_{session_id}
-        channel_name = f"channel:user_{request.user_id}:session_{request.session_id}"
+        clean_session_id = request.session_id.replace("session_", "") if request.session_id.startswith("session_") else request.session_id
+        channel_name = f"channel:user_{request.user_id}:session_{clean_session_id}"
         
         # We don't strictly *need* to creation a channel in Redis (it's dynamic),
         # but we can set a key to track active sessions or metadata.
@@ -104,7 +104,8 @@ async def publish_event(request: PublishEventRequest):
     Validates the event schema before pushing to Redis.
     """
     try:
-        channel_name = f"channel:user_{request.user_id}:session_{request.session_id}"
+        clean_session_id = request.session_id.replace("session_", "") if request.session_id.startswith("session_") else request.session_id
+        channel_name = f"channel:user_{request.user_id}:session_{clean_session_id}"
         
         # Publish request.event.model_dump_json()
         await redis_client.publish(channel_name, request.event.model_dump_json())
@@ -142,7 +143,8 @@ async def stream_events(user_id: str, session_id: str):
     Task 3: Message Listener (Server-Sent Events)
     Streams events from Redis to the client.
     """
-    channel_name = f"channel:user_{user_id}:session_{session_id}"
+    clean_session_id = session_id.replace("session_", "") if session_id.startswith("session_") else session_id
+    channel_name = f"channel:user_{user_id}:session_{clean_session_id}"
     logger.info(f"Starting stream for {channel_name}")
     
     return StreamingResponse(
@@ -160,7 +162,8 @@ async def get_session_context(session_id: str):
     Retrieve the structured troubleshooting context for a session.
     """
     try:
-        context_key = f"context:session:{session_id}"
+        clean_session_id = session_id.replace("session_", "") if session_id.startswith("session_") else session_id
+        context_key = f"context:session:{clean_session_id}"
         data = await redis_client.get(context_key)
         if not data:
             return TroubleshootingSessionContext()
@@ -175,7 +178,8 @@ async def update_session_context(session_id: str, context: TroubleshootingSessio
     Update the structured troubleshooting context for a session.
     """
     try:
-        context_key = f"context:session:{session_id}"
+        clean_session_id = session_id.replace("session_", "") if session_id.startswith("session_") else session_id
+        context_key = f"context:session:{clean_session_id}"
         await redis_client.setex(context_key, 86400, context.model_dump_json())
         return {"status": "updated", "session_id": session_id}
     except Exception as e:

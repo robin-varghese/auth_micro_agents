@@ -1,6 +1,7 @@
 {
     "agent_id": "browser_automation_specialist",
     "display_name": "Puppeteer Browser Automation Specialist",
+    "name": "Puppeteer Browser Automation Specialist",
     "icon": "browser",
     "description": "Specialist for automating browser interactions, navigating, clicking, and extracting data using Puppeteer.",
     "capabilities": [

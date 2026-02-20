@@ -7,7 +7,7 @@ AGENT_ROUTE = "/agent/code/execute"
 PROMPT = "Calculate the factorial of 5 using python code"
 
 def verify():
-    url = f"{APISIX_URL}{AGENT_ROUTE}"
+    url = f"{APISIX_URL}/agent/code_execution/execute"
     print(f"Sending prompt to {url}: {PROMPT}")
     headers = {}
     token = os.getenv("GOOGLE_OAUTH_ACCESS_TOKEN")

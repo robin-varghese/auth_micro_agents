@@ -65,16 +65,27 @@ def upload_rca_to_gcs(filename: str, content: str, bucket_name: str = "rca-repor
             "user_email": "mats-architect@system.local" 
         }
 
+        headers = {}
+        
         # Inject Trace Headers
         try:
             from common.observability import FinOptiObservability
-            headers = {}
             FinOptiObservability.inject_trace_to_headers(headers)
-            payload["headers"] = headers
         except ImportError:
             pass
+            
+        # Inject Auth Token
+        try:
+            from context import _auth_token_ctx
+            token = _auth_token_ctx.get()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+        except ImportError:
+            pass
+            
+        payload["headers"] = headers
         
-        response = requests.post(url, json=payload, timeout=300)
+        response = requests.post(url, json=payload, headers=headers, timeout=300)
         response.raise_for_status()
         data = response.json()
         

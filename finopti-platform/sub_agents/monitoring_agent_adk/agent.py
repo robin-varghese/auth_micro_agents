@@ -87,6 +87,9 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
         _user_email_ctx.set(user_email or "unknown")
         if auth_token:
             _auth_token_ctx.set(auth_token)
+            # [NEW] Robust fallback for tool context propagation
+            os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] = auth_token
+            logger.info("Set CLOUDSDK_AUTH_ACCESS_TOKEN in environment for tool propagation")
 
         span = trace.get_current_span()
         if span and span.is_recording():
@@ -136,11 +139,11 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
                 run_func=_run_once,
                 context_name="Monitoring Agent"
             )
-        finally:
-            pass
 
     except Exception as e:
         return f"Error: {str(e)}"
+    finally:
+        pass
 
 def send_message(prompt: str, user_email: str = None, project_id: str = None, session_id: str = "default", auth_token: str = None) -> str:
     return asyncio.run(send_message_async(prompt, user_email, project_id, session_id, auth_token))

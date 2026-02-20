@@ -16,20 +16,42 @@ async def query_logs(project_id: str, filter: str = "", limit: int = 10, minutes
         minutes_ago = 10080
         
     auth_token = _auth_token_ctx.get()
+    if not auth_token:
+        import os
+        auth_token = os.environ.get("CLOUDSDK_AUTH_ACCESS_TOKEN")
     try:
         async with MonitoringMCPClient(auth_token=auth_token) as client:
-            return await client.call_tool("query_logs", {
+            result = await client.call_tool("query_logs", {
                 "project_id": project_id, 
                 "filter": filter, 
                 "limit": limit,
                 "minutes_ago": minutes_ago
             })
+            
+            # [NEW] Report Log Observation for the "Eye" icon in UI
+            from context import _report_progress
+            import json
+            
+            # Check for output or standard JSON result
+            log_data = result.get("output", str(result))
+            # limit for UI display
+            summary = log_data[:2000] + "..." if len(log_data) > 2000 else log_data
+            
+            await _report_progress(
+                f"Real Log Extracts from {project_id}:\n\n{summary}",
+                event_type="OBSERVATION"
+            )
+            
+            return result
     except Exception as e:
         logger.error(f"Query Logs failed: {e}")
         return {"error": str(e)}
 
 async def list_metrics(project_id: str, filter: str = "") -> Dict[str, Any]:
     auth_token = _auth_token_ctx.get()
+    if not auth_token:
+        import os
+        auth_token = os.environ.get("CLOUDSDK_AUTH_ACCESS_TOKEN")
     try:
         async with MonitoringMCPClient(auth_token=auth_token) as client:
             return await client.call_tool("list_metrics", {"project_id": project_id, "filter": filter})

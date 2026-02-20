@@ -260,7 +260,13 @@ def render_event(event_data, status_container):
 
         # 5. Console Log
         elif display_type == "console_log":
-            with st.expander(f"{icon} Logs"):
+            label = "Logs"
+            if icon == "👁️":
+                label = "Data Extract (Manual Analysis)"
+            elif icon == "🛠️":
+                label = "Tool Execution Details"
+            
+            with st.expander(f"{icon} {label}"):
                  st.text(message)
 
         # 6. Alerts

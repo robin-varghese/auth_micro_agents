@@ -95,7 +95,7 @@ def create_app(model_name: str = None):
         ]
     )
 
-async def send_message_async(prompt: str, user_email: str = None, token: str = None, session_id: str = "default") -> str:
+async def send_message_async(prompt: str, user_email: str = None, token: str = None, session_id: str = "default", auth_token: str = None) -> str:
     # --- CONTEXT SETTING ---
     _session_id_ctx.set(session_id)
     _user_email_ctx.set(user_email or "unknown")
@@ -154,8 +154,8 @@ async def send_message_async(prompt: str, user_email: str = None, token: str = N
         await mcp.close()
         _mcp_ctx.reset(token_reset)
 
-def send_message(prompt: str, user_email: str = None, token: str = None, session_id: str = "default") -> str:
-    return asyncio.run(send_message_async(prompt, user_email, token, session_id))
+def send_message(prompt: str, user_email: str = None, token: str = None, session_id: str = "default", auth_token: str = None) -> str:
+    return asyncio.run(send_message_async(prompt, user_email, token, session_id, auth_token))
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:

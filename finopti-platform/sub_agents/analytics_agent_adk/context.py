@@ -28,7 +28,7 @@ _redis_publisher_ctx: ContextVar[Optional["RedisEventPublisher"]] = ContextVar("
 _session_id_ctx: ContextVar[Optional[str]] = ContextVar("session_id", default=None)
 _user_email_ctx: ContextVar[Optional[str]] = ContextVar("user_email", default=None)
 
-async def _report_progress(message: str, event_type: str = "INFO"):
+async def _report_progress(message: str, event_type: str = "INFO", icon: str = None, display_type: str = None):
     """Helper to send progress to Orchestrator AND Redis"""
     job_id = os.environ.get("MATS_JOB_ID")
     orchestrator_url = os.environ.get("MATS_ORCHESTRATOR_URL", "http://mats-orchestrator:8084")
@@ -57,7 +57,7 @@ async def _report_progress(message: str, event_type: str = "INFO"):
              publisher.publish_event(
                  session_id=session_id, user_id=user_id, trace_id="unknown",
                  msg_type=mapped_type, message=message,
-                 display_type="markdown" if mapped_type == "THOUGHT" else "console_log",
+                 display_type or display_type="markdown" if mapped_type == "THOUGHT" else "console_log",
                  icon=icons.get(event_type, "📈")
              )
         except Exception as e:

@@ -25,34 +25,63 @@ ARCHITECT_AGENT_URL = os.getenv("ARCHITECT_AGENT_URL", "http://mats-architect-ag
 GCLOUD_AGENT_URL = os.getenv("GCLOUD_AGENT_URL", "http://finopti-gcloud-agent:5001")
 
 
-async def _http_post(url: str, data: Dict[str, Any], timeout: int = 900) -> Dict[str, Any]:
+async def _http_post(url: str, data: Dict[str, Any], headers: Dict[str, str] = None, timeout: int = 900) -> Dict[str, Any]:
     """
     Make HTTP POST request with error handling.
     
     Raises:
         NonRetryableError: For 4xx HTTP errors
-        RetryableError: For 5xx HTTP errors
+        Exception: For 5xx HTTP errors or timeouts
     """
+    import time as _time
+    full_url = f"{url}/chat"
+    call_start = _time.monotonic()
+    logger.info(f"_http_post → {full_url} | payload_keys={list(data.keys())} | timeout={timeout}s")
+
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(
-                f"{url}/chat",
+                full_url,
                 json=data,
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(total=timeout)
             ) as resp:
+                elapsed = _time.monotonic() - call_start
                 if resp.status >= 500:
                     text = await resp.text()
+                    logger.error(
+                        f"_http_post {full_url}: HTTP {resp.status} server error after {elapsed:.1f}s | "
+                        f"body={text[:500]}"
+                    )
                     raise Exception(f"HTTP {resp.status}: {text}")
-                    
+
                 elif resp.status >= 400:
                     text = await resp.text()
+                    logger.warning(
+                        f"_http_post {full_url}: HTTP {resp.status} client error after {elapsed:.1f}s | "
+                        f"body={text[:500]}"
+                    )
                     raise NonRetryableError(f"HTTP {resp.status}: {text}")
-                    
+
                 result = await resp.json()
+                logger.info(f"_http_post {full_url}: HTTP {resp.status} OK | elapsed={elapsed:.1f}s")
                 return result
-                
+
         except asyncio.TimeoutError:
+            elapsed = _time.monotonic() - call_start
+            logger.error(
+                f"_http_post {full_url}: Timed out after {elapsed:.1f}s (limit={timeout}s)",
+                exc_info=True
+            )
             raise Exception(f"Request to {url} timed out after {timeout}s")
+        except aiohttp.ClientConnectorError as conn_err:
+            elapsed = _time.monotonic() - call_start
+            logger.error(
+                f"_http_post {full_url}: Connection refused/unreachable after {elapsed:.1f}s | "
+                f"error={conn_err}",
+                exc_info=True
+            )
+            raise Exception(f"Cannot connect to {url}: {conn_err}")
 
 
 @trace_span("delegate_sre", kind="AGENT")
@@ -124,7 +153,13 @@ Return your findings in the following JSON format:
 """
     
     async def _call():
-        logger.info(f"[{session_id}] Delegating to SRE: {task_description[:100]}")
+        import time as _time
+        call_start = _time.monotonic()
+        logger.info(
+            f"[{session_id}] Delegating to SRE → {SRE_AGENT_URL} | "
+            f"project={project_id} | issue_type={issue_type} | "
+            f"task={task_description[:100]}"
+        )
         # Use 300s for SRE as it does heavy lifting
         payload = {"message": prompt, "session_id": session_id, "user_email": user_email}  # Pass session_id and user_email
         if job_id:
@@ -135,16 +170,23 @@ Return your findings in the following JSON format:
         if project_id:
             payload["project_id"] = project_id
             
-        # Inject Trace Headers
+        # Inject Trace Headers & Auth
         try:
             from common.observability import FinOptiObservability
             headers = {}
             FinOptiObservability.inject_trace_to_headers(headers)
+            try:
+                from context import _auth_token_ctx
+                token = _auth_token_ctx.get()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+            except ImportError:
+                pass
             payload["headers"] = headers
         except ImportError:
-            pass
+            headers = None
 
-        result = await _http_post(SRE_AGENT_URL, payload, timeout=900)
+        result = await _http_post(SRE_AGENT_URL, payload, headers=headers, timeout=900)
         response_text = result.get("response", "")
         
         # Try to parse JSON from response
@@ -162,7 +204,11 @@ Return your findings in the following JSON format:
             
             # Validate against schema
             sre_output = SREOutput(**output_dict)
-            logger.info(f"[{session_id}] SRE completed with status={sre_output.status}, confidence={sre_output.confidence}")
+            elapsed = _time.monotonic() - call_start
+            logger.info(
+                f"[{session_id}] SRE completed | status={sre_output.status} | "
+                f"confidence={sre_output.confidence} | elapsed={elapsed:.1f}s"
+            )
             
             final_output = sre_output.dict()
             # Inject execution trace from the raw API response (if present) to propagate to UI
@@ -243,22 +289,34 @@ Please investigate the code and return findings in this JSON format:
 """
     
     async def _call():
-        logger.info(f"[{session_id}] Delegating to Investigator")
+        import time as _time
+        call_start = _time.monotonic()
+        logger.info(
+            f"[{session_id}] Delegating to Investigator → {INVESTIGATOR_AGENT_URL} | "
+            f"repo={repo_url} | task={task_description[:80]}"
+        )
         payload = {"message": prompt, "session_id": session_id, "user_email": user_email}  # Pass session_id and user_email
         if job_id:
             payload["job_id"] = job_id
             payload["orchestrator_url"] = "http://mats-orchestrator:8084" 
             
-        # Inject Trace Headers
+        # Inject Trace Headers & Auth
         try:
             from common.observability import FinOptiObservability
             headers = {}
             FinOptiObservability.inject_trace_to_headers(headers)
+            try:
+                from context import _auth_token_ctx
+                token = _auth_token_ctx.get()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+            except ImportError:
+                pass
             payload["headers"] = headers
         except ImportError:
-            pass
+            headers = None
             
-        result = await _http_post(INVESTIGATOR_AGENT_URL, payload, timeout=900)
+        result = await _http_post(INVESTIGATOR_AGENT_URL, payload, headers=headers, timeout=900)
         response_text = result.get("response", "")
         
         import json
@@ -272,7 +330,10 @@ Please investigate the code and return findings in this JSON format:
                 
             output_dict = json.loads(json_str)
             inv_output = InvestigatorOutput(**output_dict)
-            logger.info(f"[{session_id}] Investigator completed with status={inv_output.status}")
+            elapsed = _time.monotonic() - call_start
+            logger.info(
+                f"[{session_id}] Investigator completed | status={inv_output.status} | elapsed={elapsed:.1f}s"
+            )
             return inv_output.dict()
             
         except (json.JSONDecodeError, ValidationError) as e:
@@ -374,16 +435,23 @@ Also return your final agent response in this specific JSON wrapper:
         logger.info(f"[{session_id}] Delegating to Architect for RCA synthesis")
         payload = {"message": prompt, "session_id": session_id, "user_email": user_email}  # Pass session_id and user_email
         
-        # Inject Trace Headers
+        # Inject Trace Headers & Auth
         try:
             from common.observability import FinOptiObservability
             headers = {}
             FinOptiObservability.inject_trace_to_headers(headers)
+            try:
+                from context import _auth_token_ctx
+                token = _auth_token_ctx.get()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+            except ImportError:
+                pass
             payload["headers"] = headers
         except ImportError:
-            pass
+            headers = None
 
-        result = await _http_post(ARCHITECT_AGENT_URL, payload, timeout=900)
+        result = await _http_post(ARCHITECT_AGENT_URL, payload, headers=headers, timeout=900)
         response_text = result.get("response", "")
         
         import json
@@ -455,6 +523,13 @@ async def delegate_to_operational_agent(
             from common.observability import FinOptiObservability
             headers = {}
             FinOptiObservability.inject_trace_to_headers(headers)
+            try:
+                from context import _auth_token_ctx
+                token = _auth_token_ctx.get()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+            except ImportError:
+                pass
             # Some agents might check headers directly, others via payload
             # For standard Flask wrapper in gcloud_agent, headers are propagated via request context
             # But we can't easily set headers in _http_post helper without modifying it.
@@ -463,9 +538,9 @@ async def delegate_to_operational_agent(
             # GCloud agent's main.py checks X-Request-ID, but not W3C traceparent essentially?
             # Actually, `send_message` in agent.py uses InMemoryRunner which creates a new trace?
             # Let's just send the payload.
-            pass 
+            payload["headers"] = headers
         except ImportError:
-            pass
+            headers = None
 
         # Operational agents use /execute endpoint
         # We need to manually construct the URL since _http_post appends /chat
@@ -477,6 +552,7 @@ async def delegate_to_operational_agent(
             async with session.post(
                 f"{agent_url}/execute",
                 json=payload,
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(total=600)
             ) as resp:
                 if resp.status >= 500:
@@ -548,13 +624,20 @@ async def delegate_to_remediation(
             from common.observability import FinOptiObservability
             headers = {}
             FinOptiObservability.inject_trace_to_headers(headers)
+            try:
+                from context import _auth_token_ctx
+                token = _auth_token_ctx.get()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+            except ImportError:
+                pass
             # Use headers? Remediation Agent is Flask, accepts standard headers?
             # It accepts them via `request.headers` in main.py
             # But we use `aiohttp` in `_http_post` style or direct?
             # Remediation Agent `main.py` uses `request.headers`.
-            pass
+            payload["headers"] = headers
         except ImportError:
-            pass
+            headers = None
 
         # Direct AIOHTTP call to /execute
         async with aiohttp.ClientSession() as client:
@@ -562,6 +645,7 @@ async def delegate_to_remediation(
             async with client.post(
                 f"{REMEDIATION_AGENT_URL}/execute",
                 json=payload,
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(total=600)
             ) as resp:
                 if resp.status >= 400:

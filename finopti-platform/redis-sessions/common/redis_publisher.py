@@ -64,7 +64,8 @@ class RedisEventPublisher:
             # ADK might not strictly pass user_id in all events, so we might need it passed in.
             
             safe_user = user_id if user_id else "anonymous"
-            channel_name = f"channel:user_{safe_user}:session_{session_id}"
+            clean_session_id = session_id.replace("session_", "") if session_id and session_id.startswith("session_") else session_id
+            channel_name = f"channel:user_{safe_user}:session_{clean_session_id}"
 
             subscribers = self.redis_client.publish(channel_name, event.model_dump_json())
             logger.info(f"Published to {channel_name}: {subscribers} subscribers")

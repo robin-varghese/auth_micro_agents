@@ -54,14 +54,16 @@ async def _report_progress(message: str, event_type: str = "INFO", icon: str = N
                  "ERROR": "❌", "THOUGHT": "🧠"
              }
              final_icon = icon or default_icons.get(event_type, "🤖")
-             final_display_type = display_type or ("markdown" if mapped_type == "THOUGHT" else "console_log")
+             if not display_type:
+                 display_type = "markdown" if mapped_type == "THOUGHT" else "console_log"
              
+             logger.info(f"Reporting {event_type} event: {message[:100]}...")
              user_id = _user_email_ctx.get() or "gcloud"
              
              publisher.publish_event(
                  session_id=session_id, user_id=user_id, trace_id="unknown",
                  msg_type=mapped_type, message=message,
-                 display_type=final_display_type,
+                 display_type=display_type,
                  icon=final_icon
              )
         except Exception as e:

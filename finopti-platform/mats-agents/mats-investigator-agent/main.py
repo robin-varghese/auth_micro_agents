@@ -1,11 +1,15 @@
 
 import os
+import time
 import logging
 from flask import Flask, request, jsonify
 import asyncio
 from agent import process_request
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger("mats-investigator-main")
 
 app = Flask(__name__)
@@ -17,23 +21,50 @@ def health():
 @app.route('/chat', methods=['POST'])
 def chat():
     """
-    Endpoint for Orchestrator to trigger investigation.
-    Payload: {"message": "...SRE context + Repo Spec..."}
+    Endpoint for Orchestrator to trigger code analysis.
+    Payload: {"message": "...SRE context + Repo Spec...", "session_id": "...", "user_email": "..."}
     """
+    request_start = time.monotonic()
     data = request.json
+
     if not data or 'message' not in data:
+        logger.warning("Investigator /chat called without 'message' field in payload")
         return jsonify({"error": "Message is required"}), 400
 
     user_message = data['message']
-    session_id = data.get('session_id')  # Extract session_id
-    user_email = data.get('user_email')  # Extract user_email for Redis channel
-    logger.info(f"Received request: {len(user_message)} chars. Session: {session_id}, User: {user_email}")
+    session_id = data.get('session_id')
+    user_email = data.get('user_email')
+
+    # Extract Auth Token
+    auth_token = None
+    auth_header = request.headers.get('Authorization')
+    if auth_header and auth_header.startswith("Bearer "):
+        auth_token = auth_header.split(" ")[1]
+
+    logger.info(
+        f"[{session_id}] Investigator /chat: received | "
+        f"user={user_email} | message_length={len(user_message)} chars | "
+        f"has_auth_token={bool(auth_token)}"
+    )
 
     try:
-        response = asyncio.run(process_request(user_message, session_id=session_id, user_email=user_email))
+        response = asyncio.run(
+            process_request(user_message, session_id=session_id, user_email=user_email, auth_token=auth_token)
+        )
+        elapsed = time.monotonic() - request_start
+        response_len = len(response) if response else 0
+        logger.info(
+            f"[{session_id}] Investigator /chat: success | "
+            f"response_length={response_len} chars | elapsed={elapsed:.1f}s"
+        )
         return jsonify({"response": response})
     except Exception as e:
-        logger.error(f"Error processing request: {e}")
+        elapsed = time.monotonic() - request_start
+        logger.error(
+            f"[{session_id}] Investigator /chat: FAILED after {elapsed:.1f}s | "
+            f"error_type={type(e).__name__} | error={e}",
+            exc_info=True
+        )
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":

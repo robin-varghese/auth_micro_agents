@@ -92,6 +92,9 @@ async def send_message_async(prompt: str, user_email: str = None, session_id: st
         _user_email_ctx.set(user_email or "unknown")
         if auth_token:
             _auth_token_ctx.set(auth_token)
+            # [NEW] Robust fallback for tool context propagation
+            os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] = auth_token
+            logger.info("Set CLOUDSDK_AUTH_ACCESS_TOKEN in environment for tool propagation")
 
         span = trace.get_current_span()
         if span and span.is_recording():

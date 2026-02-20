@@ -1,6 +1,7 @@
 {
     "agent_id": "analytics_specialist",
     "display_name": "Google Analytics 4 Specialist",
+    "name": "Google Analytics 4 Specialist",
     "icon": "analytics",
     "description": "Analyzes web traffic, user sessions, and conversion metrics using Google Analytics 4 Data API.",
     "capabilities": [

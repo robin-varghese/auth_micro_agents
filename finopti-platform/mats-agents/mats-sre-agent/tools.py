@@ -55,14 +55,25 @@ async def read_logs(project_id: str, filter_str: str, hours_ago: int = 48) -> Di
         "project_id": project_id
     }
     
+    headers = {}
+    
     # Inject Trace Headers
     try:
         from common.observability import FinOptiObservability
-        headers = {}
         FinOptiObservability.inject_trace_to_headers(headers)
-        payload["headers"] = headers
     except ImportError:
         pass
+
+    # Inject Auth Token
+    try:
+        from context import _auth_token_ctx
+        token = _auth_token_ctx.get()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+    except ImportError:
+        pass
+        
+    payload["headers"] = headers
         
     logger.info(f"Calling Monitoring Agent at {url}")
     
@@ -70,7 +81,7 @@ async def read_logs(project_id: str, filter_str: str, hours_ago: int = 48) -> Di
         loop = asyncio.get_running_loop()
         
         def _call_svc():
-            resp = requests.post(url, json=payload, timeout=120) # 2 min timeout for monitoring agent
+            resp = requests.post(url, json=payload, headers=headers, timeout=120) # 2 min timeout for monitoring agent
             return resp
             
         response = await loop.run_in_executor(None, _call_svc)
@@ -82,9 +93,6 @@ async def read_logs(project_id: str, filter_str: str, hours_ago: int = 48) -> Di
         
         # monitoring agent returns {"response": "..."} usually
         agent_response = data.get("response", str(data))
-        
-        summary_text = agent_response[:1000] + "..." if len(agent_response) > 1000 else agent_response
-        await _report_progress(f"Monitoring Agent returned results:\n{summary_text}", "OBSERVATION")
         
         return {
             "summary": agent_response, 

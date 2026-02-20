@@ -100,7 +100,11 @@ class InvestigationSession:
     session_id: str = field(default_factory=lambda: str(uuid4()))
     user_id: str = "default"
     project_id: Optional[str] = None
+    application_name: Optional[str] = None
+    environment: Optional[str] = None
     repo_url: Optional[str] = None
+    repo_branch: Optional[str] = None
+    github_pat: Optional[str] = None
     
     # Workflow tracking
     workflow: WorkflowState = field(default_factory=WorkflowState)
@@ -194,7 +198,16 @@ class InvestigationSession:
 _sessions: Dict[str, InvestigationSession] = {}
 
 
-async def create_session(user_id: str, project_id: str, repo_url: str, provided_session_id: str = None) -> InvestigationSession:
+async def create_session(
+    user_id: str, 
+    project_id: str, 
+    repo_url: str, 
+    provided_session_id: str = None,
+    application_name: str = None,
+    environment: str = None,
+    repo_branch: str = None,
+    github_pat: str = None
+) -> InvestigationSession:
     """Create a new investigation session
     
     Args:
@@ -202,29 +215,28 @@ async def create_session(user_id: str, project_id: str, repo_url: str, provided_
         project_id: GCP project ID
         repo_url: Repository URL
         provided_session_id: Optional session ID from UI (for Phoenix tracking)
+        application_name: Application name
+        environment: Deployment environment
+        repo_branch: Git branch
+        github_pat: GitHub Personal Access Token
     """
     # Only pass session_id if provided, otherwise let dataclass generate UUID
     kwargs = {
         "user_id": user_id,
         "project_id": project_id,
-        "repo_url": repo_url
+        "repo_url": repo_url,
+        "application_name": application_name,
+        "environment": environment,
+        "repo_branch": repo_branch,
+        "github_pat": github_pat
     }
     if provided_session_id:
-        # Try to load existing session first to preserve context (RCA, findings)
-        existing = await get_session(provided_session_id)
-        if existing:
-            logger.info(f"Loaded existing session context: {provided_session_id}")
-            # Update user info if changed
-            if user_id and user_id != "default":
-                existing.user_id = user_id
-            if project_id:
-                existing.project_id = project_id
-            if repo_url:
-                existing.repo_url = repo_url
-            # Save updates
-            await update_session(existing)
-            return existing
-            
+        # CRITICAL FIX: Always use the provided_session_id as the key for a FRESH session.
+        # Do NOT load a stale session from Redis — this causes old test sessions (e.g.,
+        # `session_12345` or `robin@cloudroaster.com_session`) to be resurrected and
+        # corrupts the entire investigation context for the new request.
+        # The only valid resume path is in `mats-orchestrator/main.py` via JobManager.
+        logger.info(f"Using provided session ID for new investigation: {provided_session_id}")
         kwargs["session_id"] = provided_session_id
         
     session = InvestigationSession(**kwargs)

@@ -50,8 +50,13 @@ def execute():
         if not prompt:
             return jsonify({"error": True, "message": "Missing prompt"}), 400
             
+        auth_token = None
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith("Bearer "):
+            auth_token = auth_header.split(" ")[1]
+
         logger.info(f"Processing DB request for {user_email}")
-        response = send_message(prompt, user_email)
+        response = send_message(prompt, user_email, auth_token=auth_token)
         
         return jsonify({
             "success": True,

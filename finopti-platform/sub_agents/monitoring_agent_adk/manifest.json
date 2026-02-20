@@ -1,6 +1,7 @@
 {
     "agent_id": "cloud_monitoring_specialist",
     "display_name": "Monitoring & Observability Specialist",
+    "name": "Monitoring & Observability Specialist",
     "icon": "analytics",
     "description": "Specialist for Google Cloud Monitoring, Logging, and Trace.",
     "capabilities": [

@@ -97,7 +97,7 @@ def create_app(model_name: str = None):
         ]
     )
 
-async def send_message_async(prompt: str, user_email: str = None, project_id: str = None, session_id: str = "default") -> str:
+async def send_message_async(prompt: str, user_email: str = None, project_id: str = None, session_id: str = "default", auth_token: str = None) -> str:
     # --- CONTEXT SETTING ---
     _session_id_ctx.set(session_id)
     _user_email_ctx.set(user_email or "unknown")
@@ -152,8 +152,8 @@ async def send_message_async(prompt: str, user_email: str = None, project_id: st
     finally:
         pass # No MCP cleanup needed
 
-def send_message(prompt: str, user_email: str = None, project_id: str = None, session_id: str = "default") -> str:
-    return asyncio.run(send_message_async(prompt, user_email, project_id, session_id))
+def send_message(prompt: str, user_email: str = None, project_id: str = None, session_id: str = "default", auth_token: str = None) -> str:
+    return asyncio.run(send_message_async(prompt, user_email, project_id, session_id, auth_token))
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:

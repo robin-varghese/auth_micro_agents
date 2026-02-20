@@ -1,6 +1,7 @@
 {
     "agent_id": "code_execution_specialist",
     "display_name": "Code Execution Specialist",
+    "name": "Code Execution Specialist",
     "icon": "terminal",
     "description": "Writes and executes Python code to solve complex problems, perform data analysis, and handle computational tasks.",
     "capabilities": [

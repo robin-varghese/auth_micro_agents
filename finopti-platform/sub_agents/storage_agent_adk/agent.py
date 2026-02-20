@@ -94,10 +94,13 @@ def create_app(model_name: str = None):
         ]
     )
 
-async def send_message_async(prompt: str, user_email: str = None, session_id: str = "default") -> str:
+async def send_message_async(prompt: str, user_email: str = None, session_id: str = "default", auth_token: str = None) -> str:
     # --- CONTEXT SETTING ---
     _session_id_ctx.set(session_id)
     _user_email_ctx.set(user_email or "unknown")
+    if auth_token:
+        # [Rule 7] Sync to environment for tool stability
+        os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] = auth_token
 
     span = trace.get_current_span()
     if span and span.is_recording():
@@ -153,8 +156,8 @@ async def send_message_async(prompt: str, user_email: str = None, session_id: st
         await mcp.close()
         _mcp_ctx.reset(token_reset)
 
-def send_message(prompt: str, user_email: str = None, session_id: str = "default") -> str:
-    return asyncio.run(send_message_async(prompt, user_email, session_id))
+def send_message(prompt: str, user_email: str = None, session_id: str = "default", auth_token: str = None) -> str:
+    return asyncio.run(send_message_async(prompt, user_email, session_id, auth_token))
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:

@@ -90,10 +90,13 @@ def create_app(model_name: str = None):
         ]
     )
 
-async def send_message_async(prompt: str, user_email: str = None, project_id: str = None, session_id: str = "default") -> str:
+async def send_message_async(prompt: str, user_email: str = None, project_id: str = None, session_id: str = "default", auth_token: str = None) -> str:
     # --- CONTEXT SETTING ---
     _session_id_ctx.set(session_id)
     _user_email_ctx.set(user_email or "unknown")
+    if auth_token:
+        # [Rule 7] Sync to environment for tool stability
+        os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] = auth_token
 
     span = trace.get_current_span()
     if span and span.is_recording():

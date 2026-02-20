@@ -1,6 +1,7 @@
 {
     "agent_id": "mats-remediation-agent",
     "display_name": "Remediation Agent",
+    "name": "Remediation Agent",
     "icon": "auto_fix_high",
     "description": "Executes automated fixes, applies code patches, and triggers remediation workflows based on RCA specifications.",
     "capabilities": [

@@ -12,9 +12,10 @@ logger = logging.getLogger(__name__)
 class GCloudMCPClient:
     """Client for connecting to GCloud MCP server via Docker Stdio"""
     
-    def __init__(self, auth_token: str = None):
+    def __init__(self, auth_token: str = None, user_account: str = None):
         self.image = os.getenv('GCLOUD_MCP_DOCKER_IMAGE', 'finopti-gcloud-mcp')
         self.auth_token = auth_token
+        self.user_account = user_account
         self.process = None
         self.request_id = 0
         logger.info(f"GCloudMCPClient initialized for image: {self.image}")
@@ -40,6 +41,10 @@ class GCloudMCPClient:
         project_id = os.getenv('GCP_PROJECT_ID', '')
         if project_id:
             cmd.extend(["-e", f"CLOUDSDK_CORE_PROJECT={project_id}"])
+            
+        # Inject User Account if provided (Critical for standard gcloud usage)
+        if self.user_account:
+            cmd.extend(["-e", f"CLOUDSDK_CORE_ACCOUNT={self.user_account}"])
             
         cmd.append(self.image)
         

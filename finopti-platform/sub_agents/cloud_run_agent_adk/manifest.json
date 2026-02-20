@@ -1,6 +1,7 @@
 {
     "agent_id": "cloud_run_specialist",
     "display_name": "Cloud Run Specialist",
+    "name": "Cloud Run Specialist",
     "icon": "cloud_upload",
     "description": "Deploys and manages Cloud Run services using the Cloud Run MCP server.",
     "capabilities": [

@@ -51,9 +51,14 @@ def execute():
             return jsonify({"error": True, "message": "Missing prompt"}), 400
             
         print(f"DEBUG: Processing GitHub request for {user_email}", flush=True)  # Force output
+        auth_token = None
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith("Bearer "):
+            auth_token = auth_header.split(" ")[1]
+
         logger.info(f"Processing GitHub request for {user_email}")
         
-        response = send_message(prompt, user_email)
+        response = send_message(prompt, user_email, auth_token=auth_token)
         print(f"DEBUG: Response received: {len(str(response))} chars", flush=True)
         
         is_error = "Error processing request:" in str(response)

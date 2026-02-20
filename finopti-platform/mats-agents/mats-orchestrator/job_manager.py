@@ -20,6 +20,14 @@ class JobManager:
             cls.add_event(job_id, "SYSTEM", f"Job {status}", "orchestrator")
 
     @classmethod
+    def update_job(cls, job_id: str, updates: Dict[str, Any]):
+        """Update arbitrary job fields"""
+        if job_id in cls._jobs:
+            cls._jobs[job_id].update(updates)
+            if "status" in updates:
+                cls.add_event(job_id, "SYSTEM", f"Job status updated to {updates['status']}", "orchestrator")
+
+    @classmethod
     def fail_job(cls, job_id: str, error: str):
         if job_id in cls._jobs:
             cls._jobs[job_id]["error"] = error

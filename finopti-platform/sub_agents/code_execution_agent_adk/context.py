@@ -28,7 +28,7 @@ _redis_publisher_ctx: ContextVar[Optional["RedisEventPublisher"]] = ContextVar("
 _session_id_ctx: ContextVar[Optional[str]] = ContextVar("session_id", default=None)
 _user_email_ctx: ContextVar[Optional[str]] = ContextVar("user_email", default=None)
 
-async def _report_progress(message: str, event_type: str = "INFO"):
+async def _report_progress(message: str, event_type: str = "INFO", icon: str = None, display_type: str = None):
     """Helper to send progress to Orchestrator AND Redis"""
     job_id = os.environ.get("MATS_JOB_ID")
     orchestrator_url = os.environ.get("MATS_ORCHESTRATOR_URL", "http://mats-orchestrator:8084")
@@ -45,14 +45,16 @@ async def _report_progress(message: str, event_type: str = "INFO"):
                  "ERROR": "ERROR", "THOUGHT": "THOUGHT"
              }
              mapped_type = msg_type_map.get(event_type, "STATUS_UPDATE")
+             final_icon = icon or "⚙️"
+             final_display = display_type or ("markdown" if mapped_type == "THOUGHT" else "console_log")
              
              user_id = _user_email_ctx.get() or "code_execution_bot"
              
              publisher.publish_event(
                  session_id=session_id, user_id=user_id, trace_id="unknown",
                  msg_type=mapped_type, message=message,
-                 display_type="markdown" if mapped_type == "THOUGHT" else "console_log",
-                 icon="⚙️"
+                 display_type=final_display,
+                 icon=final_icon
              )
         except Exception as e:
             logger.warning(f"Redis publish failed: {e}")

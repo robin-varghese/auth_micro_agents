@@ -2,6 +2,7 @@
   {
     "agent_id": "gcloud_infrastructure_specialist",
     "display_name": "GCloud Specialist",
+    "name": "GCloud Specialist",
     "icon": "cloud",
     "description": "General purpose Google Cloud Platform CLI specialist.",
     "capabilities": [
@@ -38,6 +39,7 @@
   {
     "agent_id": "code_execution_specialist",
     "display_name": "Code Execution Specialist",
+    "name": "Code Execution Specialist",
     "icon": "terminal",
     "description": "Writes and executes Python code to solve complex problems, perform data analysis, and handle computational tasks.",
     "capabilities": [
@@ -69,6 +71,7 @@
   {
     "agent_id": "analytics_specialist",
     "display_name": "Google Analytics 4 Specialist",
+    "name": "Google Analytics 4 Specialist",
     "icon": "analytics",
     "description": "Analyzes web traffic, user sessions, and conversion metrics using Google Analytics 4 Data API.",
     "capabilities": [
@@ -102,6 +105,7 @@
   {
     "agent_id": "storage_specialist",
     "display_name": "Google Cloud Storage Specialist",
+    "name": "Google Cloud Storage Specialist",
     "icon": "storage",
     "description": "Specialist for Google Cloud Storage management and operations.",
     "capabilities": [
@@ -148,6 +152,7 @@
   {
     "agent_id": "cloud_run_specialist",
     "display_name": "Cloud Run Specialist",
+    "name": "Cloud Run Specialist",
     "icon": "cloud_upload",
     "description": "Deploys and manages Cloud Run services using the Cloud Run MCP server.",
     "capabilities": [
@@ -183,6 +188,7 @@
   {
     "agent_id": "browser_automation_specialist",
     "display_name": "Puppeteer Browser Automation Specialist",
+    "name": "Puppeteer Browser Automation Specialist",
     "icon": "browser",
     "description": "Specialist for automating browser interactions, navigating, clicking, and extracting data using Puppeteer.",
     "capabilities": [
@@ -215,6 +221,7 @@
   {
     "agent_id": "github_specialist",
     "display_name": "GitHub Specialist",
+    "name": "GitHub Specialist",
     "icon": "github",
     "description": "Specialist for GitHub repository management, code operations, issues, and pull requests.",
     "capabilities": [
@@ -262,6 +269,7 @@
   {
     "agent_id": "cloud_monitoring_specialist",
     "display_name": "Monitoring & Observability Specialist",
+    "name": "Monitoring & Observability Specialist",
     "icon": "analytics",
     "description": "Specialist for Google Cloud Monitoring, Logging, and Trace.",
     "capabilities": [
@@ -305,6 +313,7 @@
   {
     "agent_id": "database_specialist",
     "display_name": "Database Specialist",
+    "name": "Database Specialist",
     "icon": "database",
     "description": "Specialist for executing SQL queries, managing PostgreSQL schemas, and analyzing agent operations via BigQuery.",
     "capabilities": [
@@ -342,6 +351,7 @@
   {
     "agent_id": "sequential_thinking_specialist",
     "display_name": "Sequential Thinking Specialist",
+    "name": "Sequential Thinking Specialist",
     "icon": "thought_bubble",
     "description": "Specialist for recursive and sequential problem solving using structured thinking steps.",
     "capabilities": [
@@ -368,6 +378,7 @@
   {
     "agent_id": "google_search_specialist",
     "display_name": "Google Search Specialist",
+    "name": "Google Search Specialist",
     "icon": "search",
     "description": "Specialist for retrieving real-time information from the web using Google Search.",
     "capabilities": [
@@ -393,6 +404,7 @@
   },
   {
     "agent_id": "iam_verification_specialist",
+    "display_name": "IAM Verification Specialist",
     "name": "IAM Verification Specialist",
     "description": "Validates user permissions and provides remediation commands for GCP access.",
     "keywords": [
@@ -413,6 +425,7 @@
   {
     "agent_id": "filesystem_specialist",
     "display_name": "Filesystem Specialist",
+    "name": "Filesystem Specialist",
     "icon": "folder_open",
     "description": "Manages local files and directories within the allowed sandbox using the full MCP Filesystem suite.",
     "capabilities": [
@@ -453,6 +466,7 @@
   {
     "agent_id": "brave_search_specialist",
     "display_name": "Brave Search Specialist",
+    "name": "Brave Search Specialist",
     "icon": "search",
     "description": "Performs web, local, news, image, and video searches using Brave Search API.",
     "capabilities": [
@@ -483,6 +497,7 @@
   {
     "agent_id": "mats-architect-agent",
     "display_name": "Architect Agent",
+    "name": "Architect Agent",
     "icon": "architecture",
     "description": "Principal Software Architect. Synthesizes findings into an RCA and recommends fixes.",
     "capabilities": [
@@ -503,6 +518,7 @@
   {
     "agent_id": "mats-orchestrator",
     "display_name": "MATS Orchestrator",
+    "name": "MATS Orchestrator",
     "icon": "bug_report",
     "description": "Micro Agent Troubleshooting System (MATS) Orchestrator. Coordinates SRE, Investigator, and Architect agents to diagnose and fix failures.",
     "capabilities": [
@@ -534,6 +550,7 @@
   {
     "agent_id": "mats-investigator-agent",
     "display_name": "Investigator Agent",
+    "name": "Investigator Agent",
     "icon": "code",
     "description": "Senior Backend Developer. Analyzes code repositories to locate bugs based on SRE findings.",
     "capabilities": [
@@ -558,6 +575,7 @@
   {
     "agent_id": "mats-sre-agent",
     "display_name": "SRE Agent",
+    "name": "SRE Agent",
     "icon": "analytics",
     "description": "Senior Site Reliability Engineer. Triages incidents by analyzing logs and metrics.",
     "capabilities": [
@@ -583,6 +601,7 @@
   {
     "agent_id": "mats-remediation-agent",
     "display_name": "Remediation Agent",
+    "name": "Remediation Agent",
     "icon": "auto_fix_high",
     "description": "Executes automated fixes, applies code patches, and triggers remediation workflows based on RCA specifications.",
     "capabilities": [

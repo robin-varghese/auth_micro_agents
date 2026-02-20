@@ -1,6 +1,7 @@
 {
     "agent_id": "github_specialist",
     "display_name": "GitHub Specialist",
+    "name": "GitHub Specialist",
     "icon": "github",
     "description": "Specialist for GitHub repository management, code operations, issues, and pull requests.",
     "capabilities": [

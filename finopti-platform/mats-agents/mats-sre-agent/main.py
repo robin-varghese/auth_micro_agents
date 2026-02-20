@@ -28,11 +28,18 @@ def chat():
     user_message = data['message']
     session_id = data.get('session_id')  # Extract session_id
     user_email = data.get('user_email')  # Extract user_email for Redis channel
+    
+    # Extract Auth Token
+    auth_token = None
+    auth_header = request.headers.get('Authorization')
+    if auth_header and auth_header.startswith("Bearer "):
+        auth_token = auth_header.split(" ")[1]
+
     logger.info(f"Received request: {user_message[:50]}... Session: {session_id}, User: {user_email}")
 
     try:
         # Run the async agent loop
-        agent_result = asyncio.run(process_request(user_message, session_id=session_id, user_email=user_email))
+        agent_result = asyncio.run(process_request(user_message, session_id=session_id, user_email=user_email, auth_token=auth_token))
         
         # agent_result is now a dict: {"response": "...", "execution_trace": [...]}
         # We return it directly as JSON

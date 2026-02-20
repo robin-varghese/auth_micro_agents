@@ -1,6 +1,7 @@
 {
     "agent_id": "gcloud_infrastructure_specialist",
     "display_name": "GCloud Specialist",
+    "name": "GCloud Specialist",
     "icon": "cloud",
     "description": "General purpose Google Cloud Platform CLI specialist.",
     "capabilities": [

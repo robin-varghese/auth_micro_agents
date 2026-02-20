@@ -3,7 +3,7 @@ import os
 import sys
 
 APISIX_URL = os.getenv("APISIX_URL", "http://localhost:9080")
-AGENT_ROUTE = "/agent/cloud-run/execute"
+AGENT_ROUTE = "/agent/cloud_run/execute"
 PROMPT = "List all cloud run services in project vector-search-poc region us-central1"
 
 def verify():

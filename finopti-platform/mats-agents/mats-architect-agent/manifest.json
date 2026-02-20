@@ -1,6 +1,7 @@
 {
     "agent_id": "mats-architect-agent",
     "display_name": "Architect Agent",
+    "name": "Architect Agent",
     "icon": "architecture",
     "description": "Principal Software Architect. Synthesizes findings into an RCA and recommends fixes.",
     "capabilities": [

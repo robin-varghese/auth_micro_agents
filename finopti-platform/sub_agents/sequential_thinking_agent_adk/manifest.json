@@ -1,6 +1,7 @@
 {
     "agent_id": "sequential_thinking_specialist",
     "display_name": "Sequential Thinking Specialist",
+    "name": "Sequential Thinking Specialist",
     "icon": "thought_bubble",
     "description": "Specialist for recursive and sequential problem solving using structured thinking steps.",
     "capabilities": [

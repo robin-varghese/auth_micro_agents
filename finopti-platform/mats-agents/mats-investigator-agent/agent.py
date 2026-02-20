@@ -5,6 +5,7 @@ import os
 import sys
 import json
 import logging
+import time
 from typing import Any
 
 from google.adk.agents import Agent
@@ -30,7 +31,10 @@ from instructions import AGENT_INSTRUCTIONS, AGENT_DESCRIPTION
 from tools import read_file, search_code
 
 # Configure Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Initialize Observability
@@ -43,6 +47,7 @@ from common.model_resilience import run_with_model_fallback
 
 def create_investigator_agent(model_name: str = None) -> Agent:
     model_to_use = model_name or config.FINOPTIAGENTS_LLM
+    logger.info(f"Creating Investigator agent with model: {model_to_use}")
     
     return Agent(
         name="mats_investigator_agent",
@@ -56,7 +61,9 @@ def create_investigator_agent(model_name: str = None) -> Agent:
 # -------------------------------------------------------------------------
 # RUNNER
 # -------------------------------------------------------------------------
-async def process_request(prompt_or_payload: Any, session_id: str = None, user_email: str = None):
+async def process_request(prompt_or_payload: Any, session_id: str = None, user_email: str = None, auth_token: str = None):
+    request_start = time.monotonic()
+
     # Ensure API Key state is consistent
     if config.GOOGLE_API_KEY and not (config.GOOGLE_GENAI_USE_VERTEXAI and config.GOOGLE_GENAI_USE_VERTEXAI.upper() == "TRUE"):
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
@@ -69,7 +76,7 @@ async def process_request(prompt_or_payload: Any, session_id: str = None, user_e
         os.environ['GOOGLE_CLOUD_PROJECT'] = config.GCP_PROJECT_ID
         os.environ['GCP_PROJECT_ID'] = config.GCP_PROJECT_ID
         
-    # Handle Dict or JSON stirng payload
+    # Handle Dict or JSON string payload
     prompt = ""
     job_id = None
     orchestrator_url = None
@@ -95,7 +102,7 @@ async def process_request(prompt_or_payload: Any, session_id: str = None, user_e
                     session_id = data.get("session_id")
              else:
                  prompt = input_str
-         except:
+         except (json.JSONDecodeError, TypeError):
              prompt = input_str
              
     # Set Env vars for tools to access context
@@ -113,7 +120,8 @@ async def process_request(prompt_or_payload: Any, session_id: str = None, user_e
              d = json.loads(prompt_or_payload)
              if isinstance(d, dict):
                  trace_context = d.get("headers", {})
-         except: pass
+         except (json.JSONDecodeError, TypeError):
+             pass
 
     # Extract parent trace context for span linking
     parent_ctx = propagate.extract(trace_context) if trace_context else None
@@ -127,6 +135,22 @@ async def process_request(prompt_or_payload: Any, session_id: str = None, user_e
     if user_email:
         _user_email_ctx.set(user_email)
 
+    if auth_token:
+        try:
+            from context import _auth_token_ctx
+            _auth_token_ctx.set(auth_token)
+        except ImportError:
+            logger.warning(f"[{session_id}] Investigator: _auth_token_ctx not available in context module")
+        os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] = auth_token
+
+    current_user_email = user_email or _user_email_ctx.get() or "unknown"
+
+    logger.info(
+        f"[{session_id}] Investigator: process_request started | "
+        f"user={current_user_email} | job_id={job_id} | "
+        f"prompt_length={len(prompt)} chars | has_auth_token={bool(auth_token)}"
+    )
+
     # Initialize Redis Publisher
     try:
         if RedisEventPublisher:
@@ -135,11 +159,17 @@ async def process_request(prompt_or_payload: Any, session_id: str = None, user_e
             if session_id:
                 _session_id_ctx.set(session_id)
                 pub.publish_event(
-                    session_id=session_id, user_id=user_email or "investigator", trace_id="unknown",
-                    msg_type="STATUS_UPDATE", message=f"Investigator starting analysis...",
+                    session_id=session_id, user_id=current_user_email, trace_id="unknown",
+                    msg_type="STATUS_UPDATE", message="Investigator starting analysis...",
                     display_type="step_progress", icon="🕵️"
                 )
-    except: pass
+                logger.info(f"[{session_id}] Investigator: Redis publisher initialized and notified")
+    except Exception as redis_err:
+        logger.warning(
+            f"[{session_id}] Investigator: Redis publisher initialization failed — "
+            f"progress updates will be unavailable | error={redis_err}",
+            exc_info=True
+        )
     
     # Create child span linked to orchestrator's root span
     span_context = {"context": parent_ctx} if parent_ctx else {}
@@ -156,10 +186,11 @@ async def process_request(prompt_or_payload: Any, session_id: str = None, user_e
         # Set session.id for Phoenix session grouping
         if session_id and span and span.is_recording():
             span.set_attribute(SpanAttributes.SESSION_ID, session_id)
-            logger.info(f"[{session_id}] Investigator: Set session.id on span")
+            logger.info(f"[{session_id}] Investigator: Set session.id on OTel span")
 
         # Define helpers for fallback
         def _create_app(model_name: str):
+            logger.info(f"[{session_id}] Investigator: Creating app with model={model_name}")
             investigator_agent_instance = create_investigator_agent(model_name)
             
             return App(
@@ -172,13 +203,19 @@ async def process_request(prompt_or_payload: Any, session_id: str = None, user_e
             
         async def _run_once(app_instance):
             response_text = ""
+            runner_start = time.monotonic()
             try:
                 async with InMemoryRunner(app=app_instance) as runner:
-                    sid = "default"
-                    await runner.session_service.create_session(session_id=sid, user_id="user", app_name="mats_investigator_app")
+                    sid = session_id or "default"
+                    await runner.session_service.create_session(
+                        session_id=sid, user_id=current_user_email, app_name="mats_investigator_app"
+                    )
                     msg = types.Content(parts=[types.Part(text=prompt)])
                     
-                    async for event in runner.run_async(user_id="user", session_id=sid, new_message=msg):
+                    logger.info(f"[{session_id}] Investigator: InMemoryRunner started, dispatching to LLM")
+                    event_count = 0
+                    async for event in runner.run_async(user_id=current_user_email, session_id=sid, new_message=msg):
+                        event_count += 1
                         if hasattr(event, 'content') and event.content:
                             for part in event.content.parts:
                                 if part.text:
@@ -186,29 +223,51 @@ async def process_request(prompt_or_payload: Any, session_id: str = None, user_e
                                     # Report thought to UI
                                     if job_id:
                                         await _report_progress(part.text[:200], "THOUGHT")
+
+                    elapsed = time.monotonic() - runner_start
+                    logger.info(
+                        f"[{session_id}] Investigator: LLM run completed | "
+                        f"events={event_count} | response_length={len(response_text)} chars | "
+                        f"elapsed={elapsed:.1f}s"
+                    )
+
             except Exception as e:
+                elapsed = time.monotonic() - runner_start
                 err_msg = str(e)
-                logger.error(f"Runner failed: {err_msg}")
-                # Return valid JSON even on error
+                logger.error(
+                    f"[{session_id}] Investigator: InMemoryRunner failed after {elapsed:.1f}s | "
+                    f"error_type={type(e).__name__} | error={err_msg}",
+                    exc_info=True
+                )
+                # Return valid JSON even on error so caller can handle gracefully
                 error_response = json.dumps({
                     "status": "INSUFFICIENT_DATA",
                     "confidence": 0.0,
-                    "hypothesis": f"Investigator internal error: {err_msg}",
+                    "hypothesis": f"Investigator internal error ({type(e).__name__}): {err_msg}",
                     "blockers": ["Agent internal error during analysis"]
                 })
                 response_text = error_response
                 if "429" in err_msg or "Resource exhausted" in err_msg:
+                    logger.warning(f"[{session_id}] Investigator: Quota exhausted (429), will trigger model fallback")
                     raise e
             
              # Check for soft 429 in response text
             if "429 Too Many Requests" in response_text or "Resource exhausted" in response_text:
+                 logger.warning(f"[{session_id}] Investigator: Soft 429 detected in response text, raising for model fallback")
                  raise RuntimeError(f"soft_429: {response_text}")
 
             return response_text
 
         # Execute with fallback logic
-        return await run_with_model_fallback(
+        result = await run_with_model_fallback(
             create_app_func=_create_app,
             run_func=_run_once,
             context_name="MATS Investigator Agent"
         )
+
+        total_elapsed = time.monotonic() - request_start
+        logger.info(
+            f"[{session_id}] Investigator: process_request complete | "
+            f"total_elapsed={total_elapsed:.1f}s | result_length={len(result) if result else 0} chars"
+        )
+        return result

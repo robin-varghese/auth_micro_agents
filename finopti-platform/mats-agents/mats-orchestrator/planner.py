@@ -435,7 +435,7 @@ async def generate_plan(
     
     # Step 3: Build the planning prompt
     capabilities_summary = "\n".join([
-        f"- {agent['name']}: {agent.get('capabilities', 'N/A')}"
+        f"- {agent.get('name') or agent.get('display_name') or agent.get('agent_id', 'Unknown Agent')}: {agent.get('capabilities', 'N/A')}"
         for agent in agent_registry
     ])
     

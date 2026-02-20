@@ -37,19 +37,30 @@
 **Requirement:** Use the `_report_progress` helper in `context.py` to stream events standardized as `STATUS_UPDATE`, `TOOL_CALL`, `THOUGHT`, etc.
 
 ### Rule 6: Orchestrator Registration & Master Registry
-**CRITICAL:** New agents are not reachable until registered in the Master Registry.
+**CRITICAL:** New agents are not reachable until registered in the Master Registry. The registry relies on consistent naming to avoid `KeyError` crashes in the Orchestrator.
 **Requirement:**
-1. Create a `manifest.json` in your agent folder defining your `agent_id`, `keywords`, and `capabilities`.
-2. Run the registry generator: `python3 tools/generate_master_registry.py`
-3. Verify the agent appears in `mats-agents/mats-orchestrator/agent_registry.json`.
+1. Create a `manifest.json` in your agent folder defining your `agent_id`, `name`, `display_name`, `keywords`, and `capabilities`.
+2. **Naming Standard**: You MUST include both `name` and `display_name`. They should be identical for consistency.
+3. Run the registry generator: `python3 tools/generate_master_registry.py` (which normalizes and aggregates these).
+4. Verify the agent appears in `mats-agents/mats-orchestrator/agent_registry.json`.
 
 ### Rule 7: Authentication & Authorization (AuthN/AuthZ)
 **CRITICAL:** All agents are protected by APISix and OPA. Credentials MUST be propagated end-to-end to enable tool execution (e.g., GCloud calls).
 **Requirement:**
 1. Agents must extract `user_email`, `session_id`, and the `Authorization` (Bearer) token from incoming requests.
 2. The `Authorization` header contains the user's active OIDC/OAuth token.
-3. This token MUST be propagated to internal tools and MCP clients (Pattern A) to authenticate against GCP.
-4. Access is controlled via `opa_policy/authz.rego`. Ensure your `agent_id` is mapped to the correct roles in OPA.
+3. **Environment Fallback (CRITICAL)**: Because `ContextVar` can be lost in complex async tool chains or sub-processes, you MUST also sync the credentials to the process environment:
+   - `os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] = auth_token`
+   - `os.environ["CLOUDSDK_CORE_ACCOUNT"] = user_email`
+4. This token MUST be propagated to internal tools and MCP clients (Pattern A) to authenticate against GCP.
+5. Access is controlled via `opa_policy/authz.rego`. Ensure your `agent_id` is mapped to the correct roles in OPA.
+
+### Rule 12: Single-Chain Context Inheritance (Inheritance Rule)
+**CRITICAL:** Agents must never lose the "Trace Thread." When an agent calls another service or tool, it must pass the current context.
+**Requirement:**
+1. **Pass the Session ID**: Every internal `requests.post` or tool-to-tool call MUST include the `session_id`.
+2. **Pass the Auth Token**: Never assume the downstream agent has its own credentials. Always pass the Bearer token in the `Authorization` header.
+3. **Investigation State**: If an agent updates a shared state (e.g., Redis), it must use the inherited `session_id` to ensure observability.
 
 ### Rule 8: Model Fallback & Resilience
 **CRITICAL:** Production agents must handle LLM quota exhaustion (429) gracefully.
@@ -76,7 +87,22 @@
    if hasattr(config, "GCP_PROJECT_ID"):
        os.environ["GOOGLE_CLOUD_PROJECT"] = config.GCP_PROJECT_ID
    ```
+   ```
 3. Local verification (`verify_agent_internal.py`) MUST also force Vertex AI.
+
+### Rule 11: Manifest Schema Consistency
+**Requirement:** Every `manifest.json` must follow this schema:
+```json
+{
+    "agent_id": "unique_lowercase_id",
+    "name": "Human Readable Name",
+    "display_name": "Human Readable Name",
+    "description": "Short summary of agent purpose",
+    "capabilities": ["Capability 1", "Capability 2"],
+    "keywords": ["keyword1", "keyword2"]
+}
+```
+**Critical:** `name` and `display_name` are both REQUIRED to support different legacy and modern orchestrator components.
 
 ---
 
@@ -214,8 +240,16 @@ def load_instructions():
             return data.get("instruction", "You represent the agent.")
     return "You represent the agent."
 
+def load_manifest():
+    if MANIFEST_PATH.exists():
+        with open(MANIFEST_PATH, "r") as f:
+            return json.load(f)
+    return {}
+
 AGENT_INSTRUCTIONS = load_instructions()
-AGENT_NAME = "my_specialist"
+MANIFEST = load_manifest()
+# Standard: Use display_name for the internal agent variable, fallback to agent_id
+AGENT_NAME = MANIFEST.get("display_name", MANIFEST.get("agent_id", "my_specialist"))
 ```
 
 ---
@@ -302,16 +336,17 @@ def create_app(model_name=None):
 
 # 4. Request Handler
 async def send_message_async(prompt: str, user_email: str = None, session_id: str = "default", auth_token: str = None):
-    # Context Propagation
-    _session_id_ctx.set(session_id)
-    _user_email_ctx.set(user_email)
-    _auth_token_ctx.set(auth_token)
-    
-    # Initialize Client (Pattern A) - ContextVar SET
-    mcp = MyMCPClient()
-    token = _mcp_ctx.set(mcp)
-    
     try:
+        # --- CONTEXT PROPAGATION (Rule 12) ---
+        _session_id_ctx.set(session_id)
+        _user_email_ctx.set(user_email or "unknown")
+        if auth_token:
+            _auth_token_ctx.set(auth_token)
+            # SYNC TO ENVIRONMENT (Rule 7 Fallback)
+            os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] = auth_token
+            os.environ["CLOUDSDK_CORE_ACCOUNT"] = user_email or "unknown"
+            logger.info(f"Synced OAuth token and account ({user_email}) to process environment")
+
         await mcp.connect()
         await _report_progress("Starting...", icon="🚀")
         
@@ -488,15 +523,20 @@ Delegation (passes session_id in payload)
 - **Fix**: Verify `PHOENIX_COLLECTOR_ENDPOINT` is correct and Phoenix container is running.
 
 ---
-### 4. "Permission Denied" in GCloud MCP
-- **Symptom**: `gcloud` commands fail inside the spawned container.
-- **Cause**: Active OAuth token is not passed to the container.
-- **Fix**: In your `mcp_client.py`, inject the token into the environment:
+### 4. "Permission Denied" / "No credentialed accounts" in MCP
+- **Symptom**: `gcloud` commands fail inside the spawned container, or logs say "No credentialed accounts".
+- **Cause**: The active OAuth token is not passed to the container, or the `ContextVar` was lost during an async yield.
+- **Fix**: 
+  1. Ensure `agent.py` syncs to the environment (Rule 7).
+  2. In your tool execution or `mcp_client.py`, check BOTH context and environment:
   ```python
-  auth_token = _auth_token_ctx.get()
+  auth_token = _auth_token_ctx.get() or os.environ.get("CLOUDSDK_AUTH_ACCESS_TOKEN")
+  user_email = _user_email_ctx.get() or os.environ.get("CLOUDSDK_CORE_ACCOUNT")
+  
   cmd = [
       "docker", "run", "-i", "--rm",
       "-e", f"CLOUDSDK_AUTH_ACCESS_TOKEN={auth_token}",
+      "-e", f"CLOUDSDK_CORE_ACCOUNT={user_email}",
       "finopti-gcloud-mcp"
   ]
   ```

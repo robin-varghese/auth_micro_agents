@@ -1,6 +1,7 @@
 {
     "agent_id": "brave_search_specialist",
     "display_name": "Brave Search Specialist",
+    "name": "Brave Search Specialist",
     "icon": "search",
     "description": "Performs web, local, news, image, and video searches using Brave Search API.",
     "capabilities": [

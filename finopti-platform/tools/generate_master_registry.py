@@ -34,6 +34,15 @@ def generate_master_registry():
             # Add path context
             manifest["_source_path"] = str(Path(manifest_path).parent.relative_to(base_dir))
             
+            # [FIX] Normalize name/display_name for consistency (planner.py expects 'name')
+            if "name" not in manifest and "display_name" in manifest:
+                manifest["name"] = manifest["display_name"]
+            elif "display_name" not in manifest and "name" in manifest:
+                manifest["display_name"] = manifest["name"]
+            elif "name" not in manifest and "display_name" not in manifest:
+                manifest["name"] = manifest["agent_id"]
+                manifest["display_name"] = manifest["agent_id"]
+                
             registry.append(manifest)
             print(f"Loaded: {manifest['agent_id']}")
             

@@ -1,6 +1,7 @@
 {
     "agent_id": "database_specialist",
     "display_name": "Database Specialist",
+    "name": "Database Specialist",
     "icon": "database",
     "description": "Specialist for executing SQL queries, managing PostgreSQL schemas, and analyzing agent operations via BigQuery.",
     "capabilities": [

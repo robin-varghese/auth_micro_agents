@@ -1,6 +1,7 @@
 {
     "agent_id": "filesystem_specialist",
     "display_name": "Filesystem Specialist",
+    "name": "Filesystem Specialist",
     "icon": "folder_open",
     "description": "Manages local files and directories within the allowed sandbox using the full MCP Filesystem suite.",
     "capabilities": [

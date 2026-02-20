@@ -39,6 +39,10 @@ def start_job():
     user_request = data.get('prompt') or data.get('user_request')
     project_id = data.get('project_id')
     repo_url = data.get('repo_url')
+    repo_branch = data.get('repo_branch')
+    github_pat = data.get('github_pat')
+    environment = data.get('environment')
+    application_name = data.get('application_name')
     user_email = request.headers.get('X-User-Email', data.get('user_email', 'unknown'))
     
     # Extract Trace Context
@@ -46,6 +50,12 @@ def start_job():
     if "traceparent" in request.headers:
         trace_context["traceparent"] = request.headers["traceparent"]
     
+    # Extract Auth Token
+    auth_token = None
+    auth_header = request.headers.get('Authorization')
+    if auth_header and auth_header.startswith("Bearer "):
+        auth_token = auth_header.split(" ")[1]
+
     # Extract Session ID from body (Preferred) or headers (Legacy/Fallback)
     provided_session_id = data.get('session_id') or request.headers.get('X-Session-ID')
     
@@ -58,26 +68,38 @@ def start_job():
         return jsonify({"error": "Prompt/user_request is required"}), 400
 
     # 1. Check for RESUMABLE JOB
-    existing_job_id = JobManager.get_active_job_for_user(user_email)
+    # CRITICAL FIX: Only resume an existing in-memory job if the caller did NOT explicitly
+    # provide a fresh session_id from the UI. A fresh UUID always signals a NEW investigation.
+    # If we always resume here, the UI's new UUID is bypassed every time.
+    caller_provided_session = data.get('session_id') or request.headers.get('X-Session-ID')
+    existing_job_id = None
+    if not caller_provided_session:
+        # No explicit session - check for a resumable in-memory job
+        existing_job_id = JobManager.get_active_job_for_user(user_email)
     
     if existing_job_id:
         # Resume existing job
         job_id = existing_job_id
-        logger.info(f"Resuming Job {job_id} for user {user_email}")
+        logger.info(f"Resuming Job {job_id} for user {user_email} (no session_id provided - treating as continuation)")
         JobManager.add_event(job_id, "SYSTEM", f"Resuming job with user input: {user_request[:50]}...", "orchestrator")
         
         # Fire async resume
         async def background_task_resume():
             try:
                 result = await run_investigation_async(
-                    user_request=user_request, # This is the users REPLY now
+                    user_request=user_request,
                     project_id=project_id,
                     repo_url=repo_url,
                     user_email=user_email,
                     job_id=job_id,
-                    resume_job_id=job_id, # Signal to resume
+                    resume_job_id=job_id,
                     trace_context=trace_context,
-                    provided_session_id=provided_session_id  # Pass UI session ID
+                    provided_session_id=provided_session_id,
+                    environment=environment,
+                    application_name=application_name,
+                    repo_branch=repo_branch,
+                    github_pat=github_pat,
+                    auth_token=auth_token
                 )
                 JobManager.update_result(job_id, result, result.get("status", "COMPLETED"))
             except Exception as e:
@@ -106,7 +128,12 @@ def start_job():
                 user_email=user_email,
                 job_id=job_id,
                 trace_context=trace_context,
-                provided_session_id=provided_session_id  # Pass UI session ID
+                provided_session_id=provided_session_id,
+                environment=environment,
+                application_name=application_name,
+                repo_branch=repo_branch,
+                github_pat=github_pat,
+                auth_token=auth_token
             )
             # Update status based on result (WAITING_FOR_USER vs COMPLETED)
             final_status = result.get("status", "COMPLETED")

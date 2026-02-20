@@ -60,13 +60,35 @@ def create_app(session_id: Optional[str] = None):
         os.environ["GOOGLE_API_KEY"] = config.GOOGLE_API_KEY
 
     # [FIX] Wrapper to prevent LLM from hallucinating session ID (e.g. using email)
-    async def save_context_to_session(context: Dict[str, Any]):
+    async def save_context_to_session(context_updates: Dict[str, Any]):
         """
         Save/Update key-value context to the current user session.
         Use this to store project_id, environment, application_name, etc.
         """
         if session_id:
-            await update_session_context(session_id, context)
+            try:
+                # 1. Fetch existing context
+                existing_context = await get_session_context(session_id)
+                
+                # 2. Merge updates
+                if existing_context:
+                    existing_context.update(context_updates)
+                    final_context = existing_context
+                    logger.info(f"Merging context updates for {session_id}: {context_updates.keys()}")
+                else:
+                    final_context = context_updates
+                    logger.info(f"Creating new context for {session_id}")
+                
+                # 3. Save merged context
+                await update_session_context(session_id, final_context)
+                
+                # 4. Report Progress
+                await _report_progress(f"Updated session context: {', '.join(context_updates.keys())}", icon="💾")
+                
+            except Exception as e:
+                 logger.error(f"Failed to merge/save context: {e}")
+                 # Fallback to direct update if fetch fails? Risk of overwrite, but better than nothing?
+                 # ideally we just log error
         else:
             logger.warning("save_context_to_session called but no session_id bound.")
 
@@ -177,7 +199,10 @@ async def process_request_async(
         if has_context and target_agent == "gcloud_infrastructure_specialist":
             # Check if it's a specific gcloud command (simple heuristic or trust detect_intent's specific match)
             # Since detect_intent returns gcloud as fallback (score 0), we override it here.
-            logger.info("Sticky Context: Overriding 'gcloud' default to 'mats-orchestrator'")
+            logger.warning(
+                f"[{session_id}] Sticky Context override: "
+                f"'gcloud' default → 'mats-orchestrator' (user has active troubleshooting context)"
+            )
             target_agent = "mats-orchestrator"
             is_troubleshooting = True
 
@@ -230,10 +255,28 @@ async def process_request_async(
                      uid = user_email or "unknown"
                      await runner.session_service.create_session(session_id=sid, user_id=uid, app_name="finopti_orchestrator")
                      
-                     # [FIX] Explicitly inject User Email into system context for the LLM
+                     # Report "Thinking" state to user
+                     await _report_progress("Analyzing request...", event_type="THOUGHT", icon="🤔")
+                     
+                     # [FIX] Explicitly inject User Email AND Active Session Context into system context for the LLM
                      full_prompt = prompt
+                     system_context_lines = []
+                     
                      if uid and "unknown" not in uid:
-                         full_prompt += f"\n\n[System Context] User Email: {uid}"
+                         system_context_lines.append(f"User Email: {uid}")
+                     
+                     # Inject known session context (Project, App, Environment, etc.)
+                     # access 'context' variable from outer scope (process_request_async)
+                     if context:
+                         system_context_lines.append("Active Session Context:")
+                         # Filter out empty values and internal keys like iam_status if needed, 
+                         # but generally passing everything is safer for the LLM to know state.
+                         for k, v in context.items():
+                             if v and k not in ["user_email", "user_name"]: # Avoid dupes
+                                 system_context_lines.append(f"- {k}: {v}")
+                                 
+                     if system_context_lines:
+                         full_prompt += "\n\n[System Context]\n" + "\n".join(system_context_lines)
                      
                      message = types.Content(parts=[types.Part(text=full_prompt)])
                      response_text = ""
@@ -313,6 +356,13 @@ async def process_request_async(
                 if isinstance(final_response, dict) and 'response' in final_response:
                     final_response = final_response['response']
 
+        # [FIX] Persist IAM Verification Status to break infinite loop
+        if target_agent == "iam_verification_specialist" and "VERIFIED" in str(final_response).upper():
+            logger.info(f"Detected VERIFIED status from IAM agent. Updating session {session_id}")
+            context['iam_status'] = "VERIFIED"
+            await update_session_context(session_id, context)
+            await _report_progress("IAM Permissions Verified. Updating session state.", icon="✅")
+
         return {
             "success": True,
             "response": final_response,
@@ -322,7 +372,12 @@ async def process_request_async(
         }
     
     except Exception as e:
-        logger.error(f"Orchestrator error: {str(e)}", exc_info=True)
+        logger.error(
+            f"[{session_id}] process_request_async: Unhandled exception | "
+            f"user={user_email} | target_agent={target_agent if 'target_agent' in dir() else 'unknown'} | "
+            f"error_type={type(e).__name__} | error={e}",
+            exc_info=True
+        )
         return {
             "error": True,
             "message": f"Orchestrator error: {str(e)}"

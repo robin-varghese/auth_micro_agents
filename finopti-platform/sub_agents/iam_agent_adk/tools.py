@@ -28,6 +28,8 @@ async def check_gcp_permissions(project_id: str, member_email: str) -> Dict[str,
     try:
         from context import _auth_token_ctx
         token = _auth_token_ctx.get()
+        if not token:
+            token = os.environ.get("CLOUDSDK_AUTH_ACCESS_TOKEN")
         headers = {
             "X-User-Email": member_email,
             "Content-Type": "application/json"
@@ -35,10 +37,14 @@ async def check_gcp_permissions(project_id: str, member_email: str) -> Dict[str,
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
+        from context import _session_id_ctx
+        session_id = _session_id_ctx.get()
+
         response = requests.post(endpoint, json={
             "prompt": prompt,
             "user_email": member_email,
-            "project_id": project_id
+            "project_id": project_id,
+            "session_id": session_id
         }, headers=headers, timeout=120)
         
         response.raise_for_status()
@@ -52,6 +58,11 @@ async def check_gcp_permissions(project_id: str, member_email: str) -> Dict[str,
         if not policy_text and "data" in res_data:
             policy_text = res_data["data"].get("response", "")
             
+        # [NEW] Explicit Error Detection: If gcloud returned an error, report it instead of "no roles"
+        if isinstance(policy_text, str) and ("ERROR" in policy_text or "does not currently have an active account" in policy_text):
+            logger.error(f"GCloud returned an error in policy check: {policy_text}")
+            return {"success": False, "error": f"Cloud Identity check failed: {policy_text}"}
+
         policy = {}
         if isinstance(policy_text, dict):
             policy = policy_text
@@ -66,6 +77,9 @@ async def check_gcp_permissions(project_id: str, member_email: str) -> Dict[str,
                 policy = json.loads(clean_text)
             except Exception as parse_err:
                 logger.warning(f"Could not parse IAM policy as JSON: {parse_err}")
+                # If it's not JSON but contains text, it might be an error we missed
+                if "error" in policy_text.lower() or "denied" in policy_text.lower():
+                     return {"success": False, "error": f"Permission check failed: {policy_text}"}
                 policy = {}
 
         # Extract roles for the user

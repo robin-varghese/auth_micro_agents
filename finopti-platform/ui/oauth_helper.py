@@ -39,7 +39,7 @@ def get_oauth_login_url() -> str:
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
         "response_type": "code",
-        "scope": "openid email profile",
+        "scope": "openid email profile https://www.googleapis.com/auth/cloud-platform",
         "access_type": "offline",
         "prompt": "consent"
     }
@@ -160,8 +160,8 @@ def get_auth_headers() -> Dict[str, str]:
     }
     
     # Add Bearer token if OAuth authenticated
-    if st.session_state.get('auth_method') == 'oauth' and st.session_state.get('id_token'):
-        headers["Authorization"] = f"Bearer {st.session_state.id_token}"
+    if st.session_state.get('auth_method') == 'oauth' and st.session_state.get('access_token'):
+        headers["Authorization"] = f"Bearer {st.session_state.access_token}"
     
     return headers
 

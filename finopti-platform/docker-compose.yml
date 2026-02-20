@@ -922,9 +922,16 @@ services:
       - APISIX_URL=http://apisix:9080
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GOOGLE_GENAI_USE_VERTEXAI=TRUE
-
-
-
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ./redis-sessions/common:/app/redis_common
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5011/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  
   # --- Code Execution Agent ---
   code_execution_agent_adk:
     build:

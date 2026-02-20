@@ -136,7 +136,12 @@ async def run_investigation_async(
     job_id: str = None,
     resume_job_id: str = None,
     trace_context: Dict[str, Any] = None,
-    provided_session_id: str = None
+    provided_session_id: str = None,
+    environment: str = None,
+    application_name: str = None,
+    repo_branch: str = None,
+    github_pat: str = None,
+    auth_token: str = None
 ) -> Dict[str, Any]:
     """
     Run complete investigation workflow.
@@ -163,12 +168,27 @@ async def run_investigation_async(
         JobManager = None
 
     # Create session
-    session = await create_session(user_email or "default", project_id, repo_url, provided_session_id)
+    session = await create_session(
+        user_id=user_email,
+        project_id=project_id,
+        repo_url=repo_url,
+        provided_session_id=provided_session_id,
+        environment=environment,
+        application_name=application_name,
+        repo_branch=repo_branch,
+        github_pat=github_pat
+    )
     session_id = session.session_id
 
     # --- CONTEXT SETTING (Rule 1 & 6) ---
     _session_id_ctx.set(session_id)
     _user_email_ctx.set(user_email or "unknown")
+    if auth_token:
+        try:
+            from context import _auth_token_ctx
+            _auth_token_ctx.set(auth_token)
+        except ImportError:
+            pass
 
     span = trace.get_current_span()
     if span and span.is_recording():
@@ -445,7 +465,7 @@ async def run_investigation_async(
                     "evidence": json.dumps(sre_result.get('evidence', {}))
                 }
                 
-                arch_result = await delegate_to_architect(sre_result, inv_result_skipped, session_id, user_request=user_request)
+                arch_result = await delegate_to_architect(sre_result, inv_result_skipped, session_id, user_request=user_request, user_email=user_email)
                 return format_investigation_response(session, arch_result, sre_result, session_id)
 
             # Genuine Failure / Inconclusive Triage
@@ -461,7 +481,7 @@ async def run_investigation_async(
                 "evidence": json.dumps(sre_result.get('evidence', {}))
             }
 
-            arch_result = await delegate_to_architect(sre_result, inv_result_skipped, session_id, user_request=user_request)
+            arch_result = await delegate_to_architect(sre_result, inv_result_skipped, session_id, user_request=user_request, user_email=user_email)
             return format_investigation_response(session, arch_result, sre_result, session_id)
         
         # --- SHORTCUT: SRE found root cause, skip Investigator ---
@@ -477,7 +497,7 @@ async def run_investigation_async(
                 "evidence": "See SRE Report"
             }
             
-            arch_result = await delegate_to_architect(sre_result, inv_result_skipped, session_id)
+            arch_result = await delegate_to_architect(sre_result, inv_result_skipped, session_id, user_email=user_email)
             return format_investigation_response(session, arch_result, sre_result, session_id)
 
         # --- PHASE 3: CODE ANALYSIS (Investigator) ---
@@ -513,7 +533,7 @@ async def run_investigation_async(
         # --- PHASE 4: SYNTHESIS (Architect) ---
         await _report_progress("Synthesizing Root Cause Analysis (Architect)...", event_type="STATUS_UPDATE", icon="🏗️", display_type="step_progress")
         session.workflow.transition_to(WorkflowPhase.SYNTHESIS, "Generating RCA")
-        arch_result = await delegate_to_architect(sre_result, inv_result, session_id, user_request=user_request)
+        arch_result = await delegate_to_architect(sre_result, inv_result, session_id, user_request=user_request, user_email=user_email)
         
         return format_investigation_response(session, arch_result, sre_result, session_id)
         

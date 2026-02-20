@@ -35,9 +35,14 @@ def chat():
         if not prompt:
             return jsonify({"error": "No prompt provided"}), 400
             
+        auth_token = None
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith("Bearer "):
+            auth_token = auth_header.split(" ")[1]
+
         logger.info(f"Received request from {user_email}: {prompt}")
         
-        response = send_message(prompt, user_email)
+        response = send_message(prompt, user_email, auth_token=auth_token)
         
         return jsonify({
             "response": response,

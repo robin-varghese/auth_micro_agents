@@ -1,6 +1,7 @@
 {
     "agent_id": "google_search_specialist",
     "display_name": "Google Search Specialist",
+    "name": "Google Search Specialist",
     "icon": "search",
     "description": "Specialist for retrieving real-time information from the web using Google Search.",
     "capabilities": [

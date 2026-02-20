@@ -1,6 +1,7 @@
 {
     "agent_id": "storage_specialist",
     "display_name": "Google Cloud Storage Specialist",
+    "name": "Google Cloud Storage Specialist",
     "icon": "storage",
     "description": "Specialist for Google Cloud Storage management and operations.",
     "capabilities": [

@@ -64,6 +64,11 @@ async def process_request(prompt: str, user_email: str = None, session_id: str =
     _user_email_ctx.set(user_email)
     if auth_token:
         _auth_token_ctx.set(auth_token)
+        # [Rule 7] Sync to environment for tool stability
+        os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] = auth_token
+    
+    if user_email:
+        os.environ["CLOUDSDK_CORE_ACCOUNT"] = user_email
     
     # Setup Redis Publisher if available
     pub = None
